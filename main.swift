@@ -6,6 +6,9 @@ import ServiceManagement
 private let keychainService = "Claude Code-credentials"
 private let usageAPIURL = "https://api.anthropic.com/api/oauth/usage"
 private let apiBetaHeader = "oauth-2025-04-20"
+private let oauthTokenURL = "https://platform.claude.com/v1/oauth/token"
+private let oauthClientID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+private let oauthScopes = "user:profile user:inference"
 let updateRepoOwner = "viktor-svirsky"
 let updateRepoName = "ccusage"
 private let allowedDownloadHosts: Set<String> = ["github.com", "objects.githubusercontent.com"]
@@ -32,6 +35,16 @@ func parseToken(from jsonData: Data) -> String? {
     guard let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
           let oauth = json["claudeAiOauth"] as? [String: Any],
           let token = oauth["accessToken"] as? String,
+          !token.isEmpty else {
+        return nil
+    }
+    return token
+}
+
+func parseRefreshToken(from jsonData: Data) -> String? {
+    guard let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+          let oauth = json["claudeAiOauth"] as? [String: Any],
+          let token = oauth["refreshToken"] as? String,
           !token.isEmpty else {
         return nil
     }
@@ -208,6 +221,7 @@ class StatusBarController: NSObject {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private var uiTimer: Timer?
     private var isFetching = false
+    private var didRetryWithRefresh = false
     private var lastRefreshDate: Date?
     private var lastUsage: UsageData?
     private var schedule = FetchSchedule()
@@ -287,8 +301,8 @@ class StatusBarController: NSObject {
 
     // MARK: - Keychain
 
-    /// Read credentials via the system `security` CLI to avoid per-binary Keychain ACL prompts.
-    private func readToken() -> String? {
+    /// Read raw credential data via the system `security` CLI to avoid per-binary Keychain ACL prompts.
+    private func readKeychainData() -> Data? {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/security")
         proc.arguments = ["find-generic-password", "-s", keychainService, "-w"]
@@ -300,10 +314,99 @@ class StatusBarController: NSObject {
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             proc.waitUntilExit()
             guard proc.terminationStatus == 0 else { return nil }
-            return parseToken(from: data)
+            return data
         } catch {
             return nil
         }
+    }
+
+    private func readToken() -> String? {
+        guard let data = readKeychainData() else { return nil }
+        return parseToken(from: data)
+    }
+
+    private func readRefreshToken() -> String? {
+        guard let data = readKeychainData() else { return nil }
+        return parseRefreshToken(from: data)
+    }
+
+    /// Write updated credentials back to the keychain.
+    private func writeKeychainData(_ data: Data) -> Bool {
+        guard let jsonStr = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) else { return false }
+        // Delete existing entry, then add new one
+        let del = Process()
+        del.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        del.arguments = ["delete-generic-password", "-s", keychainService]
+        del.standardOutput = FileHandle.nullDevice
+        del.standardError = FileHandle.nullDevice
+        try? del.run()
+        del.waitUntilExit()
+
+        let add = Process()
+        add.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        add.arguments = ["add-generic-password", "-s", keychainService, "-w", jsonStr]
+        add.standardOutput = FileHandle.nullDevice
+        add.standardError = FileHandle.nullDevice
+        do {
+            try add.run()
+            add.waitUntilExit()
+            return add.terminationStatus == 0
+        } catch {
+            return false
+        }
+    }
+
+    /// Refresh the OAuth token and update the keychain. Returns the new access token on success.
+    private func refreshOAuthToken(completion: @escaping (String?) -> Void) {
+        guard let refreshToken = readRefreshToken(),
+              let url = URL(string: oauthTokenURL) else {
+            completion(nil)
+            return
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body: [String: String] = [
+            "grant_type": "refresh_token",
+            "refresh_token": refreshToken,
+            "client_id": oauthClientID,
+            "scope": oauthScopes
+        ]
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+
+        session.dataTask(with: request) { [weak self] data, response, _ in
+            guard let data,
+                  let http = response as? HTTPURLResponse, http.statusCode == 200,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let newAccessToken = json["access_token"] as? String,
+                  !newAccessToken.isEmpty else {
+                completion(nil)
+                return
+            }
+
+            // Update keychain with new tokens
+            DispatchQueue.main.async {
+                guard let self, let keychainData = self.readKeychainData(),
+                      var creds = try? JSONSerialization.jsonObject(with: keychainData) as? [String: Any],
+                      var oauth = creds["claudeAiOauth"] as? [String: Any] else {
+                    completion(newAccessToken)  // Still return token even if keychain update fails
+                    return
+                }
+                oauth["accessToken"] = newAccessToken
+                if let newRefresh = json["refresh_token"] as? String, !newRefresh.isEmpty {
+                    oauth["refreshToken"] = newRefresh
+                }
+                if let expiresIn = json["expires_in"] as? Int {
+                    oauth["expiresAt"] = Int(Date().timeIntervalSince1970 * 1000) + expiresIn * 1000
+                }
+                creds["claudeAiOauth"] = oauth
+                if let updatedData = try? JSONSerialization.data(withJSONObject: creds) {
+                    _ = self.writeKeychainData(updatedData)
+                }
+                completion(newAccessToken)
+            }
+        }.resume()
     }
 
     // MARK: - API
@@ -333,14 +436,23 @@ class StatusBarController: NSObject {
                         self.detailFiveHour.title = "Re-authenticate in Claude Code"
                         self.detailSevenDay.title = "Then click Refresh Now"
                     } else if http.statusCode == 429 {
-                        let raw = http.value(forHTTPHeaderField: "retry-after").flatMap { Int($0) } ?? Int(defaultFetchInterval)
-                        let retryAfter = clampRetryAfter(raw)
-                        self.schedule.onRateLimit(retryAfter: raw)
-                        let minutes = (retryAfter + 59) / 60
-                        if self.lastUsage == nil {
-                            self.setError("Rate limited")
+                        // Rate limit is per-access-token; refresh to get a new one
+                        if !self.didRetryWithRefresh {
+                            self.didRetryWithRefresh = true
+                            self.lastRefreshItem.title = "Refreshing token..."
+                            self.refreshOAuthToken { [weak self] newToken in
+                                guard let self, let newToken else {
+                                    self?.handleRateLimit(raw: http.value(forHTTPHeaderField: "retry-after").flatMap { Int($0) } ?? Int(defaultFetchInterval))
+                                    self?.didRetryWithRefresh = false
+                                    return
+                                }
+                                self.fetchUsage(token: newToken)
+                            }
+                            return
                         }
-                        self.lastRefreshItem.title = "Next API call in \(minutes)m (rate limited)"
+                        self.didRetryWithRefresh = false
+                        let raw = http.value(forHTTPHeaderField: "retry-after").flatMap { Int($0) } ?? Int(defaultFetchInterval)
+                        self.handleRateLimit(raw: raw)
                     } else {
                         self.setError("Server error")
                     }
@@ -356,11 +468,22 @@ class StatusBarController: NSObject {
         }.resume()
     }
 
+    private func handleRateLimit(raw: Int) {
+        let retryAfter = clampRetryAfter(raw)
+        schedule.onRateLimit(retryAfter: raw)
+        let minutes = (retryAfter + 59) / 60
+        if lastUsage == nil {
+            setError("Rate limited")
+        }
+        lastRefreshItem.title = "Next API call in \(minutes)m (rate limited)"
+    }
+
     // MARK: - Display
 
     private func updateDisplay(_ usage: UsageData) {
         lastUsage = usage
         lastRefreshDate = Date()
+        didRetryWithRefresh = false
         schedule.onSuccess()
         refreshUI()
     }
