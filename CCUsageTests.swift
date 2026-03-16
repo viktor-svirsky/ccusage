@@ -1094,6 +1094,206 @@ func runPacingTests() {
     }
 }
 
+// MARK: - Zone & Notification Tests
+
+func runZoneTests() {
+    suite("zoneFor") {
+        test("0% is green") {
+            assertEqual(zoneFor(utilization: 0), .green, "0%")
+        }
+
+        test("49.9% is green") {
+            assertEqual(zoneFor(utilization: 49.9), .green, "49.9%")
+        }
+
+        test("50% is yellow") {
+            assertEqual(zoneFor(utilization: 50), .yellow, "50%")
+        }
+
+        test("79.9% is yellow") {
+            assertEqual(zoneFor(utilization: 79.9), .yellow, "79.9%")
+        }
+
+        test("80% is red") {
+            assertEqual(zoneFor(utilization: 80), .red, "80%")
+        }
+
+        test("99.9% is red") {
+            assertEqual(zoneFor(utilization: 99.9), .red, "99.9%")
+        }
+
+        test("100% is depleted") {
+            assertEqual(zoneFor(utilization: 100), .depleted, "100%")
+        }
+
+        test("zone ordering") {
+            check(UsageZone.green < UsageZone.yellow, "green < yellow")
+            check(UsageZone.yellow < UsageZone.red, "yellow < red")
+            check(UsageZone.red < UsageZone.depleted, "red < depleted")
+        }
+    }
+}
+
+func makeUsage(h5: Double, d7: Double) -> UsageData {
+    UsageData(
+        fiveHour: UsageWindow(utilization: h5, remaining: nil, resetsAt: nil),
+        sevenDay: UsageWindow(utilization: d7, remaining: nil, resetsAt: nil)
+    )
+}
+
+func runNotificationTests() {
+    suite("determineNotifications") {
+        test("green to yellow triggers zone transition") {
+            let state = NotificationState()
+            let (notifs, newState) = determineNotifications(oldState: state, newUsage: makeUsage(h5: 55, d7: 10), fiveHourPace: nil, sevenDayPace: nil)
+            assertEqual(notifs.count, 1, "one notification")
+            assertEqual(notifs[0], .zoneTransition(window: "5-hour", zone: .yellow, utilization: 55), "yellow transition")
+            assertEqual(newState.fiveHourZone, .yellow, "state updated")
+        }
+
+        test("green to red triggers zone transition") {
+            let state = NotificationState()
+            let (notifs, _) = determineNotifications(oldState: state, newUsage: makeUsage(h5: 85, d7: 10), fiveHourPace: nil, sevenDayPace: nil)
+            assertEqual(notifs.count, 1, "one notification")
+            assertEqual(notifs[0], .zoneTransition(window: "5-hour", zone: .red, utilization: 85), "red transition")
+        }
+
+        test("green to depleted triggers depleted notification") {
+            let state = NotificationState()
+            let (notifs, _) = determineNotifications(oldState: state, newUsage: makeUsage(h5: 100, d7: 10), fiveHourPace: nil, sevenDayPace: nil)
+            assertEqual(notifs.count, 1, "one notification")
+            assertEqual(notifs[0], .depleted(window: "5-hour"), "depleted")
+        }
+
+        test("yellow to red triggers zone transition") {
+            var state = NotificationState()
+            state.fiveHourZone = .yellow
+            let (notifs, _) = determineNotifications(oldState: state, newUsage: makeUsage(h5: 85, d7: 10), fiveHourPace: nil, sevenDayPace: nil)
+            assertEqual(notifs.count, 1, "one notification")
+            assertEqual(notifs[0], .zoneTransition(window: "5-hour", zone: .red, utilization: 85), "red transition")
+        }
+
+        test("staying in same zone does not re-trigger") {
+            var state = NotificationState()
+            state.fiveHourZone = .yellow
+            let (notifs, _) = determineNotifications(oldState: state, newUsage: makeUsage(h5: 60, d7: 10), fiveHourPace: nil, sevenDayPace: nil)
+            assertEqual(notifs.count, 0, "no notifications")
+        }
+
+        test("downward transition does not trigger") {
+            var state = NotificationState()
+            state.fiveHourZone = .red
+            let (notifs, newState) = determineNotifications(oldState: state, newUsage: makeUsage(h5: 55, d7: 10), fiveHourPace: nil, sevenDayPace: nil)
+            assertEqual(notifs.count, 0, "no notifications on drop")
+            assertEqual(newState.fiveHourZone, .yellow, "state tracks current zone")
+        }
+
+        test("reset to green clears tracking") {
+            var state = NotificationState()
+            state.fiveHourZone = .red
+            state.fiveHourPaceAlerted = true
+            let (_, newState) = determineNotifications(oldState: state, newUsage: makeUsage(h5: 10, d7: 10), fiveHourPace: nil, sevenDayPace: nil)
+            assertEqual(newState.fiveHourZone, .green, "zone reset")
+            assertEqual(newState.fiveHourPaceAlerted, false, "pace alert reset")
+        }
+
+        test("re-trigger after reset to green") {
+            // First: go to yellow
+            let state0 = NotificationState()
+            let (n1, state1) = determineNotifications(oldState: state0, newUsage: makeUsage(h5: 55, d7: 10), fiveHourPace: nil, sevenDayPace: nil)
+            assertEqual(n1.count, 1, "first yellow trigger")
+
+            // Drop to green
+            let (n2, state2) = determineNotifications(oldState: state1, newUsage: makeUsage(h5: 10, d7: 10), fiveHourPace: nil, sevenDayPace: nil)
+            assertEqual(n2.count, 0, "no trigger on drop")
+
+            // Rise to yellow again
+            let (n3, _) = determineNotifications(oldState: state2, newUsage: makeUsage(h5: 55, d7: 10), fiveHourPace: nil, sevenDayPace: nil)
+            assertEqual(n3.count, 1, "re-triggers after green reset")
+        }
+
+        test("both windows trigger simultaneously") {
+            let state = NotificationState()
+            let (notifs, _) = determineNotifications(oldState: state, newUsage: makeUsage(h5: 55, d7: 85), fiveHourPace: nil, sevenDayPace: nil)
+            assertEqual(notifs.count, 2, "two notifications")
+            assertEqual(notifs[0], .zoneTransition(window: "5-hour", zone: .yellow, utilization: 55), "5h yellow")
+            assertEqual(notifs[1], .zoneTransition(window: "7-day", zone: .red, utilization: 85), "7d red")
+        }
+
+        test("pace over budget fires notification") {
+            var state = NotificationState()
+            state.fiveHourZone = .yellow
+            let (notifs, newState) = determineNotifications(oldState: state, newUsage: makeUsage(h5: 55, d7: 10), fiveHourPace: 1.5, sevenDayPace: nil)
+            assertEqual(notifs.count, 1, "one pace notification")
+            assertEqual(notifs[0], .paceOverBudget(window: "5-hour", pace: 1.5), "pace alert")
+            assertEqual(newState.fiveHourPaceAlerted, true, "pace alerted flag set")
+        }
+
+        test("pace does not re-fire when already alerted") {
+            var state = NotificationState()
+            state.fiveHourZone = .yellow
+            state.fiveHourPaceAlerted = true
+            let (notifs, _) = determineNotifications(oldState: state, newUsage: makeUsage(h5: 55, d7: 10), fiveHourPace: 1.5, sevenDayPace: nil)
+            assertEqual(notifs.count, 0, "no re-fire")
+        }
+
+        test("pace resets when pace drops below threshold") {
+            var state = NotificationState()
+            state.fiveHourZone = .yellow
+            state.fiveHourPaceAlerted = true
+            let (_, newState) = determineNotifications(oldState: state, newUsage: makeUsage(h5: 55, d7: 10), fiveHourPace: 1.0, sevenDayPace: nil)
+            assertEqual(newState.fiveHourPaceAlerted, false, "pace alert reset")
+        }
+
+        test("depleted suppresses pace alert") {
+            let state = NotificationState()
+            let (notifs, _) = determineNotifications(oldState: state, newUsage: makeUsage(h5: 100, d7: 10), fiveHourPace: 1.5, sevenDayPace: nil)
+            assertEqual(notifs.count, 1, "only depleted, no pace")
+            assertEqual(notifs[0], .depleted(window: "5-hour"), "depleted only")
+        }
+
+        test("nil pace does not trigger") {
+            var state = NotificationState()
+            state.fiveHourZone = .yellow
+            let (notifs, _) = determineNotifications(oldState: state, newUsage: makeUsage(h5: 55, d7: 10), fiveHourPace: nil, sevenDayPace: nil)
+            assertEqual(notifs.count, 0, "nil pace = no alert")
+        }
+
+        test("initial green usage produces no alerts") {
+            let state = NotificationState()
+            let (notifs, _) = determineNotifications(oldState: state, newUsage: makeUsage(h5: 10, d7: 20), fiveHourPace: nil, sevenDayPace: nil)
+            assertEqual(notifs.count, 0, "green = no alerts")
+        }
+
+        test("pace at exactly 1.2 does not trigger") {
+            var state = NotificationState()
+            state.fiveHourZone = .yellow
+            let (notifs, _) = determineNotifications(oldState: state, newUsage: makeUsage(h5: 55, d7: 10), fiveHourPace: 1.2, sevenDayPace: nil)
+            assertEqual(notifs.count, 0, "1.2 exactly = no trigger")
+        }
+
+        test("pace at 1.21 triggers") {
+            var state = NotificationState()
+            state.fiveHourZone = .yellow
+            let (notifs, _) = determineNotifications(oldState: state, newUsage: makeUsage(h5: 55, d7: 10), fiveHourPace: 1.21, sevenDayPace: nil)
+            assertEqual(notifs.count, 1, "1.21 triggers")
+            assertEqual(notifs[0], .paceOverBudget(window: "5-hour", pace: 1.21), "pace alert at 1.21")
+        }
+
+        test("pace alert resets when leaving depleted") {
+            // Simulate: pace alerted → depleted → drops back to red
+            var state = NotificationState()
+            state.fiveHourZone = .depleted
+            state.fiveHourPaceAlerted = true
+            // Exit depleted to red with over-budget pace
+            let (notifs, newState) = determineNotifications(oldState: state, newUsage: makeUsage(h5: 85, d7: 10), fiveHourPace: 1.5, sevenDayPace: nil)
+            // Should re-fire pace alert since we left depleted (flag was reset)
+            assertEqual(newState.fiveHourPaceAlerted, true, "pace re-alerted after depleted exit")
+            check(notifs.contains(.paceOverBudget(window: "5-hour", pace: 1.5)), "pace alert fires after leaving depleted")
+        }
+    }
+}
+
 // MARK: - Test Runner
 
 func runAllTests() {
@@ -1113,6 +1313,8 @@ func runAllTests() {
     runUsageHistoryTests()
     runFormatStatusLineWithHistoryTests()
     runPacingTests()
+    runZoneTests()
+    runNotificationTests()
 
     print("\n=== Results: \(passedTests)/\(totalTests) passed ===")
     if !failedTests.isEmpty {

@@ -2,8 +2,9 @@
 
 [![macOS 13+](https://img.shields.io/badge/macOS-13%2B-blue?logo=apple&logoColor=white)](https://www.apple.com/macos/)
 [![Swift](https://img.shields.io/badge/Swift-5.9-F05138?logo=swift&logoColor=white)](https://swift.org)
-[![Tests](https://img.shields.io/badge/tests-215%20passing-brightgreen)](https://github.com/viktor-svirsky/ccusage)
+[![Tests](https://img.shields.io/badge/tests-259%20passing-brightgreen)](https://github.com/viktor-svirsky/ccusage)
 [![GitHub release](https://img.shields.io/github/v/release/viktor-svirsky/ccusage)](https://github.com/viktor-svirsky/ccusage/releases/latest)
+[![Homebrew](https://img.shields.io/badge/Homebrew-tap-FBB040?logo=homebrew&logoColor=white)](https://github.com/viktor-svirsky/homebrew-ccusage)
 
 macOS menu bar app that shows Claude Code usage limits (5-hour and 7-day windows) at a glance — with trend direction, sparklines, and budget pacing.
 
@@ -40,6 +41,12 @@ macOS menu bar app that shows Claude Code usage limits (5-hour and 7-day windows
 
 ## Install
 
+### Homebrew
+
+```bash
+brew install viktor-svirsky/ccusage/ccusage
+```
+
 ### From GitHub Releases
 
 Download the latest `CCUsage.zip` from [Releases](https://github.com/viktor-svirsky/ccusage/releases), unzip, and move `CCUsage.app` to `/Applications`.
@@ -60,7 +67,8 @@ make build   # compile .app bundle
 ## Uninstall
 
 ```bash
-make uninstall
+brew uninstall ccusage        # if installed via Homebrew
+make uninstall                # if installed from source
 ```
 
 ## Creating a Release
@@ -68,7 +76,7 @@ make uninstall
 Trigger the release workflow manually:
 
 ```bash
-gh workflow run Release -f version=1.0.0
+gh workflow run Release -f version=1.2.0
 ```
 
-This runs tests, builds the app with the specified version, creates a git tag, and publishes a GitHub Release with the `.zip` artifact.
+This runs tests, builds the app with the specified version, creates a git tag, publishes a GitHub Release with the `.zip` artifact, and updates the [Homebrew tap](https://github.com/viktor-svirsky/homebrew-ccusage) automatically.
