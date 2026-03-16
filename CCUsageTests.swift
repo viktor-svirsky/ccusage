@@ -710,6 +710,55 @@ func runParseReleaseInfoTests() {
     }
 }
 
+// MARK: - Fetch Schedule Tests
+
+func runFetchScheduleTests() {
+    suite("FetchSchedule") {
+        test("initial state") {
+            let s = FetchSchedule()
+            assertEqual(s.interval, defaultFetchInterval, "default interval")
+            check(!s.isRateLimited, "not rate limited initially")
+        }
+
+        test("onRateLimit sets reduced interval and flags rate limited") {
+            var s = FetchSchedule()
+            s.onRateLimit(retryAfter: 30)  // below minimum, should clamp to 60
+            assertEqual(s.interval, 60.0, "clamped to minimum 60s")
+            check(s.isRateLimited, "flagged as rate limited")
+        }
+
+        test("onSuccess resets interval after rate limit") {
+            var s = FetchSchedule()
+            s.onRateLimit(retryAfter: 120)
+            assertEqual(s.interval, 120.0, "interval set to retry-after")
+            check(s.isRateLimited, "rate limited after 429")
+
+            s.onSuccess()
+            assertEqual(s.interval, defaultFetchInterval, "interval reset to default after success")
+            check(!s.isRateLimited, "rate limit cleared after success")
+        }
+
+        test("repeated rate limit then success recovers") {
+            var s = FetchSchedule()
+            s.onRateLimit(retryAfter: 60)
+            s.onRateLimit(retryAfter: 90)
+            assertEqual(s.interval, 90.0, "latest retry-after wins")
+            check(s.isRateLimited, "still rate limited")
+
+            s.onSuccess()
+            assertEqual(s.interval, defaultFetchInterval, "fully recovered")
+            check(!s.isRateLimited, "no longer rate limited")
+        }
+
+        test("onSuccess is idempotent when not rate limited") {
+            var s = FetchSchedule()
+            s.onSuccess()
+            assertEqual(s.interval, defaultFetchInterval, "stays at default")
+            check(!s.isRateLimited, "still not rate limited")
+        }
+    }
+}
+
 // MARK: - Test Runner
 
 func runAllTests() {
@@ -724,6 +773,7 @@ func runAllTests() {
     runClampRetryAfterTests()
     runDownloadURLValidationTests()
     runParseReleaseInfoTests()
+    runFetchScheduleTests()
 
     print("\n=== Results: \(passedTests)/\(totalTests) passed ===")
     if !failedTests.isEmpty {
