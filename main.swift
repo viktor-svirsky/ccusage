@@ -113,12 +113,150 @@ func formatResetTime(_ date: Date?, relativeTo now: Date = Date()) -> String {
     return " (resets in \(minutes)m)"
 }
 
-func formatStatusLine(_ usage: UsageData) -> String {
+// MARK: - Usage History
+
+struct UsageHistory {
+    struct Entry {
+        let date: Date
+        let fiveHour: Double
+        let sevenDay: Double
+    }
+
+    private(set) var entries: [Entry] = []
+    private let maxEntries = 24  // ~2 hours at 5-min intervals
+
+    mutating func record(_ usage: UsageData) {
+        entries.append(Entry(date: Date(), fiveHour: usage.fiveHour.utilization, sevenDay: usage.sevenDay.utilization))
+        if entries.count > maxEntries {
+            entries.removeFirst(entries.count - maxEntries)
+        }
+    }
+
+    func trend(for keyPath: KeyPath<Entry, Double>) -> Character {
+        guard entries.count >= 6 else { return "→" }
+        let recent = entries.suffix(3).map { $0[keyPath: keyPath] }
+        let avg = recent.reduce(0, +) / Double(recent.count)
+        let prev = entries[entries.count - 6][keyPath: keyPath]
+        let diff = avg - prev
+        if diff > 2 { return "↑" }
+        if diff < -2 { return "↓" }
+        return "→"
+    }
+
+    func sparkline(for keyPath: KeyPath<Entry, Double>, width: Int = 12) -> String {
+        let blocks: [Character] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
+        guard !entries.isEmpty else { return "" }
+        let values = entries.suffix(width).map { $0[keyPath: keyPath] }
+        let minVal = values.min() ?? 0
+        let maxVal = values.max() ?? 100
+        let range = maxVal - minVal
+        return String(values.map { val in
+            if range < 0.001 { return blocks[0] }
+            let normalized = (val - minVal) / range
+            let index = Int(normalized * Double(blocks.count - 1))
+            return blocks[min(max(index, 0), blocks.count - 1)]
+        })
+    }
+}
+
+// MARK: - Pacing
+
+func calculatePace(utilization: Double, resetsAt: Date?, windowDuration: TimeInterval, now: Date = Date()) -> Double? {
+    guard let resetsAt else { return nil }
+    let remaining = resetsAt.timeIntervalSince(now)
+    guard remaining > 0, remaining < windowDuration else { return nil }
+    let elapsed = windowDuration - remaining
+    let expectedUtilization = (elapsed / windowDuration) * 100.0
+    guard expectedUtilization > 1 else { return nil }
+    return utilization / expectedUtilization
+}
+
+func paceLabel(_ pace: Double) -> String {
+    if pace > 1.2 { return String(format: "▲ %.1fx pace (over budget)", pace) }
+    if pace < 0.8 { return String(format: "▼ %.1fx pace (under budget)", pace) }
+    return String(format: "● %.1fx pace (on track)", pace)
+}
+
+func formatStatusLine(_ usage: UsageData, history: UsageHistory = UsageHistory()) -> String {
     let h5 = usage.fiveHour.utilization
     let d7 = usage.sevenDay.utilization
-    let worst = max(h5, d7)
-    return "\(usageIndicator(for: worst)) 5h:\(formatValue(h5))%  7d:\(formatValue(d7))%"
+    let h5Trend = history.trend(for: \.fiveHour)
+    let d7Trend = history.trend(for: \.sevenDay)
+    return "\(usageIndicator(for: h5))\(h5Trend)5h:\(formatValue(h5))%  \(usageIndicator(for: d7))\(d7Trend)7d:\(formatValue(d7))%"
 }
+
+#if !TESTING
+func usageColor(for pct: Double) -> NSColor {
+    if pct >= 80 { return NSColor(red: 0.9, green: 0.2, blue: 0.2, alpha: 1.0) }
+    if pct >= 50 { return NSColor(red: 0.85, green: 0.65, blue: 0.0, alpha: 1.0) }
+    return NSColor.labelColor
+}
+
+func formatAttributedStatusLine(_ usage: UsageData, history: UsageHistory = UsageHistory()) -> NSAttributedString {
+    let h5 = usage.fiveHour.utilization
+    let d7 = usage.sevenDay.utilization
+    let h5Trend = String(history.trend(for: \.fiveHour))
+    let d7Trend = String(history.trend(for: \.sevenDay))
+
+    let baseFont = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+    let boldFont = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .bold)
+    let base: [NSAttributedString.Key: Any] = [.font: baseFont]
+    let dimmed: [NSAttributedString.Key: Any] = [.font: baseFont, .foregroundColor: NSColor.secondaryLabelColor]
+
+    func boldColored(_ pct: Double) -> [NSAttributedString.Key: Any] {
+        [.font: boldFont, .foregroundColor: usageColor(for: pct)]
+    }
+
+    let result = NSMutableAttributedString()
+    result.append(NSAttributedString(string: "\(usageIndicator(for: h5))", attributes: base))
+    result.append(NSAttributedString(string: h5Trend, attributes: dimmed))
+    result.append(NSAttributedString(string: "5h:", attributes: base))
+    result.append(NSAttributedString(string: "\(formatValue(h5))%", attributes: boldColored(h5)))
+    result.append(NSAttributedString(string: "  \(usageIndicator(for: d7))", attributes: base))
+    result.append(NSAttributedString(string: d7Trend, attributes: dimmed))
+    result.append(NSAttributedString(string: "7d:", attributes: base))
+    result.append(NSAttributedString(string: "\(formatValue(d7))%", attributes: boldColored(d7)))
+    return result
+}
+
+func progressBar(percent: Double, width: Int = 20) -> String {
+    let filled = Int((percent / 100.0) * Double(width))
+    let empty = width - filled
+    return String(repeating: "\u{2588}", count: filled) + String(repeating: "\u{2591}", count: empty)
+}
+
+func paceColor(_ pace: Double) -> NSColor {
+    if pace > 1.2 { return NSColor(red: 0.9, green: 0.2, blue: 0.2, alpha: 1.0) }
+    if pace < 0.8 { return NSColor(red: 0.2, green: 0.7, blue: 0.3, alpha: 1.0) }
+    return NSColor.secondaryLabelColor
+}
+
+func formatAttributedMenuItem(label: String, window: UsageWindow, subtitle: String = "", subtitleColor: NSColor? = nil) -> NSAttributedString {
+    let pct = window.utilization
+    let remaining = window.remaining.map { formatValue($0) } ?? formatValue(100.0 - pct)
+    let resetStr = formatResetTime(window.resetsAt)
+
+    let regular = NSFont.menuFont(ofSize: 13)
+    let mono = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+    let base: [NSAttributedString.Key: Any] = [.font: regular]
+    let barAttrs: [NSAttributedString.Key: Any] = [.font: mono, .foregroundColor: usageColor(for: pct)]
+
+    let result = NSMutableAttributedString()
+    result.append(NSAttributedString(string: "\(label): \(formatValue(pct))%", attributes: base))
+    result.append(NSAttributedString(string: "  \u{2022} \(remaining)% free", attributes: [.font: regular, .foregroundColor: NSColor.secondaryLabelColor]))
+    result.append(NSAttributedString(string: resetStr, attributes: [.font: regular, .foregroundColor: NSColor.tertiaryLabelColor]))
+    result.append(NSAttributedString(string: "\n    \(progressBar(percent: pct))", attributes: barAttrs))
+    if !subtitle.isEmpty {
+        let color = subtitleColor ?? usageColor(for: pct)
+        let subtitleAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .regular),
+            .foregroundColor: color
+        ]
+        result.append(NSAttributedString(string: "\n    \(subtitle)", attributes: subtitleAttrs))
+    }
+    return result
+}
+#endif
 
 struct UpdateInfo: Equatable {
     let tagName: String
@@ -225,6 +363,7 @@ class StatusBarController: NSObject {
     private var lastRefreshDate: Date?
     private var lastUsage: UsageData?
     private var schedule = FetchSchedule()
+    private var history = UsageHistory()
 
     private let detailFiveHour = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let detailSevenDay = NSMenuItem(title: "", action: nil, keyEquivalent: "")
@@ -482,6 +621,7 @@ class StatusBarController: NSObject {
 
     private func updateDisplay(_ usage: UsageData) {
         lastUsage = usage
+        history.record(usage)
         lastRefreshDate = Date()
         didRetryWithRefresh = false
         schedule.onSuccess()
@@ -497,10 +637,36 @@ class StatusBarController: NSObject {
         let h5 = usage.fiveHour.utilization
         let d7 = usage.sevenDay.utilization
 
-        statusItem.button?.title = formatStatusLine(usage)
+        #if TESTING
+        statusItem.button?.title = formatStatusLine(usage, history: history)
+        #else
+        statusItem.button?.attributedTitle = formatAttributedStatusLine(usage, history: history)
+        #endif
 
+        #if TESTING
         detailFiveHour.title = "\(usageIndicator(for: h5))  5-hour window: \(formatValue(h5))%\(formatResetTime(usage.fiveHour.resetsAt))"
         detailSevenDay.title = "\(usageIndicator(for: d7))  7-day window:  \(formatValue(d7))%\(formatResetTime(usage.sevenDay.resetsAt))"
+        #else
+        // 5-hour: sparkline + pace
+        let h5Spark = history.sparkline(for: \.fiveHour)
+        var h5Parts: [String] = []
+        if !h5Spark.isEmpty { h5Parts.append("\(h5Spark)  (2h trend)") }
+        var h5Color: NSColor? = nil
+        if let h5Pace = calculatePace(utilization: usage.fiveHour.utilization, resetsAt: usage.fiveHour.resetsAt, windowDuration: 5 * 3600) {
+            h5Parts.append(paceLabel(h5Pace))
+            h5Color = paceColor(h5Pace)
+        }
+        detailFiveHour.attributedTitle = formatAttributedMenuItem(label: "5-hour window", window: usage.fiveHour, subtitle: h5Parts.joined(separator: "\n    "), subtitleColor: h5Color)
+
+        // 7-day: pace only
+        var d7Subtitle = ""
+        var d7Color: NSColor? = nil
+        if let d7Pace = calculatePace(utilization: usage.sevenDay.utilization, resetsAt: usage.sevenDay.resetsAt, windowDuration: 7 * 86400) {
+            d7Subtitle = paceLabel(d7Pace)
+            d7Color = paceColor(d7Pace)
+        }
+        detailSevenDay.attributedTitle = formatAttributedMenuItem(label: "7-day window ", window: usage.sevenDay, subtitle: d7Subtitle, subtitleColor: d7Color)
+        #endif
 
         updateLastRefreshLabel()
     }
