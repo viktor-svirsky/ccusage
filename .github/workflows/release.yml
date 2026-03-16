@@ -25,7 +25,8 @@ jobs:
         run: ditto -c -k --keepParent CCUsage.app CCUsage.zip
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2
+        uses: softprops/action-gh-release@v2
         with:
+          name: CCUsage ${{ github.ref_name }}
           files: CCUsage.zip
           generate_release_notes: true

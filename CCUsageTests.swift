@@ -474,6 +474,105 @@ func runVersionComparisonTests() {
     }
 }
 
+// MARK: - Utilization Range Validation Tests
+
+func runUtilizationRangeTests() {
+    suite("parseUsage utilization range") {
+        test("negative utilization rejected") {
+            let json = """
+            {"five_hour": {"utilization": -1.0}, "seven_day": {"utilization": 50.0}}
+            """.data(using: .utf8)!
+            assertNil(parseUsage(from: json), "negative 5h")
+        }
+
+        test("negative seven_day utilization rejected") {
+            let json = """
+            {"five_hour": {"utilization": 50.0}, "seven_day": {"utilization": -10.0}}
+            """.data(using: .utf8)!
+            assertNil(parseUsage(from: json), "negative 7d")
+        }
+
+        test("utilization over 100 rejected") {
+            let json = """
+            {"five_hour": {"utilization": 150.0}, "seven_day": {"utilization": 50.0}}
+            """.data(using: .utf8)!
+            assertNil(parseUsage(from: json), "over 100 5h")
+        }
+
+        test("seven_day utilization over 100 rejected") {
+            let json = """
+            {"five_hour": {"utilization": 50.0}, "seven_day": {"utilization": 101.0}}
+            """.data(using: .utf8)!
+            assertNil(parseUsage(from: json), "over 100 7d")
+        }
+
+        test("boundary values accepted") {
+            let json = """
+            {"five_hour": {"utilization": 0.0}, "seven_day": {"utilization": 100.0}}
+            """.data(using: .utf8)!
+            let u = parseUsage(from: json)
+            assertNotNil(u, "0 and 100 accepted")
+            if let u = u {
+                assertEqual(u.fiveHour.utilization, 0.0, "0 accepted")
+                assertEqual(u.sevenDay.utilization, 100.0, "100 accepted")
+            }
+        }
+    }
+}
+
+// MARK: - Retry-After Clamping Tests
+
+func runClampRetryAfterTests() {
+    suite("clampRetryAfter") {
+        test("normal value passes through") {
+            assertEqual(clampRetryAfter(300), 300, "5 min")
+            assertEqual(clampRetryAfter(3600), 3600, "1 hour")
+        }
+
+        test("value below minimum clamped up") {
+            assertEqual(clampRetryAfter(1), 60, "1s -> 60s")
+            assertEqual(clampRetryAfter(0), 60, "0 -> 60s")
+            assertEqual(clampRetryAfter(-100), 60, "negative -> 60s")
+        }
+
+        test("value above maximum clamped down") {
+            assertEqual(clampRetryAfter(999999), 86400, "huge -> 1 day")
+            assertEqual(clampRetryAfter(100000), 86400, "100k -> 1 day")
+        }
+
+        test("boundary values") {
+            assertEqual(clampRetryAfter(60), 60, "exactly min")
+            assertEqual(clampRetryAfter(86400), 86400, "exactly max")
+        }
+    }
+}
+
+// MARK: - Download URL Validation Tests
+
+func runDownloadURLValidationTests() {
+    suite("isValidDownloadURL") {
+        test("valid GitHub URLs accepted") {
+            check(isValidDownloadURL("https://github.com/user/repo/releases/download/v1.0/app.zip"), "github.com")
+            check(isValidDownloadURL("https://objects.githubusercontent.com/some/path/app.zip"), "githubusercontent.com")
+        }
+
+        test("HTTP rejected") {
+            check(!isValidDownloadURL("http://github.com/user/repo/releases/download/v1.0/app.zip"), "http rejected")
+        }
+
+        test("other domains rejected") {
+            check(!isValidDownloadURL("https://evil.com/malware.zip"), "evil.com rejected")
+            check(!isValidDownloadURL("https://github.com.evil.com/fake.zip"), "subdomain attack rejected")
+        }
+
+        test("non-URL strings rejected") {
+            check(!isValidDownloadURL("not a url"), "plain text rejected")
+            check(!isValidDownloadURL(""), "empty string rejected")
+            check(!isValidDownloadURL("file:///etc/passwd"), "file scheme rejected")
+        }
+    }
+}
+
 // MARK: - Test Runner
 
 func runAllTests() {
@@ -484,6 +583,9 @@ func runAllTests() {
     runFormatResetTimeTests()
     runFormatStatusLineTests()
     runVersionComparisonTests()
+    runUtilizationRangeTests()
+    runClampRetryAfterTests()
+    runDownloadURLValidationTests()
 
     print("\n=== Results: \(passedTests)/\(totalTests) passed ===")
     if !failedTests.isEmpty {
