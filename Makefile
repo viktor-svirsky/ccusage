@@ -3,16 +3,17 @@ APP_DIR = $(APP_NAME).app
 CONTENTS = $(APP_DIR)/Contents
 MACOS = $(CONTENTS)/MacOS
 INSTALL_DIR = /Applications
+VERSION ?= 0.0.0-dev
 
 .PHONY: build test install uninstall clean
 
 build:
 	mkdir -p $(MACOS)
-	cp Info.plist $(CONTENTS)/Info.plist
-	swiftc -O -o $(MACOS)/$(APP_NAME) main.swift -framework Cocoa -framework Security
+	sed 's/<string>1.0<\/string>/<string>$(VERSION)<\/string>/' Info.plist > $(CONTENTS)/Info.plist
+	swiftc -O -o $(MACOS)/$(APP_NAME) main.swift -framework Cocoa
 
 test:
-	swiftc -DTESTING -o /tmp/$(APP_NAME)Tests main.swift CCUsageTests.swift -framework Cocoa -framework Security
+	swiftc -DTESTING -o /tmp/$(APP_NAME)Tests main.swift CCUsageTests.swift -framework Cocoa
 	/tmp/$(APP_NAME)Tests
 
 install: build

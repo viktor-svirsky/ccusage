@@ -25,9 +25,7 @@ jobs:
         run: make build
 
       - name: Create release archive
-        run: |
-          cd CCUsage.app && cd ..
-          ditto -c -k --keepParent CCUsage.app CCUsage.zip
+        run: ditto -c -k --keepParent CCUsage.app CCUsage.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

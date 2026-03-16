@@ -1,0 +1,31 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  release:
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_ENV
+
+      - name: Run tests
+        run: make test
+
+      - name: Build app with version
+        run: make build VERSION=${{ env.VERSION }}
+
+      - name: Create release archive
+        run: ditto -c -k --keepParent CCUsage.app CCUsage.zip
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2
+        with:
+          files: CCUsage.zip
+          generate_release_notes: true

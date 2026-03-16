@@ -1,5 +1,4 @@
 import Cocoa
-import Security
 import ServiceManagement
 
 // MARK: - API Types
@@ -91,6 +90,39 @@ func formatStatusLine(_ usage: UsageData) -> String {
     return "\(usageIndicator(for: worst)) 5h:\(formatValue(h5))%  7d:\(formatValue(d7))%"
 }
 
+// MARK: - Version Comparison
+
+let currentVersion: String = {
+    Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "0.0.0-dev"
+}()
+
+let updateRepoOwner = "viktor-svirsky"
+let updateRepoName = "ccusage"
+
+func isNewerVersion(_ remote: String, than local: String) -> Bool {
+    // Strip "v" prefix and any pre-release suffix (e.g., "1.0.0-dev" → "1.0.0")
+    func normalize(_ v: String) -> [Int] {
+        let stripped = v.hasPrefix("v") ? String(v.dropFirst()) : v
+        return stripped.split(separator: ".").map { segment in
+            // Take only the numeric prefix of each segment ("0-dev" → 0)
+            let digits = segment.prefix(while: { $0.isNumber })
+            return Int(digits) ?? 0
+        }
+    }
+    let rParts = normalize(remote)
+    let lParts = normalize(local)
+    for i in 0..<max(rParts.count, lParts.count) {
+        let rv = i < rParts.count ? rParts[i] : 0
+        let lv = i < lParts.count ? lParts[i] : 0
+        if rv != lv { return rv > lv }
+    }
+    // Numeric parts equal — pre-release (contains "-") is older than release
+    let rHasPre = remote.contains("-")
+    let lHasPre = local.contains("-")
+    if rHasPre != lHasPre { return lHasPre }
+    return false
+}
+
 // MARK: - URLSession (no caching)
 
 private let session: URLSession = {
@@ -103,13 +135,21 @@ private let session: URLSession = {
 
 class StatusBarController: NSObject {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-    private var timer: Timer?
+    private var uiTimer: Timer?
+    private var fetchTimer: Timer?
     private var isFetching = false
     private var lastRefreshDate: Date?
+    private var rateLimitedUntil: Date?
+    private var lastUsage: UsageData?
+    private static let fetchInterval: TimeInterval = 300  // 5 minutes
 
     private let detailFiveHour = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let detailSevenDay = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let lastRefreshItem = NSMenuItem(title: "Last refresh: never", action: nil, keyEquivalent: "")
+    private let versionItem = NSMenuItem(title: "v\(currentVersion)", action: nil, keyEquivalent: "")
+    private let updateItem = NSMenuItem(title: "Check for Updates…", action: nil, keyEquivalent: "u")
+    private var isUpdating = false
+    private var updateTimer: Timer?
 
     override init() {
         super.init()
@@ -129,16 +169,35 @@ class StatusBarController: NSObject {
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Refresh Now", action: #selector(refresh), keyEquivalent: "r"))
         menu.addItem(.separator())
+        versionItem.isEnabled = false
+        updateItem.action = #selector(checkForUpdates)
+        menu.addItem(versionItem)
+        menu.addItem(updateItem)
+        menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q"))
         menu.items.forEach { $0.target = self }
         statusItem.menu = menu
 
         refresh()
-        timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
-            self?.updateLastRefreshLabel()
+
+        // UI timer: update countdowns every 60s (no API call)
+        uiTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            self?.refreshUI()
+        }
+        RunLoop.current.add(uiTimer!, forMode: .common)
+
+        // Fetch timer: poll API every 5 minutes
+        fetchTimer = Timer.scheduledTimer(withTimeInterval: Self.fetchInterval, repeats: true) { [weak self] _ in
             self?.refresh()
         }
-        RunLoop.current.add(timer!, forMode: .common)
+        RunLoop.current.add(fetchTimer!, forMode: .common)
+
+        // Check for updates every 4 hours
+        checkForUpdates()
+        updateTimer = Timer.scheduledTimer(withTimeInterval: 4 * 3600, repeats: true) { [weak self] _ in
+            self?.checkForUpdates()
+        }
+        RunLoop.current.add(updateTimer!, forMode: .common)
 
         // Refresh immediately after waking from sleep
         NSWorkspace.shared.notificationCenter.addObserver(
@@ -151,24 +210,30 @@ class StatusBarController: NSObject {
     }
 
     deinit {
-        timer?.invalidate()
+        uiTimer?.invalidate()
+        fetchTimer?.invalidate()
+        updateTimer?.invalidate()
     }
 
     // MARK: - Keychain
 
+    /// Read credentials via the system `security` CLI to avoid per-binary Keychain ACL prompts.
     private func readToken() -> String? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: "Claude Code-credentials",
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
-        ]
-        var result: AnyObject?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-              let data = result as? Data else {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        proc.arguments = ["find-generic-password", "-s", "Claude Code-credentials", "-w"]
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = FileHandle.nullDevice
+        do {
+            try proc.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            proc.waitUntilExit()
+            guard proc.terminationStatus == 0 else { return nil }
+            return parseToken(from: data)
+        } catch {
             return nil
         }
-        return parseToken(from: data)
     }
 
     // MARK: - API
@@ -197,6 +262,30 @@ class StatusBarController: NSObject {
                         self.setError("Token expired")
                         self.detailFiveHour.title = "Re-authenticate in Claude Code"
                         self.detailSevenDay.title = "Then click Refresh Now"
+                    } else if http.statusCode == 429 {
+                        let retryAfter = (http.value(forHTTPHeaderField: "retry-after").flatMap { Int($0) }) ?? 3600
+                        let retryDate = Date().addingTimeInterval(Double(retryAfter))
+                        self.rateLimitedUntil = retryDate
+                        // Reschedule fetch timer to fire right after rate limit expires
+                        self.fetchTimer?.invalidate()
+                        self.fetchTimer = Timer.scheduledTimer(withTimeInterval: Double(retryAfter + 5), repeats: false) { [weak self] _ in
+                            self?.rateLimitedUntil = nil
+                            self?.refresh()
+                            // Restore regular interval
+                            self?.fetchTimer = Timer.scheduledTimer(withTimeInterval: Self.fetchInterval, repeats: true) { [weak self] _ in
+                                self?.refresh()
+                            }
+                            if let t = self?.fetchTimer { RunLoop.main.add(t, forMode: .common) }
+                        }
+                        RunLoop.main.add(self.fetchTimer!, forMode: .common)
+                        let minutes = (retryAfter + 59) / 60
+                        if self.lastUsage == nil {
+                            self.setError("Rate limited")
+                        }
+                        self.detailFiveHour.title = self.lastUsage != nil
+                            ? "\(usageIndicator(for: self.lastUsage!.fiveHour.utilization))  5-hour window: \(String(format: "%.1f", self.lastUsage!.fiveHour.utilization))%\(formatResetTime(self.lastUsage!.fiveHour.resetsAt))"
+                            : "API rate limited — retrying in \(minutes)m"
+                        self.lastRefreshItem.title = "Next API call in \(minutes)m (rate limited)"
                     } else {
                         self.setError("HTTP \(http.statusCode)")
                     }
@@ -215,6 +304,17 @@ class StatusBarController: NSObject {
     // MARK: - Display
 
     private func updateDisplay(_ usage: UsageData) {
+        lastUsage = usage
+        lastRefreshDate = Date()
+        refreshUI()
+    }
+
+    /// Re-render UI from cached data (no API call). Called every 60s.
+    private func refreshUI() {
+        guard let usage = lastUsage else {
+            updateLastRefreshLabel()
+            return
+        }
         let h5 = usage.fiveHour.utilization
         let d7 = usage.sevenDay.utilization
 
@@ -223,11 +323,15 @@ class StatusBarController: NSObject {
         detailFiveHour.title = "\(usageIndicator(for: h5))  5-hour window: \(String(format: "%.1f", h5))%\(formatResetTime(usage.fiveHour.resetsAt))"
         detailSevenDay.title = "\(usageIndicator(for: d7))  7-day window:  \(String(format: "%.1f", d7))%\(formatResetTime(usage.sevenDay.resetsAt))"
 
-        lastRefreshDate = Date()
         updateLastRefreshLabel()
     }
 
     private func updateLastRefreshLabel() {
+        if let rateLimitedUntil, Date() < rateLimitedUntil {
+            let remaining = Int(rateLimitedUntil.timeIntervalSinceNow) / 60 + 1
+            lastRefreshItem.title = "Next API call in \(remaining)m (rate limited)"
+            return
+        }
         guard let date = lastRefreshDate else { return }
         let minutes = Int(Date().timeIntervalSince(date)) / 60
         if minutes < 1 {
@@ -250,7 +354,9 @@ class StatusBarController: NSObject {
 
     @objc func refresh() {
         guard !isFetching else { return }
+        guard rateLimitedUntil == nil || Date() >= rateLimitedUntil! else { return }
 
+        rateLimitedUntil = nil
         detailSevenDay.isHidden = false
 
         guard let token = readToken() else {
@@ -261,6 +367,119 @@ class StatusBarController: NSObject {
             return
         }
         fetchUsage(token: token)
+    }
+
+    // MARK: - Auto-Update
+
+    private var isCheckingForUpdates = false
+
+    @objc func checkForUpdates() {
+        guard !isUpdating, !isCheckingForUpdates else { return }
+        isCheckingForUpdates = true
+        let url = URL(string: "https://api.github.com/repos/\(updateRepoOwner)/\(updateRepoName)/releases/latest")!
+        session.dataTask(with: url) { [weak self] data, response, error in
+            DispatchQueue.main.async {
+                self?.isCheckingForUpdates = false
+                guard let self, let data,
+                      let http = response as? HTTPURLResponse, http.statusCode == 200,
+                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let tagName = json["tag_name"] as? String else {
+                    return
+                }
+                if isNewerVersion(tagName, than: currentVersion) {
+                    self.updateItem.title = "Update available: \(tagName)"
+                    self.updateItem.action = #selector(self.installUpdate)
+                    // Find the zip asset URL
+                    if let assets = json["assets"] as? [[String: Any]],
+                       let zipAsset = assets.first(where: { ($0["name"] as? String)?.hasSuffix(".zip") == true }),
+                       let downloadURL = zipAsset["browser_download_url"] as? String {
+                        self.updateItem.representedObject = downloadURL
+                    }
+                } else {
+                    self.updateItem.title = "Up to date"
+                    self.updateItem.action = #selector(self.checkForUpdates)
+                }
+            }
+        }.resume()
+    }
+
+    @objc func installUpdate() {
+        guard let downloadURLString = updateItem.representedObject as? String,
+              let downloadURL = URL(string: downloadURLString) else { return }
+
+        isUpdating = true
+        updateItem.title = "Downloading update…"
+        updateItem.action = nil
+
+        let task = URLSession.shared.downloadTask(with: downloadURL) { [weak self] tempURL, response, error in
+            // Do file I/O on background queue to avoid blocking main thread
+            guard let tempURL, error == nil else {
+                DispatchQueue.main.async {
+                    self?.isUpdating = false
+                    self?.updateItem.title = "Update failed"
+                    self?.updateItem.action = #selector(self?.checkForUpdates)
+                }
+                return
+            }
+
+            let appBundle = Bundle.main.bundlePath
+            let fm = FileManager.default
+            let tempDir = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+
+            do {
+                // Unzip to temp directory
+                try fm.createDirectory(at: tempDir, withIntermediateDirectories: true)
+                let unzipProcess = Process()
+                unzipProcess.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+                unzipProcess.arguments = ["-x", "-k", tempURL.path, tempDir.path]
+                try unzipProcess.run()
+                unzipProcess.waitUntilExit()
+                guard unzipProcess.terminationStatus == 0 else { throw NSError(domain: "CCUsage", code: 1) }
+
+                // Find .app in extracted contents
+                let contents = try fm.contentsOfDirectory(at: tempDir, includingPropertiesForKeys: nil)
+                guard let newApp = contents.first(where: { $0.pathExtension == "app" }) else {
+                    throw NSError(domain: "CCUsage", code: 2)
+                }
+
+                // Verify the downloaded app has the expected bundle ID
+                guard let newBundle = Bundle(url: newApp),
+                      newBundle.bundleIdentifier == "com.local.CCUsage" else {
+                    throw NSError(domain: "CCUsage", code: 3, userInfo: [NSLocalizedDescriptionKey: "Bundle ID mismatch"])
+                }
+
+                // Replace current app (with rollback on failure)
+                let backup = URL(fileURLWithPath: appBundle + ".backup")
+                try? fm.removeItem(at: backup)
+                try fm.moveItem(atPath: appBundle, toPath: backup.path)
+                do {
+                    try fm.moveItem(at: newApp, to: URL(fileURLWithPath: appBundle))
+                } catch {
+                    // Restore backup if replacing fails
+                    try? fm.moveItem(at: backup, to: URL(fileURLWithPath: appBundle))
+                    throw error
+                }
+                try? fm.removeItem(at: backup)
+                try? fm.removeItem(at: tempDir)
+
+                // Relaunch
+                DispatchQueue.main.async {
+                    let proc = Process()
+                    proc.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+                    proc.arguments = ["-n", appBundle]
+                    try? proc.run()
+                    NSApplication.shared.terminate(nil)
+                }
+            } catch {
+                try? fm.removeItem(at: tempDir)
+                DispatchQueue.main.async {
+                    self?.isUpdating = false
+                    self?.updateItem.title = "Update failed: \(error.localizedDescription)"
+                    self?.updateItem.action = #selector(self?.checkForUpdates)
+                }
+            }
+        }
+        task.resume()
     }
 
     @objc func quit() {
