@@ -1,6 +1,17 @@
 # CCUsage
 
+[![macOS 13+](https://img.shields.io/badge/macOS-13%2B-blue?logo=apple&logoColor=white)](https://www.apple.com/macos/)
+[![Swift](https://img.shields.io/badge/Swift-5.9-F05138?logo=swift&logoColor=white)](https://swift.org)
+[![Tests](https://img.shields.io/badge/tests-215%20passing-brightgreen)](https://github.com/viktor-svirsky/ccusage)
+[![GitHub release](https://img.shields.io/github/v/release/viktor-svirsky/ccusage)](https://github.com/viktor-svirsky/ccusage/releases/latest)
+
 macOS menu bar app that shows Claude Code usage limits (5-hour and 7-day windows) at a glance — with trend direction, sparklines, and budget pacing.
+
+<p align="center">
+  <img src=".github/screenshots/menubar.png" alt="Menu bar" width="600">
+  <br>
+  <img src=".github/screenshots/dropdown.png" alt="Dropdown detail" width="400">
+</p>
 
 ## Features
 
