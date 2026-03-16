@@ -60,7 +60,7 @@ make install
 ## Build & Test
 
 ```bash
-make test    # run 215 unit tests
+make test    # run 259 unit tests
 make build   # compile .app bundle
 ```
 
