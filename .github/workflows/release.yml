@@ -3,6 +3,7 @@ name: Release
 on:
   push:
     tags: ['v*']
+    branches: [main]
   workflow_dispatch:
     inputs:
       version:
@@ -22,27 +23,43 @@ jobs:
           if [ -n "${{ inputs.version }}" ]; then
             echo "VERSION=${{ inputs.version }}" >> $GITHUB_ENV
             echo "TAG=v${{ inputs.version }}" >> $GITHUB_ENV
-          else
+          elif [[ "$GITHUB_REF" == refs/tags/* ]]; then
             echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_ENV
             echo "TAG=${GITHUB_REF_NAME}" >> $GITHUB_ENV
+          else
+            VERSION=$(cat VERSION)
+            echo "VERSION=$VERSION" >> $GITHUB_ENV
+            echo "TAG=v$VERSION" >> $GITHUB_ENV
+          fi
+
+      - name: Check if release already exists
+        if: github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')
+        run: |
+          if git ls-remote --tags origin "refs/tags/${{ env.TAG }}" | grep -q .; then
+            echo "Tag ${{ env.TAG }} already exists, skipping release."
+            echo "SKIP_RELEASE=true" >> $GITHUB_ENV
           fi
 
       - name: Run tests
+        if: env.SKIP_RELEASE != 'true'
         run: make test
 
       - name: Build app with version
+        if: env.SKIP_RELEASE != 'true'
         run: make build VERSION=${{ env.VERSION }}
 
       - name: Create release archive
+        if: env.SKIP_RELEASE != 'true'
         run: ditto -c -k --keepParent CCUsage.app CCUsage.zip
 
-      - name: Create tag (manual dispatch only)
-        if: inputs.version
+      - name: Create tag (push to main or manual dispatch)
+        if: env.SKIP_RELEASE != 'true' && !startsWith(github.ref, 'refs/tags/')
         run: |
           git tag ${{ env.TAG }}
           git push origin ${{ env.TAG }}
 
       - name: Create GitHub Release
+        if: env.SKIP_RELEASE != 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAG }}
