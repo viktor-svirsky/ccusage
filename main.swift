@@ -107,6 +107,28 @@ func formatStatusLine(_ usage: UsageData) -> String {
     return "\(usageIndicator(for: worst)) 5h:\(formatValue(h5))%  7d:\(formatValue(d7))%"
 }
 
+struct UpdateInfo: Equatable {
+    let tagName: String
+    let downloadURL: String?
+}
+
+func parseReleaseInfo(from data: Data, currentVersion: String) -> UpdateInfo? {
+    guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let tagName = json["tag_name"] as? String else {
+        return nil
+    }
+    guard isNewerVersion(tagName, than: currentVersion) else {
+        return nil
+    }
+    if let assets = json["assets"] as? [[String: Any]],
+       let zipAsset = assets.first(where: { ($0["name"] as? String)?.hasSuffix(".zip") == true }),
+       let downloadURL = zipAsset["browser_download_url"] as? String,
+       isValidDownloadURL(downloadURL) {
+        return UpdateInfo(tagName: tagName, downloadURL: downloadURL)
+    }
+    return UpdateInfo(tagName: tagName, downloadURL: nil)
+}
+
 func isValidDownloadURL(_ urlString: String) -> Bool {
     guard let url = URL(string: urlString),
           url.scheme == "https",
@@ -397,21 +419,16 @@ class StatusBarController: NSObject {
             DispatchQueue.main.async {
                 self?.isCheckingForUpdates = false
                 guard let self, let data,
-                      let http = response as? HTTPURLResponse, http.statusCode == 200,
-                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                      let tagName = json["tag_name"] as? String else {
+                      let http = response as? HTTPURLResponse, http.statusCode == 200 else {
                     return
                 }
-                if isNewerVersion(tagName, than: currentVersion) {
-                    if let assets = json["assets"] as? [[String: Any]],
-                       let zipAsset = assets.first(where: { ($0["name"] as? String)?.hasSuffix(".zip") == true }),
-                       let downloadURL = zipAsset["browser_download_url"] as? String,
-                       isValidDownloadURL(downloadURL) {
-                        self.updateItem.title = "Update available: \(tagName)"
+                if let info = parseReleaseInfo(from: data, currentVersion: currentVersion) {
+                    if let downloadURL = info.downloadURL {
+                        self.updateItem.title = "Update available: \(info.tagName)"
                         self.updateItem.action = #selector(self.installUpdate)
                         self.updateItem.representedObject = downloadURL
                     } else {
-                        self.updateItem.title = "Update \(tagName) available on GitHub"
+                        self.updateItem.title = "Update \(info.tagName) available on GitHub"
                         self.updateItem.action = nil
                     }
                 } else {
