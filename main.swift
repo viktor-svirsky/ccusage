@@ -136,12 +136,11 @@ private let session: URLSession = {
 class StatusBarController: NSObject {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private var uiTimer: Timer?
-    private var fetchTimer: Timer?
     private var isFetching = false
     private var lastRefreshDate: Date?
-    private var rateLimitedUntil: Date?
     private var lastUsage: UsageData?
-    private static let fetchInterval: TimeInterval = 3600  // 1 hour (API rate limit is ~1 req/hour)
+    private var nextFetchAt: Date = .distantPast  // fetch immediately on first tick
+    private var fetchInterval: TimeInterval = 300  // start at 5 min, adapt from retry-after
 
     private let detailFiveHour = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let detailSevenDay = NSMenuItem(title: "", action: nil, keyEquivalent: "")
@@ -180,17 +179,11 @@ class StatusBarController: NSObject {
 
         refresh()
 
-        // UI timer: update countdowns every 60s (no API call)
+        // Single 60s timer: updates UI countdowns + triggers fetch when nextFetchAt arrives
         uiTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
-            self?.refreshUI()
+            self?.tick()
         }
         RunLoop.current.add(uiTimer!, forMode: .common)
-
-        // Fetch timer: poll API every 5 minutes
-        fetchTimer = Timer.scheduledTimer(withTimeInterval: Self.fetchInterval, repeats: true) { [weak self] _ in
-            self?.refresh()
-        }
-        RunLoop.current.add(fetchTimer!, forMode: .common)
 
         // Check for updates every 5 minutes
         checkForUpdates()
@@ -211,8 +204,15 @@ class StatusBarController: NSObject {
 
     deinit {
         uiTimer?.invalidate()
-        fetchTimer?.invalidate()
         updateTimer?.invalidate()
+    }
+
+    /// Called every 60s. Refreshes UI and triggers API fetch when due.
+    private func tick() {
+        refreshUI()
+        if Date() >= nextFetchAt {
+            refresh()
+        }
     }
 
     // MARK: - Keychain
@@ -264,27 +264,13 @@ class StatusBarController: NSObject {
                         self.detailSevenDay.title = "Then click Refresh Now"
                     } else if http.statusCode == 429 {
                         let retryAfter = (http.value(forHTTPHeaderField: "retry-after").flatMap { Int($0) }) ?? 3600
-                        let retryDate = Date().addingTimeInterval(Double(retryAfter))
-                        self.rateLimitedUntil = retryDate
-                        // Reschedule fetch timer to fire right after rate limit expires
-                        self.fetchTimer?.invalidate()
-                        self.fetchTimer = Timer.scheduledTimer(withTimeInterval: Double(retryAfter + 5), repeats: false) { [weak self] _ in
-                            self?.rateLimitedUntil = nil
-                            self?.refresh()
-                            // Restore regular interval
-                            self?.fetchTimer = Timer.scheduledTimer(withTimeInterval: Self.fetchInterval, repeats: true) { [weak self] _ in
-                                self?.refresh()
-                            }
-                            if let t = self?.fetchTimer { RunLoop.main.add(t, forMode: .common) }
-                        }
-                        RunLoop.main.add(self.fetchTimer!, forMode: .common)
+                        // Learn the API's preferred interval and schedule next fetch accordingly
+                        self.fetchInterval = Double(retryAfter)
+                        self.nextFetchAt = Date().addingTimeInterval(Double(retryAfter))
                         let minutes = (retryAfter + 59) / 60
                         if self.lastUsage == nil {
                             self.setError("Rate limited")
                         }
-                        self.detailFiveHour.title = self.lastUsage != nil
-                            ? "\(usageIndicator(for: self.lastUsage!.fiveHour.utilization))  5-hour window: \(String(format: "%.1f", self.lastUsage!.fiveHour.utilization))%\(formatResetTime(self.lastUsage!.fiveHour.resetsAt))"
-                            : "API rate limited — retrying in \(minutes)m"
                         self.lastRefreshItem.title = "Next API call in \(minutes)m (rate limited)"
                     } else {
                         self.setError("HTTP \(http.statusCode)")
@@ -306,6 +292,7 @@ class StatusBarController: NSObject {
     private func updateDisplay(_ usage: UsageData) {
         lastUsage = usage
         lastRefreshDate = Date()
+        nextFetchAt = Date().addingTimeInterval(fetchInterval)
         refreshUI()
     }
 
@@ -327,8 +314,11 @@ class StatusBarController: NSObject {
     }
 
     private func updateLastRefreshLabel() {
-        if let rateLimitedUntil, Date() < rateLimitedUntil {
-            let remaining = Int(rateLimitedUntil.timeIntervalSinceNow) / 60 + 1
+        // Show countdown to next fetch if we're waiting due to rate limit
+        let waitRemaining = nextFetchAt.timeIntervalSinceNow
+        if waitRemaining > fetchInterval {
+            // We're rate-limited (nextFetchAt was pushed out beyond normal interval)
+            let remaining = Int(waitRemaining) / 60 + 1
             lastRefreshItem.title = "Next API call in \(remaining)m (rate limited)"
             return
         }
@@ -354,9 +344,6 @@ class StatusBarController: NSObject {
 
     @objc func refresh() {
         guard !isFetching else { return }
-        guard rateLimitedUntil == nil || Date() >= rateLimitedUntil! else { return }
-
-        rateLimitedUntil = nil
         detailSevenDay.isHidden = false
 
         guard let token = readToken() else {
