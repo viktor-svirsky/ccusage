@@ -182,16 +182,21 @@ struct FetchSchedule {
     var interval: TimeInterval = defaultFetchInterval
     var isRateLimited: Bool = false
     var nextFetchAt: Date = .distantPast
+    private(set) var consecutiveRateLimits: Int = 0
 
     mutating func onSuccess() {
         isRateLimited = false
+        consecutiveRateLimits = 0
         interval = defaultFetchInterval
         nextFetchAt = Date().addingTimeInterval(interval)
     }
 
     mutating func onRateLimit(retryAfter: Int) {
-        let clamped = clampRetryAfter(retryAfter)
-        interval = Double(clamped)
+        consecutiveRateLimits += 1
+        let clamped = Double(clampRetryAfter(retryAfter))
+        // Exponential backoff: 60s, 120s, 240s, capped at defaultFetchInterval (300s)
+        let backoff = min(clamped * pow(2.0, Double(consecutiveRateLimits - 1)), defaultFetchInterval)
+        interval = backoff
         nextFetchAt = Date().addingTimeInterval(interval)
         isRateLimited = true
     }

@@ -725,6 +725,7 @@ func runFetchScheduleTests() {
             s.onRateLimit(retryAfter: 30)  // below minimum, should clamp to 60
             assertEqual(s.interval, 60.0, "clamped to minimum 60s")
             check(s.isRateLimited, "flagged as rate limited")
+            assertEqual(s.consecutiveRateLimits, 1, "first rate limit")
         }
 
         test("onSuccess resets interval after rate limit") {
@@ -736,18 +737,39 @@ func runFetchScheduleTests() {
             s.onSuccess()
             assertEqual(s.interval, defaultFetchInterval, "interval reset to default after success")
             check(!s.isRateLimited, "rate limit cleared after success")
+            assertEqual(s.consecutiveRateLimits, 0, "counter reset on success")
         }
 
-        test("repeated rate limit then success recovers") {
+        test("exponential backoff on consecutive rate limits") {
             var s = FetchSchedule()
-            s.onRateLimit(retryAfter: 60)
-            s.onRateLimit(retryAfter: 90)
-            assertEqual(s.interval, 90.0, "latest retry-after wins")
-            check(s.isRateLimited, "still rate limited")
+            // retry-after: 0 → clamped to 60s base
+            s.onRateLimit(retryAfter: 0)
+            assertEqual(s.interval, 60.0, "1st: 60 * 2^0 = 60s")
+
+            s.onRateLimit(retryAfter: 0)
+            assertEqual(s.interval, 120.0, "2nd: 60 * 2^1 = 120s")
+
+            s.onRateLimit(retryAfter: 0)
+            assertEqual(s.interval, 240.0, "3rd: 60 * 2^2 = 240s")
+
+            s.onRateLimit(retryAfter: 0)
+            assertEqual(s.interval, 300.0, "4th: capped at defaultFetchInterval 300s")
+
+            s.onRateLimit(retryAfter: 0)
+            assertEqual(s.interval, 300.0, "5th: stays capped at 300s")
+        }
+
+        test("success resets backoff counter") {
+            var s = FetchSchedule()
+            s.onRateLimit(retryAfter: 0)
+            s.onRateLimit(retryAfter: 0)
+            assertEqual(s.interval, 120.0, "backed off to 120s")
 
             s.onSuccess()
-            assertEqual(s.interval, defaultFetchInterval, "fully recovered")
-            check(!s.isRateLimited, "no longer rate limited")
+            assertEqual(s.consecutiveRateLimits, 0, "counter reset")
+
+            s.onRateLimit(retryAfter: 0)
+            assertEqual(s.interval, 60.0, "backoff restarts from 60s after success")
         }
 
         test("onSuccess is idempotent when not rate limited") {
@@ -755,6 +777,12 @@ func runFetchScheduleTests() {
             s.onSuccess()
             assertEqual(s.interval, defaultFetchInterval, "stays at default")
             check(!s.isRateLimited, "still not rate limited")
+        }
+
+        test("large retry-after skips backoff") {
+            var s = FetchSchedule()
+            s.onRateLimit(retryAfter: 300)
+            assertEqual(s.interval, 300.0, "300s on first hit, already at cap")
         }
     }
 }
