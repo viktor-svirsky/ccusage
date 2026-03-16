@@ -1,6 +1,18 @@
 import Cocoa
 import ServiceManagement
 
+// MARK: - Constants
+
+private let keychainService = "Claude Code-credentials"
+private let usageAPIURL = "https://api.anthropic.com/api/oauth/usage"
+private let apiBetaHeader = "oauth-2025-04-20"
+let updateRepoOwner = "viktor-svirsky"
+let updateRepoName = "ccusage"
+private let allowedDownloadHosts: Set<String> = ["github.com", "objects.githubusercontent.com"]
+private let maxRetryInterval = 86400  // 1 day
+private let minRetryInterval = 60     // 1 minute
+private let defaultFetchInterval: TimeInterval = 300  // 5 minutes
+
 // MARK: - API Types
 
 struct UsageWindow: Equatable {
@@ -42,13 +54,18 @@ func parseUsage(from data: Data) -> UsageData? {
           let fiveHour = json["five_hour"] as? [String: Any],
           let sevenDay = json["seven_day"] as? [String: Any],
           let h5 = fiveHour["utilization"] as? Double,
-          let d7 = sevenDay["utilization"] as? Double else {
+          let d7 = sevenDay["utilization"] as? Double,
+          h5 >= 0, h5 <= 100, d7 >= 0, d7 <= 100 else {
         return nil
     }
     return UsageData(
         fiveHour: UsageWindow(utilization: h5, remaining: fiveHour["remaining"] as? Double, resetsAt: parseResetDate(fiveHour["resets_at"])),
         sevenDay: UsageWindow(utilization: d7, remaining: sevenDay["remaining"] as? Double, resetsAt: parseResetDate(sevenDay["resets_at"]))
     )
+}
+
+func clampRetryAfter(_ value: Int) -> Int {
+    min(max(value, minRetryInterval), maxRetryInterval)
 }
 
 func formatValue(_ val: Double) -> String {
@@ -90,21 +107,27 @@ func formatStatusLine(_ usage: UsageData) -> String {
     return "\(usageIndicator(for: worst)) 5h:\(formatValue(h5))%  7d:\(formatValue(d7))%"
 }
 
+func isValidDownloadURL(_ urlString: String) -> Bool {
+    guard let url = URL(string: urlString),
+          url.scheme == "https",
+          let host = url.host else {
+        return false
+    }
+    return allowedDownloadHosts.contains(host)
+}
+
 // MARK: - Version Comparison
 
 let currentVersion: String = {
     Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "0.0.0-dev"
 }()
 
-let updateRepoOwner = "viktor-svirsky"
-let updateRepoName = "ccusage"
-
 func isNewerVersion(_ remote: String, than local: String) -> Bool {
-    // Strip "v" prefix and any pre-release suffix (e.g., "1.0.0-dev" → "1.0.0")
+    // Strip "v" prefix and any pre-release suffix (e.g., "1.0.0-dev" -> "1.0.0")
     func normalize(_ v: String) -> [Int] {
         let stripped = v.hasPrefix("v") ? String(v.dropFirst()) : v
         return stripped.split(separator: ".").map { segment in
-            // Take only the numeric prefix of each segment ("0-dev" → 0)
+            // Take only the numeric prefix of each segment ("0-dev" -> 0)
             let digits = segment.prefix(while: { $0.isNumber })
             return Int(digits) ?? 0
         }
@@ -137,16 +160,17 @@ class StatusBarController: NSObject {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private var uiTimer: Timer?
     private var isFetching = false
+    private var isRateLimited = false
     private var lastRefreshDate: Date?
     private var lastUsage: UsageData?
     private var nextFetchAt: Date = .distantPast  // fetch immediately on first tick
-    private var fetchInterval: TimeInterval = 300  // start at 5 min, adapt from retry-after
+    private var fetchInterval: TimeInterval = defaultFetchInterval
 
     private let detailFiveHour = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let detailSevenDay = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let lastRefreshItem = NSMenuItem(title: "Last refresh: never", action: nil, keyEquivalent: "")
     private let versionItem = NSMenuItem(title: "v\(currentVersion)", action: nil, keyEquivalent: "")
-    private let updateItem = NSMenuItem(title: "Check for Updates…", action: nil, keyEquivalent: "u")
+    private let updateItem = NSMenuItem(title: "Check for Updates\u{2026}", action: nil, keyEquivalent: "u")
     private var isUpdating = false
     private var updateTimer: Timer?
 
@@ -221,7 +245,7 @@ class StatusBarController: NSObject {
     private func readToken() -> String? {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-        proc.arguments = ["find-generic-password", "-s", "Claude Code-credentials", "-w"]
+        proc.arguments = ["find-generic-password", "-s", keychainService, "-w"]
         let pipe = Pipe()
         proc.standardOutput = pipe
         proc.standardError = FileHandle.nullDevice
@@ -239,21 +263,21 @@ class StatusBarController: NSObject {
     // MARK: - API
 
     private func fetchUsage(token: String) {
-        guard let url = URL(string: "https://api.anthropic.com/api/oauth/usage") else { return }
+        guard let url = URL(string: usageAPIURL) else { return }
 
         isFetching = true
 
         var request = URLRequest(url: url)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
+        request.setValue(apiBetaHeader, forHTTPHeaderField: "anthropic-beta")
 
         session.dataTask(with: request) { [weak self] data, response, error in
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.isFetching = false
 
-                if let error {
-                    self.setError(error.localizedDescription)
+                if error != nil {
+                    self.setError("Connection failed")
                     return
                 }
 
@@ -263,23 +287,24 @@ class StatusBarController: NSObject {
                         self.detailFiveHour.title = "Re-authenticate in Claude Code"
                         self.detailSevenDay.title = "Then click Refresh Now"
                     } else if http.statusCode == 429 {
-                        let retryAfter = (http.value(forHTTPHeaderField: "retry-after").flatMap { Int($0) }) ?? 3600
-                        // Learn the API's preferred interval and schedule next fetch accordingly
+                        let raw = http.value(forHTTPHeaderField: "retry-after").flatMap { Int($0) } ?? Int(defaultFetchInterval)
+                        let retryAfter = clampRetryAfter(raw)
                         self.fetchInterval = Double(retryAfter)
                         self.nextFetchAt = Date().addingTimeInterval(Double(retryAfter))
+                        self.isRateLimited = true
                         let minutes = (retryAfter + 59) / 60
                         if self.lastUsage == nil {
                             self.setError("Rate limited")
                         }
                         self.lastRefreshItem.title = "Next API call in \(minutes)m (rate limited)"
                     } else {
-                        self.setError("HTTP \(http.statusCode)")
+                        self.setError("Server error")
                     }
                     return
                 }
 
                 guard let data, let usage = parseUsage(from: data) else {
-                    self.setError("Bad response")
+                    self.setError("Unexpected response")
                     return
                 }
                 self.updateDisplay(usage)
@@ -292,6 +317,7 @@ class StatusBarController: NSObject {
     private func updateDisplay(_ usage: UsageData) {
         lastUsage = usage
         lastRefreshDate = Date()
+        isRateLimited = false
         nextFetchAt = Date().addingTimeInterval(fetchInterval)
         refreshUI()
     }
@@ -307,18 +333,16 @@ class StatusBarController: NSObject {
 
         statusItem.button?.title = formatStatusLine(usage)
 
-        detailFiveHour.title = "\(usageIndicator(for: h5))  5-hour window: \(String(format: "%.1f", h5))%\(formatResetTime(usage.fiveHour.resetsAt))"
-        detailSevenDay.title = "\(usageIndicator(for: d7))  7-day window:  \(String(format: "%.1f", d7))%\(formatResetTime(usage.sevenDay.resetsAt))"
+        detailFiveHour.title = "\(usageIndicator(for: h5))  5-hour window: \(formatValue(h5))%\(formatResetTime(usage.fiveHour.resetsAt))"
+        detailSevenDay.title = "\(usageIndicator(for: d7))  7-day window:  \(formatValue(d7))%\(formatResetTime(usage.sevenDay.resetsAt))"
 
         updateLastRefreshLabel()
     }
 
     private func updateLastRefreshLabel() {
-        // Show countdown to next fetch if we're waiting due to rate limit
-        let waitRemaining = nextFetchAt.timeIntervalSinceNow
-        if waitRemaining > fetchInterval {
-            // We're rate-limited (nextFetchAt was pushed out beyond normal interval)
-            let remaining = Int(waitRemaining) / 60 + 1
+        if isRateLimited {
+            let waitRemaining = nextFetchAt.timeIntervalSinceNow
+            let remaining = max(Int(waitRemaining) / 60 + 1, 1)
             lastRefreshItem.title = "Next API call in \(remaining)m (rate limited)"
             return
         }
@@ -363,8 +387,13 @@ class StatusBarController: NSObject {
     @objc func checkForUpdates() {
         guard !isUpdating, !isCheckingForUpdates else { return }
         isCheckingForUpdates = true
-        let url = URL(string: "https://api.github.com/repos/\(updateRepoOwner)/\(updateRepoName)/releases/latest")!
-        session.dataTask(with: url) { [weak self] data, response, error in
+        guard let url = URL(string: "https://api.github.com/repos/\(updateRepoOwner)/\(updateRepoName)/releases/latest") else {
+            isCheckingForUpdates = false
+            return
+        }
+        var request = URLRequest(url: url)
+        request.setValue("CCUsage/\(currentVersion)", forHTTPHeaderField: "User-Agent")
+        session.dataTask(with: request) { [weak self] data, response, error in
             DispatchQueue.main.async {
                 self?.isCheckingForUpdates = false
                 guard let self, let data,
@@ -374,13 +403,16 @@ class StatusBarController: NSObject {
                     return
                 }
                 if isNewerVersion(tagName, than: currentVersion) {
-                    self.updateItem.title = "Update available: \(tagName)"
-                    self.updateItem.action = #selector(self.installUpdate)
-                    // Find the zip asset URL
                     if let assets = json["assets"] as? [[String: Any]],
                        let zipAsset = assets.first(where: { ($0["name"] as? String)?.hasSuffix(".zip") == true }),
-                       let downloadURL = zipAsset["browser_download_url"] as? String {
+                       let downloadURL = zipAsset["browser_download_url"] as? String,
+                       isValidDownloadURL(downloadURL) {
+                        self.updateItem.title = "Update available: \(tagName)"
+                        self.updateItem.action = #selector(self.installUpdate)
                         self.updateItem.representedObject = downloadURL
+                    } else {
+                        self.updateItem.title = "Update \(tagName) available on GitHub"
+                        self.updateItem.action = nil
                     }
                 } else {
                     self.updateItem.title = "Up to date"
@@ -392,18 +424,21 @@ class StatusBarController: NSObject {
 
     @objc func installUpdate() {
         guard let downloadURLString = updateItem.representedObject as? String,
-              let downloadURL = URL(string: downloadURLString) else { return }
+              isValidDownloadURL(downloadURLString),
+              let downloadURL = URL(string: downloadURLString) else {
+            updateItem.title = "Invalid download URL"
+            return
+        }
 
         isUpdating = true
-        updateItem.title = "Downloading update…"
+        updateItem.title = "Downloading update\u{2026}"
         updateItem.action = nil
 
         let task = URLSession.shared.downloadTask(with: downloadURL) { [weak self] tempURL, response, error in
-            // Do file I/O on background queue to avoid blocking main thread
             guard let tempURL, error == nil else {
                 DispatchQueue.main.async {
                     self?.isUpdating = false
-                    self?.updateItem.title = "Update failed"
+                    self?.updateItem.title = "Download failed"
                     self?.updateItem.action = #selector(self?.checkForUpdates)
                 }
                 return
@@ -414,19 +449,30 @@ class StatusBarController: NSObject {
             let tempDir = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
 
             do {
-                // Unzip to temp directory
-                try fm.createDirectory(at: tempDir, withIntermediateDirectories: true)
+                // Create temp directory with restricted permissions
+                try fm.createDirectory(at: tempDir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+
+                // Unzip to temp directory with timeout
                 let unzipProcess = Process()
                 unzipProcess.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
                 unzipProcess.arguments = ["-x", "-k", tempURL.path, tempDir.path]
                 try unzipProcess.run()
-                unzipProcess.waitUntilExit()
-                guard unzipProcess.terminationStatus == 0 else { throw NSError(domain: "CCUsage", code: 1) }
+                let deadline = Date().addingTimeInterval(30)
+                while unzipProcess.isRunning && Date() < deadline {
+                    Thread.sleep(forTimeInterval: 0.1)
+                }
+                if unzipProcess.isRunning {
+                    unzipProcess.terminate()
+                    throw NSError(domain: "CCUsage", code: 1, userInfo: [NSLocalizedDescriptionKey: "Unzip timed out"])
+                }
+                guard unzipProcess.terminationStatus == 0 else {
+                    throw NSError(domain: "CCUsage", code: 1, userInfo: [NSLocalizedDescriptionKey: "Unzip failed"])
+                }
 
                 // Find .app in extracted contents
                 let contents = try fm.contentsOfDirectory(at: tempDir, includingPropertiesForKeys: nil)
                 guard let newApp = contents.first(where: { $0.pathExtension == "app" }) else {
-                    throw NSError(domain: "CCUsage", code: 2)
+                    throw NSError(domain: "CCUsage", code: 2, userInfo: [NSLocalizedDescriptionKey: "No app in archive"])
                 }
 
                 // Verify the downloaded app has the expected bundle ID
@@ -461,7 +507,7 @@ class StatusBarController: NSObject {
                 try? fm.removeItem(at: tempDir)
                 DispatchQueue.main.async {
                     self?.isUpdating = false
-                    self?.updateItem.title = "Update failed: \(error.localizedDescription)"
+                    self?.updateItem.title = "Update failed"
                     self?.updateItem.action = #selector(self?.checkForUpdates)
                 }
             }

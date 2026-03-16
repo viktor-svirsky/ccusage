@@ -9,7 +9,8 @@ VERSION ?= 0.0.0-dev
 
 build:
 	mkdir -p $(MACOS)
-	sed 's/<string>1.0<\/string>/<string>$(VERSION)<\/string>/' Info.plist > $(CONTENTS)/Info.plist
+	cp Info.plist $(CONTENTS)/Info.plist
+	/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $(VERSION)" $(CONTENTS)/Info.plist
 	swiftc -O -o $(MACOS)/$(APP_NAME) main.swift -framework Cocoa
 
 test:
