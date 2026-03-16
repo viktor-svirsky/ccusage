@@ -141,7 +141,7 @@ class StatusBarController: NSObject {
     private var lastRefreshDate: Date?
     private var rateLimitedUntil: Date?
     private var lastUsage: UsageData?
-    private static let fetchInterval: TimeInterval = 300  // 5 minutes
+    private static let fetchInterval: TimeInterval = 3600  // 1 hour (API rate limit is ~1 req/hour)
 
     private let detailFiveHour = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let detailSevenDay = NSMenuItem(title: "", action: nil, keyEquivalent: "")
@@ -192,9 +192,9 @@ class StatusBarController: NSObject {
         }
         RunLoop.current.add(fetchTimer!, forMode: .common)
 
-        // Check for updates every 4 hours
+        // Check for updates every 5 minutes
         checkForUpdates()
-        updateTimer = Timer.scheduledTimer(withTimeInterval: 4 * 3600, repeats: true) { [weak self] _ in
+        updateTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
             self?.checkForUpdates()
         }
         RunLoop.current.add(updateTimer!, forMode: .common)
