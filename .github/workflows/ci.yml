@@ -22,7 +22,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build app
-        run: make build
+        run: make build VERSION=$(cat VERSION)
 
       - name: Create release archive
         run: ditto -c -k --keepParent CCUsage.app CCUsage.zip

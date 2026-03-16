@@ -3,7 +3,7 @@ APP_DIR = $(APP_NAME).app
 CONTENTS = $(APP_DIR)/Contents
 MACOS = $(CONTENTS)/MacOS
 INSTALL_DIR = /Applications
-VERSION ?= 0.0.0-dev
+VERSION ?= $(shell cat VERSION 2>/dev/null || echo 0.0.0-dev)
 
 .PHONY: build test install uninstall clean generate-icon
 
