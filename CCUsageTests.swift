@@ -422,6 +422,58 @@ func runFormatStatusLineTests() {
     }
 }
 
+// MARK: - Version Comparison Tests
+
+func runVersionComparisonTests() {
+    suite("isNewerVersion") {
+        test("newer patch") {
+            check(isNewerVersion("1.0.1", than: "1.0.0"), "1.0.1 > 1.0.0")
+        }
+
+        test("newer minor") {
+            check(isNewerVersion("1.1.0", than: "1.0.0"), "1.1.0 > 1.0.0")
+        }
+
+        test("newer major") {
+            check(isNewerVersion("2.0.0", than: "1.0.0"), "2.0.0 > 1.0.0")
+        }
+
+        test("same version") {
+            check(!isNewerVersion("1.0.0", than: "1.0.0"), "equal")
+        }
+
+        test("older version") {
+            check(!isNewerVersion("1.0.0", than: "1.0.1"), "older")
+        }
+
+        test("v prefix stripped") {
+            check(isNewerVersion("v1.1.0", than: "1.0.0"), "v prefix remote")
+            check(isNewerVersion("1.1.0", than: "v1.0.0"), "v prefix local")
+            check(isNewerVersion("v2.0.0", than: "v1.0.0"), "v prefix both")
+        }
+
+        test("different segment counts") {
+            check(isNewerVersion("1.0.1", than: "1.0"), "3 vs 2 segments")
+            check(!isNewerVersion("1.0", than: "1.0.0"), "2 vs 3 equal")
+            check(isNewerVersion("1.1", than: "1.0.9"), "minor bump")
+        }
+
+        test("dev version upgradable") {
+            check(isNewerVersion("1.0.0", than: "0.0.0-dev"), "any release > dev")
+        }
+
+        test("same numeric, release > pre-release") {
+            check(isNewerVersion("1.0.0", than: "1.0.0-dev"), "release > dev same version")
+            check(!isNewerVersion("1.0.0-dev", than: "1.0.0"), "dev < release same version")
+        }
+
+        test("pre-release suffix preserved in segments") {
+            check(isNewerVersion("0.0.1", than: "0.0.0-dev"), "0.0.1 > 0.0.0-dev")
+            check(isNewerVersion("1.0.0", than: "1.0.0-beta"), "release > beta")
+        }
+    }
+}
+
 // MARK: - Test Runner
 
 func runAllTests() {
@@ -431,6 +483,7 @@ func runAllTests() {
     runIndicatorTests()
     runFormatResetTimeTests()
     runFormatStatusLineTests()
+    runVersionComparisonTests()
 
     print("\n=== Results: \(passedTests)/\(totalTests) passed ===")
     if !failedTests.isEmpty {
