@@ -1,5 +1,6 @@
 import Cocoa
 import ServiceManagement
+import UserNotifications
 
 // MARK: - Constants
 
@@ -27,6 +28,117 @@ struct UsageWindow: Equatable {
 struct UsageData: Equatable {
     let fiveHour: UsageWindow
     let sevenDay: UsageWindow
+}
+
+// MARK: - Usage Zones & Notifications
+
+enum UsageZone: Int, Comparable, Equatable {
+    case green = 0
+    case yellow = 1
+    case red = 2
+    case depleted = 3
+
+    static func < (lhs: UsageZone, rhs: UsageZone) -> Bool {
+        lhs.rawValue < rhs.rawValue
+    }
+}
+
+func zoneFor(utilization: Double) -> UsageZone {
+    if utilization >= 100 { return .depleted }
+    if utilization >= 80 { return .red }
+    if utilization >= 50 { return .yellow }
+    return .green
+}
+
+struct NotificationState: Equatable {
+    var fiveHourZone: UsageZone = .green
+    var sevenDayZone: UsageZone = .green
+    var fiveHourPaceAlerted: Bool = false
+    var sevenDayPaceAlerted: Bool = false
+}
+
+enum UsageNotification: Equatable {
+    case zoneTransition(window: String, zone: UsageZone, utilization: Double)
+    case depleted(window: String)
+    case paceOverBudget(window: String, pace: Double)
+
+    var identifier: String {
+        switch self {
+        case .zoneTransition(let window, let zone, _):
+            return "zone-\(window)-\(zone)"
+        case .depleted(let window):
+            return "depleted-\(window)"
+        case .paceOverBudget(let window, _):
+            return "pace-\(window)"
+        }
+    }
+}
+
+func determineNotifications(
+    oldState: NotificationState,
+    newUsage: UsageData,
+    fiveHourPace: Double?,
+    sevenDayPace: Double?
+) -> ([UsageNotification], NotificationState) {
+    var notifications: [UsageNotification] = []
+    var newState = oldState
+
+    let h5Zone = zoneFor(utilization: newUsage.fiveHour.utilization)
+    let d7Zone = zoneFor(utilization: newUsage.sevenDay.utilization)
+
+    newState.fiveHourZone = h5Zone
+    newState.sevenDayZone = d7Zone
+
+    // Reset pace tracking when dropping to green or leaving depleted
+    if h5Zone == .green || (oldState.fiveHourZone == .depleted && h5Zone != .depleted) {
+        newState.fiveHourPaceAlerted = false
+    }
+    if d7Zone == .green || (oldState.sevenDayZone == .depleted && d7Zone != .depleted) {
+        newState.sevenDayPaceAlerted = false
+    }
+
+    // 5-hour zone transitions (upward only)
+    if h5Zone > oldState.fiveHourZone {
+        if h5Zone == .depleted {
+            notifications.append(.depleted(window: "5-hour"))
+        } else {
+            notifications.append(.zoneTransition(window: "5-hour", zone: h5Zone, utilization: newUsage.fiveHour.utilization))
+        }
+    }
+
+    // 7-day zone transitions (upward only)
+    if d7Zone > oldState.sevenDayZone {
+        if d7Zone == .depleted {
+            notifications.append(.depleted(window: "7-day"))
+        } else {
+            notifications.append(.zoneTransition(window: "7-day", zone: d7Zone, utilization: newUsage.sevenDay.utilization))
+        }
+    }
+
+    // Pace alerts (suppressed when depleted)
+    if h5Zone != .depleted {
+        if let pace = fiveHourPace, pace > 1.2 {
+            if !newState.fiveHourPaceAlerted {
+                notifications.append(.paceOverBudget(window: "5-hour", pace: pace))
+                newState.fiveHourPaceAlerted = true
+            }
+        } else {
+            newState.fiveHourPaceAlerted = false
+        }
+    }
+
+    if d7Zone != .depleted {
+        if let pace = sevenDayPace, pace > 1.2 {
+            if !newState.sevenDayPaceAlerted {
+                notifications.append(.paceOverBudget(window: "7-day", pace: pace))
+                newState.sevenDayPaceAlerted = true
+            }
+        } else {
+            newState.sevenDayPaceAlerted = false
+        }
+    }
+
+    return (notifications, newState)
 }
 
 // MARK: - Pure Logic (testable)
@@ -186,6 +298,36 @@ func formatStatusLine(_ usage: UsageData, history: UsageHistory = UsageHistory()
 }
 
 #if !TESTING
+func requestNotificationPermission() {
+    UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+}
+
+func deliverNotification(_ notification: UsageNotification) {
+    let content = UNMutableNotificationContent()
+
+    switch notification {
+    case .zoneTransition(let window, let zone, let utilization):
+        let severity = zone == .red ? "Critical" : "Warning"
+        content.title = "CCUsage: \(window) \(severity)"
+        content.body = "\(window) window is at \(formatValue(utilization))% utilization"
+    case .depleted(let window):
+        content.title = "CCUsage: \(window) Depleted"
+        content.body = "\(window) window has reached 100% — usage limit hit"
+    case .paceOverBudget(let window, let pace):
+        content.title = "CCUsage: \(window) Over Budget"
+        content.body = "\(window) window is at \(String(format: "%.1f", pace))x pace — usage rate exceeds budget"
+    }
+
+    content.sound = .default
+
+    let request = UNNotificationRequest(
+        identifier: notification.identifier,
+        content: content,
+        trigger: nil
+    )
+    UNUserNotificationCenter.current().add(request)
+}
+
 func usageColor(for pct: Double) -> NSColor {
     if pct >= 80 { return NSColor(red: 0.9, green: 0.2, blue: 0.2, alpha: 1.0) }
     if pct >= 50 { return NSColor(red: 0.85, green: 0.65, blue: 0.0, alpha: 1.0) }
@@ -364,6 +506,7 @@ class StatusBarController: NSObject {
     private var lastUsage: UsageData?
     private var schedule = FetchSchedule()
     private var history = UsageHistory()
+    private var notificationState = NotificationState()
 
     private let detailFiveHour = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let detailSevenDay = NSMenuItem(title: "", action: nil, keyEquivalent: "")
@@ -399,6 +542,10 @@ class StatusBarController: NSObject {
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q"))
         menu.items.forEach { $0.target = self }
         statusItem.menu = menu
+
+        #if !TESTING
+        requestNotificationPermission()
+        #endif
 
         refresh()
 
@@ -625,6 +772,17 @@ class StatusBarController: NSObject {
         lastRefreshDate = Date()
         didRetryWithRefresh = false
         schedule.onSuccess()
+
+        let h5Pace = calculatePace(utilization: usage.fiveHour.utilization, resetsAt: usage.fiveHour.resetsAt, windowDuration: 5 * 3600)
+        let d7Pace = calculatePace(utilization: usage.sevenDay.utilization, resetsAt: usage.sevenDay.resetsAt, windowDuration: 7 * 86400)
+        let (notifications, newState) = determineNotifications(oldState: notificationState, newUsage: usage, fiveHourPace: h5Pace, sevenDayPace: d7Pace)
+        notificationState = newState
+        #if !TESTING
+        for notification in notifications {
+            deliverNotification(notification)
+        }
+        #endif
+
         refreshUI()
     }
 

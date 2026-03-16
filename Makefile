@@ -18,10 +18,10 @@ build: generate-icon
 	cp Info.plist $(CONTENTS)/Info.plist
 	/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $(VERSION)" $(CONTENTS)/Info.plist
 	cp $(APP_NAME).icns $(CONTENTS)/Resources/$(APP_NAME).icns
-	swiftc -O -o $(MACOS)/$(APP_NAME) main.swift -framework Cocoa
+	swiftc -O -o $(MACOS)/$(APP_NAME) main.swift -framework Cocoa -framework UserNotifications
 
 test:
-	swiftc -DTESTING -o /tmp/$(APP_NAME)Tests main.swift CCUsageTests.swift -framework Cocoa
+	swiftc -DTESTING -o /tmp/$(APP_NAME)Tests main.swift CCUsageTests.swift -framework Cocoa -framework UserNotifications
 	/tmp/$(APP_NAME)Tests
 
 install: build

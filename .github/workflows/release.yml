@@ -66,3 +66,40 @@ jobs:
           name: CCUsage ${{ env.TAG }}
           files: CCUsage.zip
           generate_release_notes: true
+
+      - name: Update Homebrew tap
+        if: env.SKIP_RELEASE != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          SHA256=$(shasum -a 256 CCUsage.zip | awk '{print $1}')
+          cat > /tmp/ccusage.rb <<'CASK'
+          cask "ccusage" do
+            version "$VERSION"
+            sha256 "$SHA256"
+
+            url "https://github.com/viktor-svirsky/ccusage/releases/download/v#{version}/CCUsage.zip"
+            name "CCUsage"
+            desc "macOS menu bar app displaying Claude Code usage limits in real-time"
+            homepage "https://github.com/viktor-svirsky/ccusage"
+
+            depends_on macos: ">= :ventura"
+
+            app "CCUsage.app"
+
+            zap trash: [
+              "~/Library/Preferences/com.ccusage.CCUsage.plist",
+            ]
+          end
+          CASK
+          sed -e 's/^          //' -e "s/\$VERSION/${{ env.VERSION }}/" -e "s/\$SHA256/${SHA256}/" /tmp/ccusage.rb > /tmp/ccusage_final.rb
+          EXISTING_SHA=$(gh api repos/viktor-svirsky/homebrew-ccusage/contents/Casks/ccusage.rb --jq '.sha' 2>/dev/null || echo "")
+          SHA_ARGS=""
+          if [ -n "$EXISTING_SHA" ]; then
+            SHA_ARGS="--field sha=$EXISTING_SHA"
+          fi
+          gh api repos/viktor-svirsky/homebrew-ccusage/contents/Casks/ccusage.rb \
+            --method PUT \
+            --field message="Update CCUsage to ${{ env.VERSION }}" \
+            --field content="$(base64 < /tmp/ccusage_final.rb)" \
+            $SHA_ARGS
