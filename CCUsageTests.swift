@@ -131,6 +131,38 @@ func runParseTokenTests() {
     }
 }
 
+// MARK: - Refresh Token Parsing Tests
+
+func runParseRefreshTokenTests() {
+    suite("parseRefreshToken") {
+        test("valid credentials") {
+            let json = """
+            {"claudeAiOauth":{"accessToken":"sk-ant-test-123","refreshToken":"rt-456"}}
+            """.data(using: .utf8)!
+            assertEqual(parseRefreshToken(from: json), "rt-456")
+        }
+
+        test("missing refresh token") {
+            let json = """
+            {"claudeAiOauth":{"accessToken":"sk-ant-test-123"}}
+            """.data(using: .utf8)!
+            assertNil(parseRefreshToken(from: json), "missing refreshToken")
+        }
+
+        test("empty refresh token") {
+            let json = """
+            {"claudeAiOauth":{"accessToken":"sk-ant-test","refreshToken":""}}
+            """.data(using: .utf8)!
+            assertNil(parseRefreshToken(from: json), "empty refreshToken")
+        }
+
+        test("invalid JSON") {
+            let data = "not json".data(using: .utf8)!
+            assertNil(parseRefreshToken(from: data), "invalid JSON")
+        }
+    }
+}
+
 // MARK: - Usage Parsing Tests
 
 func runParseUsageTests() {
@@ -791,6 +823,7 @@ func runFetchScheduleTests() {
 
 func runAllTests() {
     runParseTokenTests()
+    runParseRefreshTokenTests()
     runParseUsageTests()
     runFormatValueTests()
     runIndicatorTests()
