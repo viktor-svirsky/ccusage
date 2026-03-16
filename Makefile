@@ -5,12 +5,19 @@ MACOS = $(CONTENTS)/MacOS
 INSTALL_DIR = /Applications
 VERSION ?= 0.0.0-dev
 
-.PHONY: build test install uninstall clean
+.PHONY: build test install uninstall clean generate-icon
 
-build:
+generate-icon:
+	swiftc -O build-icon.swift -framework Cocoa -o build-icon
+	./build-icon
+	iconutil -c icns $(APP_NAME).iconset
+
+build: generate-icon
 	mkdir -p $(MACOS)
+	mkdir -p $(CONTENTS)/Resources
 	cp Info.plist $(CONTENTS)/Info.plist
 	/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $(VERSION)" $(CONTENTS)/Info.plist
+	cp $(APP_NAME).icns $(CONTENTS)/Resources/$(APP_NAME).icns
 	swiftc -O -o $(MACOS)/$(APP_NAME) main.swift -framework Cocoa
 
 test:
@@ -26,4 +33,4 @@ uninstall:
 	rm -rf $(INSTALL_DIR)/$(APP_DIR)
 
 clean:
-	rm -rf $(APP_DIR) /tmp/$(APP_NAME)Tests
+	rm -rf $(APP_DIR) /tmp/$(APP_NAME)Tests $(APP_NAME).iconset $(APP_NAME).icns build-icon

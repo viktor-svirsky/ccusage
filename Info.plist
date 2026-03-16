@@ -8,6 +8,8 @@
     <string>CCUsage</string>
     <key>CFBundleExecutable</key>
     <string>CCUsage</string>
+    <key>CFBundleIconFile</key>
+    <string>CCUsage</string>
     <key>CFBundleVersion</key>
     <string>1.0</string>
     <key>LSMinimumSystemVersion</key>
