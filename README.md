@@ -1,15 +1,35 @@
 # CCUsage
 
-macOS menu bar app that shows Claude Code usage limits (5-hour and 7-day windows) with reset countdowns.
+[![macOS 13+](https://img.shields.io/badge/macOS-13%2B-blue?logo=apple&logoColor=white)](https://www.apple.com/macos/)
+[![Swift](https://img.shields.io/badge/Swift-5.9-F05138?logo=swift&logoColor=white)](https://swift.org)
+[![Tests](https://img.shields.io/badge/tests-215%20passing-brightgreen)](https://github.com/viktor-svirsky/ccusage)
+[![GitHub release](https://img.shields.io/github/v/release/viktor-svirsky/ccusage)](https://github.com/viktor-svirsky/ccusage/releases/latest)
+
+macOS menu bar app that shows Claude Code usage limits (5-hour and 7-day windows) at a glance — with trend direction, sparklines, and budget pacing.
+
+<p align="center">
+  <img src=".github/screenshots/menubar.png" alt="Menu bar" width="600">
+  <br>
+  <img src=".github/screenshots/dropdown.png" alt="Dropdown detail" width="400">
+</p>
 
 ## Features
 
-- Live utilization percentages in menu bar (e.g. `🟢 5h:14%  7d:18%`)
-- Color-coded indicator: green (<50%), yellow (50-79%), red (80%+)
-- Reset time countdowns for each usage window
-- Relative "last refresh" timestamp
-- Auto-refresh every 60 seconds + on wake from sleep
-- Adaptive rate-limit handling (backs off on 429, respects Retry-After)
+### Menu Bar
+- Live utilization percentages (e.g. `🟢↑5h:14%  🟢→7d:18%`)
+- Per-window color indicators: green (<50%), yellow (50-79%), red (80%+)
+- Trend arrows (↑↓→) show whether usage is rising, falling, or flat based on session history
+
+### Dropdown Detail
+- Progress bars for each usage window
+- Remaining percentage and reset time countdowns
+- Sparkline charts (▁▂▃▄▅▆▇█) for the 5-hour window showing recent usage pattern
+- Budget pacing for both windows — compares actual usage against expected linear spend rate (e.g. `▲ 1.4x pace (over budget)`)
+
+### Infrastructure
+- Auto-refresh every 5 minutes + on wake from sleep
+- Adaptive rate-limit handling with exponential backoff (respects Retry-After, auto-refreshes OAuth token on 429)
+- Session-scoped usage history (last 24 data points, ~2 hours)
 - Auto-update from GitHub Releases with one-click install
 - Registers as login item automatically
 
@@ -33,7 +53,7 @@ make install
 ## Build & Test
 
 ```bash
-make test    # run 139 unit tests
+make test    # run 215 unit tests
 make build   # compile .app bundle
 ```
 

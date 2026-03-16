@@ -819,6 +819,281 @@ func runFetchScheduleTests() {
     }
 }
 
+// MARK: - Usage History Tests
+
+func runUsageHistoryTests() {
+    suite("UsageHistory") {
+        test("record adds entries") {
+            var h = UsageHistory()
+            let u = UsageData(fiveHour: UsageWindow(utilization: 10, remaining: nil, resetsAt: nil),
+                              sevenDay: UsageWindow(utilization: 20, remaining: nil, resetsAt: nil))
+            h.record(u)
+            assertEqual(h.entries.count, 1, "one entry")
+            assertEqual(h.entries[0].fiveHour, 10.0, "fiveHour value")
+            assertEqual(h.entries[0].sevenDay, 20.0, "sevenDay value")
+        }
+
+        test("record caps at maxEntries (24)") {
+            var h = UsageHistory()
+            for i in 0..<30 {
+                let u = UsageData(fiveHour: UsageWindow(utilization: Double(i), remaining: nil, resetsAt: nil),
+                                  sevenDay: UsageWindow(utilization: Double(i), remaining: nil, resetsAt: nil))
+                h.record(u)
+            }
+            assertEqual(h.entries.count, 24, "capped at 24")
+            assertEqual(h.entries[0].fiveHour, 6.0, "oldest entry is #6")
+            assertEqual(h.entries[23].fiveHour, 29.0, "newest entry is #29")
+        }
+
+        test("trend with empty history returns flat") {
+            let h = UsageHistory()
+            assertEqual(h.trend(for: \.fiveHour), Character("→"), "empty → flat")
+        }
+
+        test("trend with one entry returns flat") {
+            var h = UsageHistory()
+            h.record(UsageData(fiveHour: UsageWindow(utilization: 50, remaining: nil, resetsAt: nil),
+                               sevenDay: UsageWindow(utilization: 50, remaining: nil, resetsAt: nil)))
+            assertEqual(h.trend(for: \.fiveHour), Character("→"), "single entry → flat")
+        }
+
+        test("trend with fewer than 6 entries returns flat") {
+            var h = UsageHistory()
+            for v in [10.0, 20.0, 30.0, 40.0, 50.0] {
+                h.record(UsageData(fiveHour: UsageWindow(utilization: v, remaining: nil, resetsAt: nil),
+                                   sevenDay: UsageWindow(utilization: v, remaining: nil, resetsAt: nil)))
+            }
+            assertEqual(h.trend(for: \.fiveHour), Character("→"), "5 entries → flat (need 6)")
+        }
+
+        test("trend rising") {
+            var h = UsageHistory()
+            for v in [10.0, 12.0, 14.0, 16.0, 18.0, 20.0] {
+                h.record(UsageData(fiveHour: UsageWindow(utilization: v, remaining: nil, resetsAt: nil),
+                                   sevenDay: UsageWindow(utilization: v, remaining: nil, resetsAt: nil)))
+            }
+            assertEqual(h.trend(for: \.fiveHour), Character("↑"), "rising trend")
+        }
+
+        test("trend falling") {
+            var h = UsageHistory()
+            for v in [20.0, 18.0, 16.0, 14.0, 12.0, 10.0] {
+                h.record(UsageData(fiveHour: UsageWindow(utilization: v, remaining: nil, resetsAt: nil),
+                                   sevenDay: UsageWindow(utilization: v, remaining: nil, resetsAt: nil)))
+            }
+            assertEqual(h.trend(for: \.fiveHour), Character("↓"), "falling trend")
+        }
+
+        test("trend flat with small changes") {
+            var h = UsageHistory()
+            for v in [50.0, 50.5, 51.0, 50.5, 51.0, 51.5] {
+                h.record(UsageData(fiveHour: UsageWindow(utilization: v, remaining: nil, resetsAt: nil),
+                                   sevenDay: UsageWindow(utilization: v, remaining: nil, resetsAt: nil)))
+            }
+            assertEqual(h.trend(for: \.fiveHour), Character("→"), "small changes → flat")
+        }
+
+        test("trend works independently per keyPath") {
+            var h = UsageHistory()
+            // fiveHour rises, sevenDay falls
+            let fiveHourVals = [10.0, 12.0, 14.0, 16.0, 18.0, 20.0]
+            let sevenDayVals = [20.0, 18.0, 16.0, 14.0, 12.0, 10.0]
+            for i in 0..<6 {
+                h.record(UsageData(fiveHour: UsageWindow(utilization: fiveHourVals[i], remaining: nil, resetsAt: nil),
+                                   sevenDay: UsageWindow(utilization: sevenDayVals[i], remaining: nil, resetsAt: nil)))
+            }
+            assertEqual(h.trend(for: \.fiveHour), Character("↑"), "5h rising")
+            assertEqual(h.trend(for: \.sevenDay), Character("↓"), "7d falling")
+        }
+
+        test("sparkline empty history") {
+            let h = UsageHistory()
+            assertEqual(h.sparkline(for: \.fiveHour), "", "empty → empty string")
+        }
+
+        test("sparkline with ascending values") {
+            var h = UsageHistory()
+            for v in [0.0, 25.0, 50.0, 75.0, 100.0] {
+                h.record(UsageData(fiveHour: UsageWindow(utilization: v, remaining: nil, resetsAt: nil),
+                                   sevenDay: UsageWindow(utilization: 0, remaining: nil, resetsAt: nil)))
+            }
+            let s = h.sparkline(for: \.fiveHour)
+            assertEqual(s.count, 5, "5 chars for 5 entries")
+            assertEqual(s.first, Character("▁"), "starts with lowest block")
+            assertEqual(s.last, Character("█"), "ends with highest block")
+        }
+
+        test("sparkline constant values uses lowest block") {
+            var h = UsageHistory()
+            for _ in 0..<5 {
+                h.record(UsageData(fiveHour: UsageWindow(utilization: 50, remaining: nil, resetsAt: nil),
+                                   sevenDay: UsageWindow(utilization: 50, remaining: nil, resetsAt: nil)))
+            }
+            let s = h.sparkline(for: \.fiveHour)
+            assertEqual(s.count, 5, "5 chars")
+            check(s.allSatisfy { $0 == "▁" }, "all lowest block for constant values")
+        }
+
+        test("sparkline respects width parameter") {
+            var h = UsageHistory()
+            for v in 0..<20 {
+                h.record(UsageData(fiveHour: UsageWindow(utilization: Double(v), remaining: nil, resetsAt: nil),
+                                   sevenDay: UsageWindow(utilization: 0, remaining: nil, resetsAt: nil)))
+            }
+            let s = h.sparkline(for: \.fiveHour, width: 8)
+            assertEqual(s.count, 8, "limited to width=8")
+        }
+
+        test("sparkline with two values") {
+            var h = UsageHistory()
+            h.record(UsageData(fiveHour: UsageWindow(utilization: 0, remaining: nil, resetsAt: nil),
+                               sevenDay: UsageWindow(utilization: 0, remaining: nil, resetsAt: nil)))
+            h.record(UsageData(fiveHour: UsageWindow(utilization: 100, remaining: nil, resetsAt: nil),
+                               sevenDay: UsageWindow(utilization: 0, remaining: nil, resetsAt: nil)))
+            let s = h.sparkline(for: \.fiveHour)
+            assertEqual(s, "▁█", "min to max")
+        }
+    }
+}
+
+// MARK: - Format Status Line with History Tests
+
+func runFormatStatusLineWithHistoryTests() {
+    suite("formatStatusLine with history") {
+        let green = "\u{1F7E2}"
+
+        test("default history shows flat arrows") {
+            let u = UsageData(
+                fiveHour: UsageWindow(utilization: 10, remaining: nil, resetsAt: nil),
+                sevenDay: UsageWindow(utilization: 20, remaining: nil, resetsAt: nil)
+            )
+            let line = formatStatusLine(u)
+            check(line.contains("→5h:"), "flat arrow for 5h")
+            check(line.contains("→7d:"), "flat arrow for 7d")
+        }
+
+        test("rising history shows up arrow") {
+            var h = UsageHistory()
+            for v in [10.0, 12.0, 14.0, 16.0, 18.0, 20.0] {
+                h.record(UsageData(fiveHour: UsageWindow(utilization: v, remaining: nil, resetsAt: nil),
+                                   sevenDay: UsageWindow(utilization: v, remaining: nil, resetsAt: nil)))
+            }
+            let u = UsageData(
+                fiveHour: UsageWindow(utilization: 20, remaining: nil, resetsAt: nil),
+                sevenDay: UsageWindow(utilization: 20, remaining: nil, resetsAt: nil)
+            )
+            let line = formatStatusLine(u, history: h)
+            check(line.contains("↑5h:"), "up arrow for 5h")
+            check(line.contains("↑7d:"), "up arrow for 7d")
+        }
+
+        test("per-window indicators") {
+            let u = UsageData(
+                fiveHour: UsageWindow(utilization: 85, remaining: nil, resetsAt: nil),
+                sevenDay: UsageWindow(utilization: 20, remaining: nil, resetsAt: nil)
+            )
+            let line = formatStatusLine(u)
+            let red = "\u{1F534}"
+            check(line.contains(red), "red for 5h=85")
+            check(line.contains(green), "green for 7d=20")
+        }
+    }
+}
+
+// MARK: - Pacing Tests
+
+func runPacingTests() {
+    suite("calculatePace") {
+        let now = Date(timeIntervalSince1970: 1000000)
+        let sevenDays: TimeInterval = 7 * 86400
+        let fiveHours: TimeInterval = 5 * 3600
+
+        test("nil resetsAt returns nil") {
+            assertNil(calculatePace(utilization: 50, resetsAt: nil, windowDuration: sevenDays, now: now), "nil resetsAt")
+        }
+
+        test("past resetsAt returns nil") {
+            let past = now.addingTimeInterval(-100)
+            assertNil(calculatePace(utilization: 50, resetsAt: past, windowDuration: sevenDays, now: now), "past reset")
+        }
+
+        test("on track returns ~1.0") {
+            // 3.5 days in (half the window), 50% used → pace = 1.0
+            let resetsAt = now.addingTimeInterval(3.5 * 86400)
+            let pace = calculatePace(utilization: 50, resetsAt: resetsAt, windowDuration: sevenDays, now: now)
+            assertNotNil(pace, "should have pace")
+            if let pace = pace {
+                check(pace > 0.99 && pace < 1.01, "pace ~1.0, got \(pace)")
+            }
+        }
+
+        test("over budget returns >1.2") {
+            // 2 days in (~28.6% of window), 50% used → pace ≈ 1.75
+            let resetsAt = now.addingTimeInterval(5 * 86400)
+            let pace = calculatePace(utilization: 50, resetsAt: resetsAt, windowDuration: sevenDays, now: now)
+            assertNotNil(pace, "should have pace")
+            if let pace = pace {
+                check(pace > 1.2, "over budget, got \(pace)")
+            }
+        }
+
+        test("under budget returns <0.8") {
+            // 5 days in (~71.4% of window), 30% used → pace ≈ 0.42
+            let resetsAt = now.addingTimeInterval(2 * 86400)
+            let pace = calculatePace(utilization: 30, resetsAt: resetsAt, windowDuration: sevenDays, now: now)
+            assertNotNil(pace, "should have pace")
+            if let pace = pace {
+                check(pace < 0.8, "under budget, got \(pace)")
+            }
+        }
+
+        test("5-hour window pacing") {
+            // 2.5 hours in (half), 50% used → pace = 1.0
+            let resetsAt = now.addingTimeInterval(2.5 * 3600)
+            let pace = calculatePace(utilization: 50, resetsAt: resetsAt, windowDuration: fiveHours, now: now)
+            assertNotNil(pace, "5h pace")
+            if let pace = pace {
+                check(pace > 0.99 && pace < 1.01, "5h on track, got \(pace)")
+            }
+        }
+
+        test("very early in window returns nil") {
+            // Just started, expected < 1%
+            let resetsAt = now.addingTimeInterval(sevenDays - 60)
+            assertNil(calculatePace(utilization: 0.1, resetsAt: resetsAt, windowDuration: sevenDays, now: now), "too early")
+        }
+    }
+
+    suite("paceLabel") {
+        test("over budget label") {
+            let label = paceLabel(1.5)
+            check(label.contains("1.5x"), "shows pace")
+            check(label.contains("over budget"), "over budget text")
+            check(label.contains("▲"), "up arrow")
+        }
+
+        test("under budget label") {
+            let label = paceLabel(0.6)
+            check(label.contains("0.6x"), "shows pace")
+            check(label.contains("under budget"), "under budget text")
+            check(label.contains("▼"), "down arrow")
+        }
+
+        test("on track label") {
+            let label = paceLabel(1.0)
+            check(label.contains("1.0x"), "shows pace")
+            check(label.contains("on track"), "on track text")
+        }
+
+        test("boundary values") {
+            check(paceLabel(1.2).contains("on track"), "1.2 is on track")
+            check(paceLabel(1.21).contains("over budget"), "1.21 is over")
+            check(paceLabel(0.8).contains("on track"), "0.8 is on track")
+            check(paceLabel(0.79).contains("under budget"), "0.79 is under")
+        }
+    }
+}
+
 // MARK: - Test Runner
 
 func runAllTests() {
@@ -835,6 +1110,9 @@ func runAllTests() {
     runDownloadURLValidationTests()
     runParseReleaseInfoTests()
     runFetchScheduleTests()
+    runUsageHistoryTests()
+    runFormatStatusLineWithHistoryTests()
+    runPacingTests()
 
     print("\n=== Results: \(passedTests)/\(totalTests) passed ===")
     if !failedTests.isEmpty {
