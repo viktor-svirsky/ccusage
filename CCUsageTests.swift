@@ -573,6 +573,143 @@ func runDownloadURLValidationTests() {
     }
 }
 
+// MARK: - Release Info Parsing Tests
+
+func runParseReleaseInfoTests() {
+    suite("parseReleaseInfo") {
+        test("valid release with .zip asset") {
+            let json = """
+            {
+                "tag_name": "v2.0.0",
+                "assets": [
+                    {"name": "CCUsage.zip", "browser_download_url": "https://github.com/user/repo/releases/download/v2.0.0/CCUsage.zip"}
+                ]
+            }
+            """.data(using: .utf8)!
+            let info = parseReleaseInfo(from: json, currentVersion: "1.0.0")
+            assertNotNil(info, "should return update info")
+            if let info = info {
+                assertEqual(info.tagName, "v2.0.0", "tag name")
+                assertEqual(info.downloadURL, "https://github.com/user/repo/releases/download/v2.0.0/CCUsage.zip", "download URL")
+            }
+        }
+
+        test("newer version with no .zip asset") {
+            let json = """
+            {
+                "tag_name": "v2.0.0",
+                "assets": [
+                    {"name": "CCUsage.tar.gz", "browser_download_url": "https://github.com/user/repo/releases/download/v2.0.0/CCUsage.tar.gz"}
+                ]
+            }
+            """.data(using: .utf8)!
+            let info = parseReleaseInfo(from: json, currentVersion: "1.0.0")
+            assertNotNil(info, "should return update info")
+            if let info = info {
+                assertEqual(info.tagName, "v2.0.0", "tag name")
+                assertNil(info.downloadURL, "no zip means nil download URL")
+            }
+        }
+
+        test("same version returns nil") {
+            let json = """
+            {"tag_name": "v1.0.0", "assets": []}
+            """.data(using: .utf8)!
+            assertNil(parseReleaseInfo(from: json, currentVersion: "1.0.0"), "same version")
+        }
+
+        test("older version returns nil") {
+            let json = """
+            {"tag_name": "v0.9.0", "assets": []}
+            """.data(using: .utf8)!
+            assertNil(parseReleaseInfo(from: json, currentVersion: "1.0.0"), "older version")
+        }
+
+        test("invalid download URL domain") {
+            let json = """
+            {
+                "tag_name": "v2.0.0",
+                "assets": [
+                    {"name": "CCUsage.zip", "browser_download_url": "https://evil.com/CCUsage.zip"}
+                ]
+            }
+            """.data(using: .utf8)!
+            let info = parseReleaseInfo(from: json, currentVersion: "1.0.0")
+            assertNotNil(info, "should return update info")
+            if let info = info {
+                assertEqual(info.tagName, "v2.0.0", "tag name")
+                assertNil(info.downloadURL, "invalid domain means nil download URL")
+            }
+        }
+
+        test("malformed JSON returns nil") {
+            let data = "not json".data(using: .utf8)!
+            assertNil(parseReleaseInfo(from: data, currentVersion: "1.0.0"), "malformed JSON")
+        }
+
+        test("missing tag_name returns nil") {
+            let json = """
+            {"assets": [{"name": "CCUsage.zip", "browser_download_url": "https://github.com/u/r/CCUsage.zip"}]}
+            """.data(using: .utf8)!
+            assertNil(parseReleaseInfo(from: json, currentVersion: "1.0.0"), "missing tag_name")
+        }
+
+        test("multiple assets picks .zip") {
+            let json = """
+            {
+                "tag_name": "v3.0.0",
+                "assets": [
+                    {"name": "CCUsage.tar.gz", "browser_download_url": "https://github.com/u/r/CCUsage.tar.gz"},
+                    {"name": "CCUsage.zip", "browser_download_url": "https://github.com/u/r/releases/download/v3.0.0/CCUsage.zip"},
+                    {"name": "checksums.txt", "browser_download_url": "https://github.com/u/r/checksums.txt"}
+                ]
+            }
+            """.data(using: .utf8)!
+            let info = parseReleaseInfo(from: json, currentVersion: "1.0.0")
+            assertNotNil(info, "should return update info")
+            if let info = info {
+                assertEqual(info.tagName, "v3.0.0", "tag name")
+                assertEqual(info.downloadURL, "https://github.com/u/r/releases/download/v3.0.0/CCUsage.zip", "picks .zip asset")
+            }
+        }
+
+        test("no assets key") {
+            let json = """
+            {"tag_name": "v2.0.0"}
+            """.data(using: .utf8)!
+            let info = parseReleaseInfo(from: json, currentVersion: "1.0.0")
+            assertNotNil(info, "should return update info without assets")
+            if let info = info {
+                assertEqual(info.tagName, "v2.0.0", "tag name")
+                assertNil(info.downloadURL, "no assets means nil download URL")
+            }
+        }
+
+        test("empty assets array") {
+            let json = """
+            {"tag_name": "v2.0.0", "assets": []}
+            """.data(using: .utf8)!
+            let info = parseReleaseInfo(from: json, currentVersion: "1.0.0")
+            assertNotNil(info, "should return update info")
+            if let info = info {
+                assertNil(info.downloadURL, "empty assets means nil download URL")
+            }
+        }
+
+        test("empty data returns nil") {
+            assertNil(parseReleaseInfo(from: Data(), currentVersion: "1.0.0"), "empty data")
+        }
+
+        test("dev version detects release update") {
+            let json = """
+            {"tag_name": "v1.0.0", "assets": []}
+            """.data(using: .utf8)!
+            let info = parseReleaseInfo(from: json, currentVersion: "0.0.0-dev")
+            assertNotNil(info, "dev should see 1.0.0 as update")
+        }
+    }
+}
+
 // MARK: - Test Runner
 
 func runAllTests() {
@@ -586,6 +723,7 @@ func runAllTests() {
     runUtilizationRangeTests()
     runClampRetryAfterTests()
     runDownloadURLValidationTests()
+    runParseReleaseInfoTests()
 
     print("\n=== Results: \(passedTests)/\(totalTests) passed ===")
     if !failedTests.isEmpty {
