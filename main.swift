@@ -423,6 +423,295 @@ func formatStatusLine(_ usage: UsageData, history: UsageHistory = UsageHistory()
     return "\(formatValue(h5))/\(formatValue(d7))"
 }
 
+// MARK: - Agent Tracking
+
+struct TrackedAgent: Equatable {
+    let toolUseId: String
+    let description: String
+    let subagentType: String
+    let launchedAt: Date
+    var completedAt: Date?
+    var totalTokens: Int?
+    var durationMs: Int?
+
+    var isRunning: Bool { completedAt == nil }
+}
+
+func parseAgentLaunches(from jsonLine: Data, fallbackTimestamp: Date = Date()) -> [TrackedAgent] {
+    guard let json = try? JSONSerialization.jsonObject(with: jsonLine) as? [String: Any],
+          let type = json["type"] as? String, type == "assistant",
+          let message = json["message"] as? [String: Any],
+          let content = message["content"] as? [[String: Any]] else {
+        return []
+    }
+
+    let timestamp: Date
+    if let ts = json["timestamp"] as? String {
+        timestamp = iso8601Formatter.date(from: ts) ?? fallbackTimestamp
+    } else {
+        timestamp = fallbackTimestamp
+    }
+
+    var agents: [TrackedAgent] = []
+    for block in content {
+        guard let blockType = block["type"] as? String, blockType == "tool_use",
+              let name = block["name"] as? String, name == "Agent",
+              let id = block["id"] as? String,
+              let input = block["input"] as? [String: Any] else {
+            continue
+        }
+        let desc = input["description"] as? String ?? "Agent"
+        let subType = input["subagent_type"] as? String ?? "general-purpose"
+        agents.append(TrackedAgent(
+            toolUseId: id,
+            description: desc,
+            subagentType: subType,
+            launchedAt: timestamp
+        ))
+    }
+    return agents
+}
+
+func parseAgentCompletions(from jsonLine: Data) -> [(toolUseId: String, totalTokens: Int?, durationMs: Int?)] {
+    guard let json = try? JSONSerialization.jsonObject(with: jsonLine) as? [String: Any],
+          let type = json["type"] as? String, type == "user",
+          let message = json["message"] as? [String: Any],
+          let content = message["content"] as? [[String: Any]] else {
+        return []
+    }
+
+    var completions: [(String, Int?, Int?)] = []
+    for block in content {
+        guard let blockType = block["type"] as? String, blockType == "tool_result",
+              let toolUseId = block["tool_use_id"] as? String else {
+            continue
+        }
+
+        var totalTokens: Int?
+        var durationMs: Int?
+
+        if let resultContent = block["content"] as? [[String: Any]] {
+            for item in resultContent {
+                if let text = item["text"] as? String {
+                    if let range = text.range(of: "total_tokens: ") {
+                        let rest = text[range.upperBound...]
+                        if let end = rest.firstIndex(where: { !$0.isNumber }) {
+                            totalTokens = Int(rest[..<end])
+                        } else {
+                            totalTokens = Int(rest)
+                        }
+                    }
+                    if let range = text.range(of: "duration_ms: ") {
+                        let rest = text[range.upperBound...]
+                        if let end = rest.firstIndex(where: { !$0.isNumber }) {
+                            durationMs = Int(rest[..<end])
+                        } else {
+                            durationMs = Int(rest)
+                        }
+                    }
+                }
+            }
+        }
+        completions.append((toolUseId, totalTokens, durationMs))
+    }
+    return completions
+}
+
+func formatAgentDuration(_ agent: TrackedAgent, now: Date = Date()) -> String {
+    if let ms = agent.durationMs {
+        let secs = ms / 1000
+        if secs >= 60 { return "\(secs / 60)m\(secs % 60)s" }
+        return "\(secs)s"
+    }
+    if agent.isRunning {
+        let secs = Int(now.timeIntervalSince(agent.launchedAt))
+        if secs >= 60 { return "\(secs / 60)m\(secs % 60)s" }
+        return "\(secs)s"
+    }
+    return ""
+}
+
+func formatTokenCount(_ tokens: Int) -> String {
+    if tokens >= 1000 { return "\(tokens / 1000)K" }
+    return "\(tokens)"
+}
+
+func projectNameFromSessionPath(_ path: String, homeDir: String = NSHomeDirectory()) -> String? {
+    let dir = (path as NSString).deletingLastPathComponent
+    let dirName = (dir as NSString).lastPathComponent
+    let homePrefix = homeDir.replacingOccurrences(of: "/", with: "-") + "-"
+    guard dirName.hasPrefix(homePrefix) else { return nil }
+    let afterHome = String(dirName.dropFirst(homePrefix.count))
+    guard let firstDash = afterHome.firstIndex(of: "-") else { return nil }
+    let project = String(afterHome[afterHome.index(after: firstDash)...])
+    return project.isEmpty ? nil : project
+}
+
+struct AgentStats: Equatable {
+    var completedCount: Int = 0
+    var totalTokens: Int = 0
+    var totalDurationMs: Int = 0
+
+    var avgDurationMs: Int {
+        completedCount > 0 ? totalDurationMs / completedCount : 0
+    }
+
+    mutating func record(tokens: Int?, durationMs: Int?) {
+        completedCount += 1
+        totalTokens += tokens ?? 0
+        totalDurationMs += durationMs ?? 0
+    }
+}
+
+func formatAgentStatsLine(_ stats: AgentStats) -> String {
+    guard stats.completedCount > 0 else { return "" }
+    let avgSecs = stats.avgDurationMs / 1000
+    return "Session: \(stats.completedCount) agents \u{00B7} \(formatTokenCount(stats.totalTokens)) tok \u{00B7} avg \(avgSecs)s"
+}
+
+func formatAgentSection(_ agents: [TrackedAgent], projectName: String? = nil, stats: AgentStats = AgentStats(), isStale: Bool = false, now: Date = Date()) -> String {
+    if isStale { return "Agents \u{00B7} session idle" }
+    guard !agents.isEmpty else { return "" }
+    let running = agents.filter { $0.isRunning }.count
+    let done = agents.count - running
+
+    var header = "Agents"
+    if let name = projectName { header += " \u{00B7} \(name)" }
+    var parts: [String] = []
+    if running > 0 { parts.append("\(running) running") }
+    if done > 0 { parts.append("\(done) done") }
+    if !parts.isEmpty { header += " (\(parts.joined(separator: " \u{00B7} ")))" }
+
+    var lines = [header]
+    for agent in agents {
+        let status = agent.isRunning ? "\u{25CF}" : "\u{2713}"
+        let duration = formatAgentDuration(agent, now: now)
+        let tokens = agent.totalTokens.map { " \(formatTokenCount($0)) tok" } ?? ""
+        let state = agent.isRunning ? " running" : ""
+        lines.append("  \(status) \(agent.description)  \(duration)\(tokens)\(state)")
+    }
+    let statsLine = formatAgentStatsLine(stats)
+    if !statsLine.isEmpty { lines.append("  \(statsLine)") }
+    return lines.joined(separator: "\n")
+}
+
+// MARK: - Agent Session Tracker
+
+class AgentTracker {
+    private(set) var agents: [TrackedAgent] = []
+    private(set) var stats = AgentStats()
+    private(set) var projectName: String?
+    private(set) var lastFileModification: Date?
+    private var lastFileOffset: UInt64 = 0
+    private var activeSessionPath: String?
+    private let claudeDir: String
+    private let staleThreshold: TimeInterval = 300  // 5 minutes
+
+    init(claudeDir: String? = nil) {
+        self.claudeDir = claudeDir ?? (NSHomeDirectory() + "/.claude/projects")
+    }
+
+    var isSessionStale: Bool {
+        guard let lastMod = lastFileModification else { return false }
+        return !agents.isEmpty && !hasActiveAgents && Date().timeIntervalSince(lastMod) > staleThreshold
+    }
+
+    func findActiveSession() -> String? {
+        let fm = FileManager.default
+        guard let projectDirs = try? fm.contentsOfDirectory(atPath: claudeDir) else { return nil }
+
+        var newest: (path: String, date: Date)?
+        for dir in projectDirs {
+            let projectPath = (claudeDir as NSString).appendingPathComponent(dir)
+            guard let files = try? fm.contentsOfDirectory(atPath: projectPath) else { continue }
+            for file in files where file.hasSuffix(".jsonl") {
+                let path = (projectPath as NSString).appendingPathComponent(file)
+                guard let attrs = try? fm.attributesOfItem(atPath: path),
+                      let modified = attrs[.modificationDate] as? Date else { continue }
+                if newest == nil || modified > newest!.date {
+                    newest = (path, modified)
+                }
+            }
+        }
+        return newest?.path
+    }
+
+    /// Poll for changes. Returns true if agents list changed.
+    @discardableResult
+    func poll() -> Bool {
+        guard let sessionPath = findActiveSession() else {
+            if !agents.isEmpty {
+                agents.removeAll()
+                return true
+            }
+            return false
+        }
+
+        if sessionPath != activeSessionPath {
+            activeSessionPath = sessionPath
+            lastFileOffset = 0
+            agents.removeAll()
+            stats = AgentStats()
+            projectName = projectNameFromSessionPath(sessionPath)
+        }
+
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: sessionPath),
+              let fileSize = attrs[.size] as? UInt64 else { return false }
+
+        if let modified = attrs[.modificationDate] as? Date {
+            lastFileModification = modified
+        }
+
+        guard fileSize > lastFileOffset else { return false }
+
+        guard let handle = FileHandle(forReadingAtPath: sessionPath) else { return false }
+        defer { handle.closeFile() }
+
+        handle.seek(toFileOffset: lastFileOffset)
+        let newData = handle.readDataToEndOfFile()
+        lastFileOffset = fileSize
+
+        guard !newData.isEmpty else { return false }
+
+        var changed = false
+        let lines = newData.split(separator: UInt8(ascii: "\n"))
+        for line in lines {
+            let lineData = Data(line)
+
+            let launches = parseAgentLaunches(from: lineData)
+            if !launches.isEmpty {
+                agents.append(contentsOf: launches)
+                changed = true
+            }
+
+            let completions = parseAgentCompletions(from: lineData)
+            for (toolUseId, tokens, duration) in completions {
+                if let index = agents.firstIndex(where: { $0.toolUseId == toolUseId }) {
+                    agents[index].completedAt = Date()
+                    agents[index].totalTokens = tokens
+                    agents[index].durationMs = duration
+                    stats.record(tokens: tokens, durationMs: duration)
+                    changed = true
+                }
+            }
+        }
+        return changed
+    }
+
+    func pruneCompleted(olderThan interval: TimeInterval = 300) {
+        let cutoff = Date().addingTimeInterval(-interval)
+        agents.removeAll { !$0.isRunning && ($0.completedAt ?? .distantFuture) < cutoff }
+    }
+
+    var hasActiveAgents: Bool {
+        agents.contains { $0.isRunning }
+    }
+
+    var runningCount: Int {
+        agents.filter { $0.isRunning }.count
+    }
+}
+
 #if !TESTING
 private let colorRed = NSColor(red: 0.9, green: 0.2, blue: 0.2, alpha: 1.0)
 private let colorYellow = NSColor(red: 0.85, green: 0.65, blue: 0.0, alpha: 1.0)
@@ -596,6 +885,71 @@ func formatAttributedHeatmap(_ increases: [Date]) -> NSAttributedString? {
     result.append(NSAttributedString(string: "Activity", attributes: [.font: font]))
     result.append(NSAttributedString(string: "\n  \(heatmap)", attributes: [.font: monoFont, .foregroundColor: NSColor.labelColor]))
     result.append(NSAttributedString(string: "\n  \(hourlyHeatmapLabel())", attributes: [.font: dimFont, .foregroundColor: NSColor.secondaryLabelColor]))
+
+    return result
+}
+
+func formatAttributedAgentSection(_ agents: [TrackedAgent], projectName: String? = nil, stats: AgentStats = AgentStats(), isStale: Bool = false, now: Date = Date()) -> NSAttributedString {
+    let result = NSMutableAttributedString()
+    let font = NSFont.systemFont(ofSize: 13)
+    let smallFont = NSFont.systemFont(ofSize: 11)
+    let monoFont = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+
+    if isStale {
+        result.append(NSAttributedString(string: "Agents", attributes: [.font: font]))
+        if let name = projectName {
+            result.append(NSAttributedString(string: " \u{00B7} \(name)", attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]))
+        }
+        result.append(NSAttributedString(string: "\n  Session idle", attributes: [.font: smallFont, .foregroundColor: NSColor.tertiaryLabelColor]))
+        let statsLine = formatAgentStatsLine(stats)
+        if !statsLine.isEmpty {
+            result.append(NSAttributedString(string: "\n  \(statsLine)", attributes: [.font: monoFont, .foregroundColor: NSColor.tertiaryLabelColor]))
+        }
+        return result
+    }
+
+    let running = agents.filter { $0.isRunning }.count
+    let done = agents.count - running
+
+    result.append(NSAttributedString(string: "Agents", attributes: [.font: font]))
+    if let name = projectName {
+        result.append(NSAttributedString(string: " \u{00B7} \(name)", attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]))
+    }
+
+    var headerParts: [String] = []
+    if running > 0 { headerParts.append("\(running) running") }
+    if done > 0 { headerParts.append("\(done) done") }
+    if !headerParts.isEmpty {
+        result.append(NSAttributedString(string: " (\(headerParts.joined(separator: " \u{00B7} ")))", attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]))
+    }
+
+    for agent in agents {
+        let isRunning = agent.isRunning
+        let statusIcon = isRunning ? "\u{25CF}" : "\u{2713}"
+        let statusColor = isRunning ? NSColor.systemOrange : colorGreen
+
+        result.append(NSAttributedString(string: "\n  ", attributes: [.font: smallFont]))
+        result.append(NSAttributedString(string: statusIcon, attributes: [.font: smallFont, .foregroundColor: statusColor]))
+        result.append(NSAttributedString(string: " \(agent.description)", attributes: [.font: smallFont]))
+
+        let duration = formatAgentDuration(agent, now: now)
+        if !duration.isEmpty {
+            result.append(NSAttributedString(string: "  \(duration)", attributes: [.font: monoFont, .foregroundColor: NSColor.secondaryLabelColor]))
+        }
+
+        if let tokens = agent.totalTokens {
+            result.append(NSAttributedString(string: "  \(formatTokenCount(tokens)) tok", attributes: [.font: monoFont, .foregroundColor: NSColor.tertiaryLabelColor]))
+        }
+
+        if isRunning {
+            result.append(NSAttributedString(string: "  running", attributes: [.font: monoFont, .foregroundColor: NSColor.systemOrange]))
+        }
+    }
+
+    let statsLine = formatAgentStatsLine(stats)
+    if !statsLine.isEmpty {
+        result.append(NSAttributedString(string: "\n  \(statsLine)", attributes: [.font: monoFont, .foregroundColor: NSColor.tertiaryLabelColor]))
+    }
 
     return result
 }
@@ -816,6 +1170,9 @@ class StatusBarController: NSObject {
     private let updateItem = NSMenuItem(title: "Check for Updates\u{2026}", action: nil, keyEquivalent: "u")
     private var isUpdating = false
     private var updateTimer: Timer?
+    private let agentsItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    private var agentTracker = AgentTracker()
+    private var agentTimer: Timer?
 
     override init() {
         super.init()
@@ -834,6 +1191,9 @@ class StatusBarController: NSObject {
         modelBreakdownItem.isEnabled = false
         modelBreakdownItem.isHidden = true
         menu.addItem(modelBreakdownItem)
+        agentsItem.isEnabled = false
+        agentsItem.isHidden = true
+        menu.addItem(agentsItem)
         activityItem.isEnabled = false
         activityItem.isHidden = true
         menu.addItem(activityItem)
@@ -872,6 +1232,12 @@ class StatusBarController: NSObject {
         }
         RunLoop.current.add(updateTimer!, forMode: .common)
 
+        // Poll for active Claude Code agents every 3 seconds
+        agentTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
+            self?.refreshAgents()
+        }
+        RunLoop.current.add(agentTimer!, forMode: .common)
+
         // Refresh immediately after waking from sleep
         NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification,
@@ -886,6 +1252,7 @@ class StatusBarController: NSObject {
         uiTimer?.invalidate()
         secondsTimer?.invalidate()
         updateTimer?.invalidate()
+        agentTimer?.invalidate()
     }
 
     /// Called every 60s. Refreshes UI and triggers API fetch when due.
@@ -894,6 +1261,51 @@ class StatusBarController: NSObject {
         if Date() >= schedule.nextFetchAt {
             refresh()
         }
+    }
+
+    /// Called every 3s. Polls JSONL files for agent events.
+    private func refreshAgents() {
+        agentTracker.pruneCompleted()
+        _ = agentTracker.poll()
+        updateAgentsUI()
+        updateStatusBarAgentIndicator()
+    }
+
+    private func updateAgentsUI() {
+        let isStale = agentTracker.isSessionStale
+        let hasAgents = !agentTracker.agents.isEmpty
+        let hasStats = agentTracker.stats.completedCount > 0
+
+        guard hasAgents || isStale && hasStats else {
+            agentsItem.isHidden = true
+            return
+        }
+        agentsItem.isHidden = false
+        #if TESTING
+        agentsItem.title = formatAgentSection(agentTracker.agents, projectName: agentTracker.projectName, stats: agentTracker.stats, isStale: isStale)
+        #else
+        agentsItem.attributedTitle = formatAttributedAgentSection(agentTracker.agents, projectName: agentTracker.projectName, stats: agentTracker.stats, isStale: isStale)
+        #endif
+    }
+
+    private func updateStatusBarAgentIndicator() {
+        guard let usage = lastUsage else { return }
+        let runningCount = agentTracker.runningCount
+        #if TESTING
+        var title = formatStatusLine(usage, history: history)
+        if runningCount > 0 { title += " \u{26A1}\(runningCount)" }
+        statusItem.button?.title = title
+        #else
+        let base = formatAttributedStatusLine(usage, history: history)
+        if runningCount > 0 {
+            let result = NSMutableAttributedString(attributedString: base)
+            let font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .bold)
+            result.append(NSAttributedString(string: " \u{26A1}\(runningCount)", attributes: [.font: font, .foregroundColor: NSColor.systemOrange]))
+            statusItem.button?.attributedTitle = result
+        } else {
+            statusItem.button?.attributedTitle = base
+        }
+        #endif
     }
 
     /// 1-second timer for the first 60s after a refresh, then auto-stops.
@@ -1157,11 +1569,8 @@ class StatusBarController: NSObject {
         let h5 = usage.fiveHour.utilization
         let d7 = usage.sevenDay.utilization
 
-        #if TESTING
-        statusItem.button?.title = formatStatusLine(usage, history: history)
-        #else
-        statusItem.button?.attributedTitle = formatAttributedStatusLine(usage, history: history)
-        #endif
+        // Status bar title is updated via updateStatusBarAgentIndicator which includes usage + agent count
+        updateStatusBarAgentIndicator()
 
         #if TESTING
         detailFiveHour.title = "\(usageIndicator(for: h5))  5-hour window: \(formatValue(h5))%\(formatResetTime(usage.fiveHour.resetsAt))"
