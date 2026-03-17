@@ -163,6 +163,82 @@ func runParseRefreshTokenTests() {
     }
 }
 
+// MARK: - Expires At Parsing Tests
+
+func runParseExpiresAtTests() {
+    suite("parseExpiresAt") {
+        test("valid expiresAt") {
+            let json = """
+            {"claudeAiOauth":{"accessToken":"tok","refreshToken":"rt","expiresAt":1700000000000}}
+            """.data(using: .utf8)!
+            let date = parseExpiresAt(from: json)
+            assertNotNil(date, "valid expiresAt")
+            if let date = date {
+                assertEqual(Int(date.timeIntervalSince1970), 1700000000, "correct timestamp")
+            }
+        }
+
+        test("missing expiresAt") {
+            let json = """
+            {"claudeAiOauth":{"accessToken":"tok","refreshToken":"rt"}}
+            """.data(using: .utf8)!
+            assertNil(parseExpiresAt(from: json), "missing expiresAt")
+        }
+
+        test("missing oauth key") {
+            let json = """
+            {"someOther":{"expiresAt":1700000000000}}
+            """.data(using: .utf8)!
+            assertNil(parseExpiresAt(from: json), "missing claudeAiOauth")
+        }
+
+        test("null expiresAt") {
+            let json = """
+            {"claudeAiOauth":{"accessToken":"tok","expiresAt":null}}
+            """.data(using: .utf8)!
+            assertNil(parseExpiresAt(from: json), "null expiresAt")
+        }
+
+        test("string expiresAt rejected") {
+            let json = """
+            {"claudeAiOauth":{"accessToken":"tok","expiresAt":"1700000000000"}}
+            """.data(using: .utf8)!
+            assertNil(parseExpiresAt(from: json), "string expiresAt")
+        }
+
+        test("invalid JSON") {
+            let data = "not json".data(using: .utf8)!
+            assertNil(parseExpiresAt(from: data), "invalid JSON")
+        }
+
+        test("empty data") {
+            assertNil(parseExpiresAt(from: Data()), "empty data")
+        }
+
+        test("zero expiresAt") {
+            let json = """
+            {"claudeAiOauth":{"accessToken":"tok","expiresAt":0}}
+            """.data(using: .utf8)!
+            let date = parseExpiresAt(from: json)
+            assertNotNil(date, "zero expiresAt")
+            if let date = date {
+                assertEqual(Int(date.timeIntervalSince1970), 0, "epoch")
+            }
+        }
+
+        test("floating-point expiresAt") {
+            let json = """
+            {"claudeAiOauth":{"accessToken":"tok","expiresAt":1700000000000.0}}
+            """.data(using: .utf8)!
+            let date = parseExpiresAt(from: json)
+            assertNotNil(date, "float expiresAt")
+            if let date = date {
+                assertEqual(Int(date.timeIntervalSince1970), 1700000000, "correct timestamp from float")
+            }
+        }
+    }
+}
+
 // MARK: - Usage Parsing Tests
 
 func runParseUsageTests() {
@@ -1299,6 +1375,7 @@ func runNotificationTests() {
 func runAllTests() {
     runParseTokenTests()
     runParseRefreshTokenTests()
+    runParseExpiresAtTests()
     runParseUsageTests()
     runFormatValueTests()
     runIndicatorTests()

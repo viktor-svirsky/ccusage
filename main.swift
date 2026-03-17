@@ -163,6 +163,22 @@ func parseRefreshToken(from jsonData: Data) -> String? {
     return token
 }
 
+func parseExpiresAt(from jsonData: Data) -> Date? {
+    guard let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+          let oauth = json["claudeAiOauth"] as? [String: Any] else {
+        return nil
+    }
+    let ms: Double
+    if let intMs = oauth["expiresAt"] as? Int {
+        ms = Double(intMs)
+    } else if let doubleMs = oauth["expiresAt"] as? Double {
+        ms = doubleMs
+    } else {
+        return nil
+    }
+    return Date(timeIntervalSince1970: ms / 1000.0)
+}
+
 private let iso8601Formatter: ISO8601DateFormatter = {
     let f = ISO8601DateFormatter()
     f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -502,6 +518,7 @@ class StatusBarController: NSObject {
     private var uiTimer: Timer?
     private var isFetching = false
     private var didRetryWithRefresh = false
+    private var consecutiveRefreshFailures = 0
     private var lastRefreshDate: Date?
     private var lastUsage: UsageData?
     private var schedule = FetchSchedule()
@@ -718,9 +735,23 @@ class StatusBarController: NSObject {
 
                 if let http = response as? HTTPURLResponse, http.statusCode != 200 {
                     if http.statusCode == 401 {
-                        self.setError("Token expired")
-                        self.detailFiveHour.title = "Re-authenticate in Claude Code"
-                        self.detailSevenDay.title = "Then click Refresh Now"
+                        if !self.didRetryWithRefresh {
+                            self.didRetryWithRefresh = true
+                            self.lastRefreshItem.title = "Refreshing token..."
+                            self.refreshOAuthToken { [weak self] newToken in
+                                guard let self else { return }
+                                if let newToken {
+                                    self.consecutiveRefreshFailures = 0
+                                    self.fetchUsage(token: newToken)
+                                } else {
+                                    self.didRetryWithRefresh = false
+                                    self.handleRefreshFailure()
+                                }
+                            }
+                            return
+                        }
+                        self.didRetryWithRefresh = false
+                        self.handleRefreshFailure()
                     } else if http.statusCode == 429 {
                         // Rate limit is per-access-token; refresh to get a new one
                         if !self.didRetryWithRefresh {
@@ -732,6 +763,7 @@ class StatusBarController: NSObject {
                                     self?.didRetryWithRefresh = false
                                     return
                                 }
+                                self.consecutiveRefreshFailures = 0
                                 self.fetchUsage(token: newToken)
                             }
                             return
@@ -764,6 +796,23 @@ class StatusBarController: NSObject {
         lastRefreshItem.title = "Next API call in \(minutes)m (rate limited)"
     }
 
+    private func handleRefreshFailure() {
+        consecutiveRefreshFailures += 1
+        if consecutiveRefreshFailures >= 3 {
+            setError("Token expired")
+            detailFiveHour.title = "Re-authenticate in Claude Code"
+            detailSevenDay.title = "Then click Refresh Now"
+            detailSevenDay.isHidden = false
+        } else {
+            schedule.nextFetchAt = Date().addingTimeInterval(schedule.interval)
+            let minutes = Int(schedule.interval) / 60
+            if lastUsage == nil {
+                setError("Token refresh failed")
+            }
+            lastRefreshItem.title = "Token refresh failed \u{2014} retrying in \(max(minutes, 1))m"
+        }
+    }
+
     // MARK: - Display
 
     private func updateDisplay(_ usage: UsageData) {
@@ -771,6 +820,7 @@ class StatusBarController: NSObject {
         history.record(usage)
         lastRefreshDate = Date()
         didRetryWithRefresh = false
+        consecutiveRefreshFailures = 0
         schedule.onSuccess()
 
         let h5Pace = calculatePace(utilization: usage.fiveHour.utilization, resetsAt: usage.fiveHour.resetsAt, windowDuration: 5 * 3600)
@@ -860,13 +910,40 @@ class StatusBarController: NSObject {
         guard !isFetching else { return }
         detailSevenDay.isHidden = false
 
-        guard let token = readToken() else {
+        guard let keychainData = readKeychainData() else {
             setError("No creds")
             detailFiveHour.title = "Cannot read credentials from Keychain"
             detailSevenDay.title = "Ensure Claude Code is signed in"
             detailSevenDay.isHidden = false
             return
         }
+
+        guard let token = parseToken(from: keychainData) else {
+            setError("No creds")
+            detailFiveHour.title = "Cannot read credentials from Keychain"
+            detailSevenDay.title = "Ensure Claude Code is signed in"
+            detailSevenDay.isHidden = false
+            return
+        }
+
+        // Proactive refresh: if token expires within 5 minutes, refresh first
+        let expiresAt = parseExpiresAt(from: keychainData)
+        if let expiresAt, expiresAt.timeIntervalSinceNow < 300 {
+            isFetching = true
+            lastRefreshItem.title = "Refreshing token..."
+            refreshOAuthToken { [weak self] newToken in
+                guard let self else { return }
+                if let newToken {
+                    self.consecutiveRefreshFailures = 0
+                    self.fetchUsage(token: newToken)
+                } else {
+                    self.isFetching = false
+                    self.handleRefreshFailure()
+                }
+            }
+            return
+        }
+
         fetchUsage(token: token)
     }
 
