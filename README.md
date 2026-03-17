@@ -2,7 +2,7 @@
 
 [![macOS 13+](https://img.shields.io/badge/macOS-13%2B-blue?logo=apple&logoColor=white)](https://www.apple.com/macos/)
 [![Swift](https://img.shields.io/badge/Swift-5.9-F05138?logo=swift&logoColor=white)](https://swift.org)
-[![Tests](https://img.shields.io/badge/tests-298%20passing-brightgreen)](https://github.com/viktor-svirsky/ccusage)
+[![Tests](https://img.shields.io/badge/tests-311%20passing-brightgreen)](https://github.com/viktor-svirsky/ccusage)
 [![GitHub release](https://img.shields.io/github/v/release/viktor-svirsky/ccusage)](https://github.com/viktor-svirsky/ccusage/releases/latest)
 [![Homebrew](https://img.shields.io/badge/Homebrew-tap-FBB040?logo=homebrew&logoColor=white)](https://github.com/viktor-svirsky/homebrew-ccusage)
 
@@ -17,16 +17,55 @@ macOS menu bar app that shows Claude Code usage limits (5-hour and 7-day windows
 ## Features
 
 ### Menu Bar
-- Compact display: `32/34` — 5-hour / 7-day utilization percentages
-- Pace-aware colors: numbers turn yellow/red based on both raw utilization AND spending rate (e.g. 40% on day 1 of 7 shows red because you're ahead of pace)
-- Color thresholds: green (<50%), yellow (50-79%), red (80%+) — adjusted by pace multiplier
 
-### Dropdown Detail
-- **Window details** — progress bars, remaining percentage, reset countdowns, inline pace indicator (e.g. `0.5x`)
-- **Model breakdown** — per-model 7-day usage (Opus, Sonnet, OAuth apps, Cowork) with mini progress bars
-- **Forecast** — depletion estimates for both windows, daily spend rate vs sustainable rate, hourly budget advice
-- **Activity** — session refresh count, peak usage hours (after enough data)
-- Sparkline charts (▁▂▃▄▅▆▇█) for the 5-hour window showing recent usage pattern
+`32/34` — compact 5-hour / 7-day utilization percentages. Each number is color-coded:
+
+| Color | Meaning |
+|-------|---------|
+| Green | <50% utilization (adjusted by pace) |
+| Yellow | 50–79% utilization |
+| Red | 80%+ utilization |
+
+Colors account for spending pace — e.g. 40% on day 1 of 7 shows red because you're ahead of budget.
+
+### Dropdown
+
+The dropdown menu shows all usage details organized into sections:
+
+#### 5-hour window
+- Utilization percentage (bold, color-coded)
+- Remaining percentage free
+- Reset countdown (e.g. "resets in 4h 11m")
+- Progress bar (`●●○○○○○○○○○○○○○○○○○○`)
+- Pace indicator (e.g. `0.6x` — your spend rate relative to a uniform budget)
+- Sparkline chart (`▁▂▃▄▅▆▇█`) showing recent utilization trend from session history
+
+#### 7-day window
+- Same fields as 5-hour window (utilization, remaining, reset, progress bar, pace, sparkline)
+
+#### Models (7-day)
+- Per-model breakdown: Opus, Sonnet, OAuth apps, Cowork
+- Each model shows a mini progress bar + utilization percentage + reset countdown
+- Extra usage status (if enabled on your plan)
+- Hidden when no model data is available
+
+#### Activity
+- 24-hour heatmap (`▁▁▁▃▅▇▆▅▃▂▁▁▁▁▂▅▇▇▆▃▁▁▁▁`) showing which hours have the most usage
+- Time axis below (`00    06    12    18`)
+- Appears after 3+ usage increases are detected in the session
+
+#### Forecast
+- **Depletion estimate** — when each window will hit 100% at current rate, or "Won't deplete this window" (green) if safe
+- **Daily rate** — current spend rate vs sustainable rate per day (e.g. "8.3%/day · Safe: 22.9%/day")
+- **Budget advice** — how much you can spend per hour to last the window
+- **Session stats** — refresh count and duration (after 2+ refreshes)
+- **Peak hours** — most active hour of the day (after enough data)
+
+#### Footer
+- Last refresh timestamp (live-updating seconds counter for first minute)
+- Refresh Now (⌘R)
+- Version + update status (⌘U)
+- Quit (⌘Q)
 
 ### Infrastructure
 - Auto-refresh every 5 minutes + on wake from sleep
@@ -64,7 +103,7 @@ make install
 ## Build & Test
 
 ```bash
-make test    # run 298 unit tests
+make test    # run 311 unit tests
 make build   # compile .app bundle
 ```
 

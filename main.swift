@@ -395,6 +395,28 @@ func paceLabel(_ pace: Double) -> String {
     return String(format: "● %.1fx pace (on track)", pace)
 }
 
+func hourlyHeatmap(_ increases: [Date]) -> String? {
+    guard increases.count >= 3 else { return nil }
+    let blocks: [Character] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
+    var hourCounts = [Int: Int]()
+    for date in increases {
+        let hour = Calendar.current.component(.hour, from: date)
+        hourCounts[hour, default: 0] += 1
+    }
+    let maxCount = hourCounts.values.max() ?? 1
+    let chars = (0..<24).map { hour -> Character in
+        let count = hourCounts[hour, default: 0]
+        if count == 0 { return blocks[0] }
+        let index = Int((Double(count) / Double(maxCount)) * Double(blocks.count - 1))
+        return blocks[min(max(index, 0), blocks.count - 1)]
+    }
+    return String(chars)
+}
+
+func hourlyHeatmapLabel() -> String {
+    return "00    06    12    18"
+}
+
 func formatStatusLine(_ usage: UsageData, history: UsageHistory = UsageHistory()) -> String {
     let h5 = usage.fiveHour.utilization
     let d7 = usage.sevenDay.utilization
@@ -562,6 +584,21 @@ func formatAttributedModelBreakdown(_ models: ModelBreakdown, extraUsage: ExtraU
 
     return result
 }
+
+
+func formatAttributedHeatmap(_ increases: [Date]) -> NSAttributedString? {
+    guard let heatmap = hourlyHeatmap(increases) else { return nil }
+    let result = NSMutableAttributedString()
+    let font = NSFont.systemFont(ofSize: 13)
+    let monoFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .medium)
+    let dimFont = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+
+    result.append(NSAttributedString(string: "Activity", attributes: [.font: font]))
+    result.append(NSAttributedString(string: "\n  \(heatmap)", attributes: [.font: monoFont, .foregroundColor: NSColor.labelColor]))
+    result.append(NSAttributedString(string: "\n  \(hourlyHeatmapLabel())", attributes: [.font: dimFont, .foregroundColor: NSColor.secondaryLabelColor]))
+
+    return result
+}
 #endif
 
 func peakHoursSummary(_ increases: [Date]) -> String? {
@@ -587,13 +624,17 @@ func formatInsights(_ usage: UsageData, sessionFetchCount: Int = 0, sessionStart
     if let depl7 = depletionEstimate(utilization: usage.sevenDay.utilization, resetsAt: usage.sevenDay.resetsAt, windowDuration: 7 * 86400) {
         lines.append("7d: \(depl7)")
     }
+    if let advice = budgetAdvice(utilization: usage.sevenDay.utilization, resetsAt: usage.sevenDay.resetsAt, windowDuration: 7 * 86400) {
+        lines.append(advice)
+    }
+    if let heatmap = hourlyHeatmap(usageIncreases) {
+        lines.append("Activity: \(heatmap)")
+        lines.append("          \(hourlyHeatmapLabel())")
+    }
     let sessionMinutes = Int(Date().timeIntervalSince(sessionStart)) / 60
     lines.append("Session: \(sessionFetchCount) checks over \(max(sessionMinutes, 1))m")
     if let peak = peakHoursSummary(usageIncreases) {
         lines.append(peak)
-    }
-    if let advice = budgetAdvice(utilization: usage.sevenDay.utilization, resetsAt: usage.sevenDay.resetsAt, windowDuration: 7 * 86400) {
-        lines.append(advice)
     }
     return lines.joined(separator: "\n")
 }
@@ -765,6 +806,7 @@ class StatusBarController: NSObject {
     private let detailFiveHour = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let detailSevenDay = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let modelBreakdownItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    private let activityItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let insightsItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let lastRefreshItem = NSMenuItem(title: "Last refresh: never", action: nil, keyEquivalent: "")
     private var sessionStartDate = Date()
@@ -792,6 +834,9 @@ class StatusBarController: NSObject {
         modelBreakdownItem.isEnabled = false
         modelBreakdownItem.isHidden = true
         menu.addItem(modelBreakdownItem)
+        activityItem.isEnabled = false
+        activityItem.isHidden = true
+        menu.addItem(activityItem)
         insightsItem.isEnabled = false
         menu.addItem(insightsItem)
         menu.addItem(.separator())
@@ -1136,7 +1181,8 @@ class StatusBarController: NSObject {
 
         // 7-day window
         let d7Pace = calculatePace(utilization: usage.sevenDay.utilization, resetsAt: usage.sevenDay.resetsAt, windowDuration: 7 * 86400)
-        detailSevenDay.attributedTitle = formatAttributedMenuItem(label: "7-day window ", window: usage.sevenDay, pace: d7Pace)
+        let d7Spark = history.sparkline(for: \.sevenDay)
+        detailSevenDay.attributedTitle = formatAttributedMenuItem(label: "7-day window ", window: usage.sevenDay, pace: d7Pace, sparkline: d7Spark)
 
         // Model breakdown
         if let models = usage.models {
@@ -1144,6 +1190,14 @@ class StatusBarController: NSObject {
             modelBreakdownItem.attributedTitle = formatAttributedModelBreakdown(models, extraUsage: usage.extraUsage)
         } else {
             modelBreakdownItem.isHidden = true
+        }
+
+        // Activity heatmap
+        if let heatmapAttr = formatAttributedHeatmap(usageIncreases) {
+            activityItem.isHidden = false
+            activityItem.attributedTitle = heatmapAttr
+        } else {
+            activityItem.isHidden = true
         }
 
         insightsItem.attributedTitle = formatAttributedInsights(usage, sessionFetchCount: sessionFetchCount, sessionStart: sessionStartDate, usageIncreases: usageIncreases)
