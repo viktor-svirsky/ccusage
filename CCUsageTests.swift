@@ -1627,6 +1627,242 @@ func runFormatInsightsChartsTests() {
     }
 }
 
+// MARK: - Agent Tracking Tests
+
+func runAgentTrackingTests() {
+    suite("parseAgentLaunches") {
+        test("valid agent launch") {
+            let json = """
+            {"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_01ABC","name":"Agent","input":{"description":"Review code","subagent_type":"code-reviewer","prompt":"review this"}}]},"timestamp":"2026-03-11T14:49:55.323Z"}
+            """.data(using: .utf8)!
+            let agents = parseAgentLaunches(from: json)
+            assertEqual(agents.count, 1, "one agent launched")
+            assertEqual(agents[0].toolUseId, "toolu_01ABC")
+            assertEqual(agents[0].description, "Review code")
+            assertEqual(agents[0].subagentType, "code-reviewer")
+            check(agents[0].isRunning, "agent should be running")
+        }
+
+        test("multiple agents in one message") {
+            let json = """
+            {"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_01A","name":"Agent","input":{"description":"Agent 1","subagent_type":"general-purpose","prompt":"a"}},{"type":"tool_use","id":"toolu_01B","name":"Agent","input":{"description":"Agent 2","subagent_type":"code-reviewer","prompt":"b"}}]},"timestamp":"2026-03-11T14:50:00.000Z"}
+            """.data(using: .utf8)!
+            let agents = parseAgentLaunches(from: json)
+            assertEqual(agents.count, 2, "two agents launched")
+            assertEqual(agents[0].description, "Agent 1")
+            assertEqual(agents[1].description, "Agent 2")
+        }
+
+        test("non-agent tool_use ignored") {
+            let json = """
+            {"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_01X","name":"Read","input":{"file_path":"/tmp/foo"}}]},"timestamp":"2026-03-11T14:50:00.000Z"}
+            """.data(using: .utf8)!
+            let agents = parseAgentLaunches(from: json)
+            assertEqual(agents.count, 0, "no agents from Read tool")
+        }
+
+        test("user message ignored") {
+            let json = """
+            {"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_01ABC"}]}}
+            """.data(using: .utf8)!
+            let agents = parseAgentLaunches(from: json)
+            assertEqual(agents.count, 0, "user message has no launches")
+        }
+
+        test("invalid JSON") {
+            let data = "not json".data(using: .utf8)!
+            assertEqual(parseAgentLaunches(from: data).count, 0, "invalid JSON")
+        }
+
+        test("missing description uses default") {
+            let json = """
+            {"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_01Z","name":"Agent","input":{"prompt":"do stuff"}}]},"timestamp":"2026-03-11T14:50:00.000Z"}
+            """.data(using: .utf8)!
+            let agents = parseAgentLaunches(from: json)
+            assertEqual(agents.count, 1)
+            assertEqual(agents[0].description, "Agent")
+            assertEqual(agents[0].subagentType, "general-purpose")
+        }
+    }
+
+    suite("parseAgentCompletions") {
+        test("valid completion with usage") {
+            let json = """
+            {"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_01ABC","content":[{"type":"text","text":"result here"},{"type":"text","text":"agentId: abc123\\n<usage>total_tokens: 14375\\ntool_uses: 1\\nduration_ms: 8494</usage>"}]}]}}
+            """.data(using: .utf8)!
+            let completions = parseAgentCompletions(from: json)
+            assertEqual(completions.count, 1, "one completion")
+            assertEqual(completions[0].toolUseId, "toolu_01ABC")
+            assertEqual(completions[0].totalTokens ?? 0, 14375)
+            assertEqual(completions[0].durationMs ?? 0, 8494)
+        }
+
+        test("completion without usage") {
+            let json = """
+            {"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_01XYZ","content":[{"type":"text","text":"just a result"}]}]}}
+            """.data(using: .utf8)!
+            let completions = parseAgentCompletions(from: json)
+            assertEqual(completions.count, 1)
+            assertNil(completions[0].totalTokens, "no tokens")
+            assertNil(completions[0].durationMs, "no duration")
+        }
+
+        test("assistant message ignored") {
+            let json = """
+            {"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_01A","name":"Agent","input":{"prompt":"x"}}]}}
+            """.data(using: .utf8)!
+            assertEqual(parseAgentCompletions(from: json).count, 0)
+        }
+    }
+
+    suite("formatAgentDuration") {
+        test("completed agent with duration") {
+            let agent = TrackedAgent(toolUseId: "t1", description: "Test", subagentType: "gp", launchedAt: Date(), completedAt: Date(), totalTokens: nil, durationMs: 8494)
+            assertEqual(formatAgentDuration(agent), "8s")
+        }
+
+        test("completed agent long duration") {
+            let agent = TrackedAgent(toolUseId: "t1", description: "Test", subagentType: "gp", launchedAt: Date(), completedAt: Date(), totalTokens: nil, durationMs: 125000)
+            assertEqual(formatAgentDuration(agent), "2m5s")
+        }
+
+        test("running agent shows elapsed") {
+            let now = Date()
+            let agent = TrackedAgent(toolUseId: "t1", description: "Test", subagentType: "gp", launchedAt: now.addingTimeInterval(-15))
+            assertEqual(formatAgentDuration(agent, now: now), "15s")
+        }
+    }
+
+    suite("formatTokenCount") {
+        test("small count") {
+            assertEqual(formatTokenCount(500), "500")
+        }
+
+        test("thousands") {
+            assertEqual(formatTokenCount(14375), "14K")
+        }
+
+        test("exact thousand") {
+            assertEqual(formatTokenCount(1000), "1K")
+        }
+    }
+
+    suite("formatAgentSection") {
+        test("empty agents") {
+            assertEqual(formatAgentSection([]), "")
+        }
+
+        test("running agents") {
+            let now = Date()
+            let agents = [
+                TrackedAgent(toolUseId: "t1", description: "Review code", subagentType: "code-reviewer", launchedAt: now.addingTimeInterval(-10)),
+                TrackedAgent(toolUseId: "t2", description: "Bug scan", subagentType: "general-purpose", launchedAt: now.addingTimeInterval(-5))
+            ]
+            let result = formatAgentSection(agents, now: now)
+            check(result.contains("2 running"), "header shows running count")
+            check(result.contains("Review code"), "shows first agent")
+            check(result.contains("Bug scan"), "shows second agent")
+        }
+
+        test("mixed running and done") {
+            let now = Date()
+            let agents = [
+                TrackedAgent(toolUseId: "t1", description: "Done task", subagentType: "gp", launchedAt: now.addingTimeInterval(-30), completedAt: now, totalTokens: 14000, durationMs: 8000),
+                TrackedAgent(toolUseId: "t2", description: "Running task", subagentType: "gp", launchedAt: now.addingTimeInterval(-5))
+            ]
+            let result = formatAgentSection(agents, now: now)
+            check(result.contains("1 running"), "one running")
+            check(result.contains("1 done"), "one done")
+            check(result.contains("14K tok"), "shows token count")
+        }
+
+        test("with project name") {
+            let now = Date()
+            let agents = [TrackedAgent(toolUseId: "t1", description: "Test", subagentType: "gp", launchedAt: now)]
+            let result = formatAgentSection(agents, projectName: "ows-payment", now: now)
+            check(result.contains("ows-payment"), "shows project name")
+        }
+
+        test("with stats") {
+            let now = Date()
+            let agents = [TrackedAgent(toolUseId: "t1", description: "Test", subagentType: "gp", launchedAt: now, completedAt: now, totalTokens: 5000, durationMs: 3000)]
+            var stats = AgentStats()
+            stats.record(tokens: 5000, durationMs: 3000)
+            let result = formatAgentSection(agents, stats: stats, now: now)
+            check(result.contains("Session: 1 agents"), "shows stats")
+            check(result.contains("5K tok"), "shows total tokens in stats")
+        }
+
+        test("stale session") {
+            let result = formatAgentSection([], isStale: true)
+            check(result.contains("session idle"), "shows idle message")
+        }
+    }
+
+    suite("projectNameFromSessionPath") {
+        test("standard project path") {
+            let path = "/Users/test/.claude/projects/-Users-test-Projects-ows-payment/abc.jsonl"
+            assertEqual(projectNameFromSessionPath(path, homeDir: "/Users/test"), "ows-payment")
+        }
+
+        test("nested project path") {
+            let path = "/Users/test/.claude/projects/-Users-test-Projects-terraform-infra/abc.jsonl"
+            assertEqual(projectNameFromSessionPath(path, homeDir: "/Users/test"), "terraform-infra")
+        }
+
+        test("root projects dir returns nil") {
+            let path = "/Users/test/.claude/projects/-Users-test-Projects/abc.jsonl"
+            assertNil(projectNameFromSessionPath(path, homeDir: "/Users/test"), "root dir has no project name")
+        }
+
+        test("non-matching home dir") {
+            let path = "/Users/other/.claude/projects/-Users-other-Projects-foo/abc.jsonl"
+            assertNil(projectNameFromSessionPath(path, homeDir: "/Users/test"), "different home dir")
+        }
+    }
+
+    suite("AgentStats") {
+        test("initial state") {
+            let stats = AgentStats()
+            assertEqual(stats.completedCount, 0)
+            assertEqual(stats.totalTokens, 0)
+            assertEqual(stats.avgDurationMs, 0)
+        }
+
+        test("record and average") {
+            var stats = AgentStats()
+            stats.record(tokens: 10000, durationMs: 5000)
+            stats.record(tokens: 20000, durationMs: 15000)
+            assertEqual(stats.completedCount, 2)
+            assertEqual(stats.totalTokens, 30000)
+            assertEqual(stats.avgDurationMs, 10000)
+        }
+
+        test("record with nil values") {
+            var stats = AgentStats()
+            stats.record(tokens: nil, durationMs: nil)
+            assertEqual(stats.completedCount, 1)
+            assertEqual(stats.totalTokens, 0)
+        }
+    }
+
+    suite("formatAgentStatsLine") {
+        test("no completed agents") {
+            assertEqual(formatAgentStatsLine(AgentStats()), "")
+        }
+
+        test("with completed agents") {
+            var stats = AgentStats()
+            stats.record(tokens: 14000, durationMs: 8000)
+            stats.record(tokens: 20000, durationMs: 12000)
+            let line = formatAgentStatsLine(stats)
+            check(line.contains("2 agents"), "agent count")
+            check(line.contains("34K tok"), "total tokens")
+            check(line.contains("avg 10s"), "average duration")
+        }
+    }
+}
+
 // MARK: - Test Runner
 
 func runAllTests() {
@@ -1658,6 +1894,7 @@ func runAllTests() {
     runFormatInsightsChartsTests()
     runParseWindowTests()
     runModelBreakdownParseTests()
+    runAgentTrackingTests()
 
     print("\n=== Results: \(passedTests)/\(totalTests) passed ===")
     if !failedTests.isEmpty {
