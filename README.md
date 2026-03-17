@@ -2,7 +2,7 @@
 
 [![macOS 13+](https://img.shields.io/badge/macOS-13%2B-blue?logo=apple&logoColor=white)](https://www.apple.com/macos/)
 [![Swift](https://img.shields.io/badge/Swift-5.9-F05138?logo=swift&logoColor=white)](https://swift.org)
-[![Tests](https://img.shields.io/badge/tests-259%20passing-brightgreen)](https://github.com/viktor-svirsky/ccusage)
+[![Tests](https://img.shields.io/badge/tests-271%20passing-brightgreen)](https://github.com/viktor-svirsky/ccusage)
 [![GitHub release](https://img.shields.io/github/v/release/viktor-svirsky/ccusage)](https://github.com/viktor-svirsky/ccusage/releases/latest)
 [![Homebrew](https://img.shields.io/badge/Homebrew-tap-FBB040?logo=homebrew&logoColor=white)](https://github.com/viktor-svirsky/homebrew-ccusage)
 
@@ -29,6 +29,8 @@ macOS menu bar app that shows Claude Code usage limits (5-hour and 7-day windows
 
 ### Infrastructure
 - Auto-refresh every 5 minutes + on wake from sleep
+- Independent OAuth token refresh — works even when Claude Code isn't running
+- Proactive token renewal before expiry + automatic retry on 401 with graceful degradation
 - Adaptive rate-limit handling with exponential backoff (respects Retry-After, auto-refreshes OAuth token on 429)
 - Session-scoped usage history (last 24 data points, ~2 hours)
 - Auto-update from GitHub Releases with one-click install
@@ -37,7 +39,7 @@ macOS menu bar app that shows Claude Code usage limits (5-hour and 7-day windows
 ## Requirements
 
 - macOS 13+
-- Claude Code signed in (OAuth token in Keychain)
+- Claude Code signed in at least once (OAuth token in Keychain)
 
 ## Install
 
@@ -60,7 +62,7 @@ make install
 ## Build & Test
 
 ```bash
-make test    # run 259 unit tests
+make test    # run 271 unit tests
 make build   # compile .app bundle
 ```
 
