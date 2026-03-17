@@ -1520,6 +1520,113 @@ func runModelBreakdownParseTests() {
     }
 }
 
+// MARK: - Hourly Heatmap Tests
+
+func runHourlyHeatmapTests() {
+    suite("hourlyHeatmap") {
+        test("nil with fewer than 3 entries") {
+            assertNil(hourlyHeatmap([]), "nil for empty")
+            assertNil(hourlyHeatmap([Date(), Date()]), "nil for 2 entries")
+        }
+
+        test("returns 24-char heatmap with 3+ entries") {
+            let cal = Calendar.current
+            let dates = [
+                cal.date(bySettingHour: 14, minute: 0, second: 0, of: Date())!,
+                cal.date(bySettingHour: 14, minute: 30, second: 0, of: Date())!,
+                cal.date(bySettingHour: 10, minute: 0, second: 0, of: Date())!,
+            ]
+            let result = hourlyHeatmap(dates)
+            assertNotNil(result, "produces heatmap")
+            assertEqual(result!.count, 24, "24 characters for 24 hours")
+        }
+
+        test("peak hour gets highest block") {
+            let cal = Calendar.current
+            var dates: [Date] = []
+            for _ in 0..<10 {
+                dates.append(cal.date(bySettingHour: 14, minute: 0, second: 0, of: Date())!)
+            }
+            dates.append(cal.date(bySettingHour: 10, minute: 0, second: 0, of: Date())!)
+            let result = hourlyHeatmap(dates)!
+            let chars = Array(result)
+            assertEqual(chars[14], Character("█"), "peak hour at index 14 gets highest block")
+        }
+
+        test("empty hours get lowest block") {
+            let cal = Calendar.current
+            let dates = [
+                cal.date(bySettingHour: 14, minute: 0, second: 0, of: Date())!,
+                cal.date(bySettingHour: 14, minute: 30, second: 0, of: Date())!,
+                cal.date(bySettingHour: 14, minute: 45, second: 0, of: Date())!,
+            ]
+            let result = hourlyHeatmap(dates)!
+            let chars = Array(result)
+            assertEqual(chars[0], Character("▁"), "empty hour gets lowest block")
+            assertEqual(chars[3], Character("▁"), "empty hour gets lowest block")
+        }
+
+        test("multiple peaks distribute correctly") {
+            let cal = Calendar.current
+            var dates: [Date] = []
+            for _ in 0..<8 {
+                dates.append(cal.date(bySettingHour: 14, minute: 0, second: 0, of: Date())!)
+            }
+            for _ in 0..<4 {
+                dates.append(cal.date(bySettingHour: 10, minute: 0, second: 0, of: Date())!)
+            }
+            let result = hourlyHeatmap(dates)!
+            let chars = Array(result)
+            assertEqual(chars[14], Character("█"), "peak hour 14")
+            // 4/8 = 0.5, index = 0.5 * 7 = 3 → "▄"
+            assertEqual(chars[10], Character("▄"), "half-peak hour 10")
+        }
+    }
+}
+
+// MARK: - Hourly Heatmap Label Tests
+
+func runHourlyHeatmapLabelTests() {
+    suite("hourlyHeatmapLabel") {
+        test("returns correct label") {
+            assertEqual(hourlyHeatmapLabel(), "00    06    12    18", "label format")
+        }
+    }
+}
+
+// MARK: - Format Insights with Charts Tests
+
+func runFormatInsightsChartsTests() {
+    suite("formatInsights with charts") {
+        test("includes heatmap when enough activity data") {
+            let cal = Calendar.current
+            let dates = [
+                cal.date(bySettingHour: 14, minute: 0, second: 0, of: Date())!,
+                cal.date(bySettingHour: 14, minute: 30, second: 0, of: Date())!,
+                cal.date(bySettingHour: 10, minute: 0, second: 0, of: Date())!,
+            ]
+            let now = Date()
+            let usage = UsageData(
+                fiveHour: UsageWindow(utilization: 10, remaining: 90, resetsAt: nil),
+                sevenDay: UsageWindow(utilization: 10, remaining: 90, resetsAt: nil)
+            )
+            let result = formatInsights(usage, sessionFetchCount: 1, sessionStart: now, usageIncreases: dates)
+            check(result.contains("Activity:"), "contains activity heatmap")
+            check(result.contains("00    06    12    18"), "contains heatmap label")
+        }
+
+        test("no heatmap with insufficient data") {
+            let now = Date()
+            let usage = UsageData(
+                fiveHour: UsageWindow(utilization: 10, remaining: 90, resetsAt: nil),
+                sevenDay: UsageWindow(utilization: 10, remaining: 90, resetsAt: nil)
+            )
+            let result = formatInsights(usage, sessionFetchCount: 1, sessionStart: now, usageIncreases: [Date()])
+            check(!result.contains("Activity:"), "no heatmap with 1 entry")
+        }
+    }
+}
+
 // MARK: - Test Runner
 
 func runAllTests() {
@@ -1546,6 +1653,9 @@ func runAllTests() {
     runBudgetAdviceTests()
     runDailyBreakdownTests()
     runPeakHoursTests()
+    runHourlyHeatmapTests()
+    runHourlyHeatmapLabelTests()
+    runFormatInsightsChartsTests()
     runParseWindowTests()
     runModelBreakdownParseTests()
 
