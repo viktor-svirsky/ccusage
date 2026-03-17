@@ -1329,7 +1329,6 @@ func runNotificationTests() {
 
 func runDepletionEstimateTests() {
     let fiveHours: TimeInterval = 5 * 3600
-    let sevenDays: TimeInterval = 7 * 86400
     let now = Date(timeIntervalSince1970: 1000000)
 
     suite("depletionEstimate") {
