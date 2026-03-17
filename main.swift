@@ -164,31 +164,33 @@ func determineNotifications(
 
 // MARK: - Pure Logic (testable)
 
-func parseToken(from jsonData: Data) -> String? {
-    guard let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
-          let oauth = json["claudeAiOauth"] as? [String: Any],
-          let token = oauth["accessToken"] as? String,
-          !token.isEmpty else {
-        return nil
-    }
-    return token
-}
-
-func parseRefreshToken(from jsonData: Data) -> String? {
-    guard let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
-          let oauth = json["claudeAiOauth"] as? [String: Any],
-          let token = oauth["refreshToken"] as? String,
-          !token.isEmpty else {
-        return nil
-    }
-    return token
-}
-
-func parseExpiresAt(from jsonData: Data) -> Date? {
+private func parseOAuthDict(from jsonData: Data) -> [String: Any]? {
     guard let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
           let oauth = json["claudeAiOauth"] as? [String: Any] else {
         return nil
     }
+    return oauth
+}
+
+private func parseOAuthStringField(_ field: String, from jsonData: Data) -> String? {
+    guard let oauth = parseOAuthDict(from: jsonData),
+          let value = oauth[field] as? String,
+          !value.isEmpty else {
+        return nil
+    }
+    return value
+}
+
+func parseToken(from jsonData: Data) -> String? {
+    parseOAuthStringField("accessToken", from: jsonData)
+}
+
+func parseRefreshToken(from jsonData: Data) -> String? {
+    parseOAuthStringField("refreshToken", from: jsonData)
+}
+
+func parseExpiresAt(from jsonData: Data) -> Date? {
+    guard let oauth = parseOAuthDict(from: jsonData) else { return nil }
     let ms: Double
     if let intMs = oauth["expiresAt"] as? Int {
         ms = Double(intMs)
@@ -400,6 +402,10 @@ func formatStatusLine(_ usage: UsageData, history: UsageHistory = UsageHistory()
 }
 
 #if !TESTING
+private let colorRed = NSColor(red: 0.9, green: 0.2, blue: 0.2, alpha: 1.0)
+private let colorYellow = NSColor(red: 0.85, green: 0.65, blue: 0.0, alpha: 1.0)
+private let colorGreen = NSColor(red: 0.2, green: 0.7, blue: 0.3, alpha: 1.0)
+
 func requestNotificationPermission() {
     UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
 }
@@ -432,9 +438,9 @@ func deliverNotification(_ notification: UsageNotification) {
 
 func usageColor(for pct: Double, pace: Double? = nil) -> NSColor {
     let effective = pace.map { max(pct, pct * $0) } ?? pct
-    if effective >= 80 { return NSColor(red: 0.9, green: 0.2, blue: 0.2, alpha: 1.0) }
-    if effective >= 50 { return NSColor(red: 0.85, green: 0.65, blue: 0.0, alpha: 1.0) }
-    return NSColor(red: 0.2, green: 0.7, blue: 0.3, alpha: 1.0)
+    if effective >= 80 { return colorRed }
+    if effective >= 50 { return colorYellow }
+    return colorGreen
 }
 
 func formatAttributedStatusLine(_ usage: UsageData, history: UsageHistory = UsageHistory()) -> NSAttributedString {
@@ -463,15 +469,9 @@ func progressBar(percent: Double, width: Int = 20) -> (filled: String, empty: St
     return (String(repeating: "●", count: filledCount), String(repeating: "○", count: emptyCount))
 }
 
-func miniBar(percent: Double, width: Int = 8) -> (filled: String, empty: String) {
-    let filledCount = Int((percent / 100.0) * Double(width))
-    let emptyCount = width - filledCount
-    return (String(repeating: "●", count: filledCount), String(repeating: "○", count: emptyCount))
-}
-
 func paceColor(_ pace: Double) -> NSColor {
-    if pace > 1.2 { return NSColor(red: 0.9, green: 0.2, blue: 0.2, alpha: 1.0) }
-    if pace < 0.8 { return NSColor(red: 0.2, green: 0.7, blue: 0.3, alpha: 1.0) }
+    if pace > 1.2 { return colorRed }
+    if pace < 0.8 { return colorGreen }
     return NSColor.secondaryLabelColor
 }
 
@@ -541,7 +541,7 @@ func formatAttributedModelBreakdown(_ models: ModelBreakdown, extraUsage: ExtraU
 
     func modelRow(_ name: String, _ window: UsageWindow) {
         let color = usageColor(for: window.utilization)
-        let bar = miniBar(percent: window.utilization)
+        let bar = progressBar(percent: window.utilization, width: 8)
         result.append(NSAttributedString(string: "\n  \(name) ", attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]))
         result.append(NSAttributedString(string: bar.filled, attributes: [.font: barFont, .foregroundColor: color]))
         result.append(NSAttributedString(string: bar.empty, attributes: [.font: barFont, .foregroundColor: NSColor.separatorColor]))
@@ -603,8 +603,8 @@ func formatAttributedInsights(_ usage: UsageData, sessionFetchCount: Int = 0, se
     let result = NSMutableAttributedString()
     let font = NSFont.systemFont(ofSize: 12)
     let smallFont = NSFont.systemFont(ofSize: 11)
-    let green = NSColor(red: 0.2, green: 0.7, blue: 0.3, alpha: 1.0)
-    let warn = NSColor(red: 0.85, green: 0.65, blue: 0.0, alpha: 1.0)
+    let green = colorGreen
+    let warn = colorYellow
     let dim = NSColor.secondaryLabelColor
 
     result.append(NSAttributedString(string: "Forecast", attributes: [.font: font]))
@@ -884,11 +884,6 @@ class StatusBarController: NSObject {
         } catch {
             return nil
         }
-    }
-
-    private func readToken() -> String? {
-        guard let data = readKeychainData() else { return nil }
-        return parseToken(from: data)
     }
 
     private func readRefreshToken() -> String? {
