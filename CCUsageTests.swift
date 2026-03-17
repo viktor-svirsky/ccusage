@@ -457,35 +457,21 @@ func runFormatResetTimeTests() {
 
 func runFormatStatusLineTests() {
     suite("formatStatusLine") {
-        let green = "\u{1F7E2}"
-        let yellow = "\u{1F7E1}"
-        let red = "\u{1F534}"
-
-        test("low usage shows green") {
+        test("compact format h5/d7") {
             let u = UsageData(
                 fiveHour: UsageWindow(utilization: 9.0, remaining: nil, resetsAt: nil),
                 sevenDay: UsageWindow(utilization: 18.0, remaining: nil, resetsAt: nil)
             )
             let line = formatStatusLine(u)
-            check(line.contains("5h:9%"), "contains 5h:9%")
-            check(line.contains("7d:18%"), "contains 7d:18%")
-            check(line.contains(green), "green indicator")
+            check(line == "9/18", "compact format 9/18")
         }
 
-        test("high 5h drives indicator red") {
+        test("high usage") {
             let u = UsageData(
                 fiveHour: UsageWindow(utilization: 85.0, remaining: nil, resetsAt: nil),
-                sevenDay: UsageWindow(utilization: 20.0, remaining: nil, resetsAt: nil)
-            )
-            check(formatStatusLine(u).contains(red), "red from 5h=85")
-        }
-
-        test("high 7d drives indicator red") {
-            let u = UsageData(
-                fiveHour: UsageWindow(utilization: 10.0, remaining: nil, resetsAt: nil),
                 sevenDay: UsageWindow(utilization: 90.0, remaining: nil, resetsAt: nil)
             )
-            check(formatStatusLine(u).contains(red), "red from 7d=90")
+            check(formatStatusLine(u) == "85/90", "compact format 85/90")
         }
 
         test("decimal values") {
@@ -493,9 +479,7 @@ func runFormatStatusLineTests() {
                 fiveHour: UsageWindow(utilization: 6.5, remaining: nil, resetsAt: nil),
                 sevenDay: UsageWindow(utilization: 18.3, remaining: nil, resetsAt: nil)
             )
-            let line = formatStatusLine(u)
-            check(line.contains("5h:6.5%"), "decimal 5h")
-            check(line.contains("7d:18.3%"), "decimal 7d")
+            check(formatStatusLine(u) == "6.5/18.3", "compact format 6.5/18.3")
         }
 
         test("zero usage") {
@@ -503,10 +487,7 @@ func runFormatStatusLineTests() {
                 fiveHour: UsageWindow(utilization: 0.0, remaining: nil, resetsAt: nil),
                 sevenDay: UsageWindow(utilization: 0.0, remaining: nil, resetsAt: nil)
             )
-            let line = formatStatusLine(u)
-            check(line.contains("5h:0%"), "zero 5h")
-            check(line.contains("7d:0%"), "zero 7d")
-            check(line.contains(green), "green at zero")
+            check(formatStatusLine(u) == "0/0", "compact format 0/0")
         }
 
         test("full usage") {
@@ -514,18 +495,7 @@ func runFormatStatusLineTests() {
                 fiveHour: UsageWindow(utilization: 100.0, remaining: nil, resetsAt: nil),
                 sevenDay: UsageWindow(utilization: 100.0, remaining: nil, resetsAt: nil)
             )
-            let line = formatStatusLine(u)
-            check(line.contains("5h:100%"), "100 5h")
-            check(line.contains("7d:100%"), "100 7d")
-            check(line.contains(red), "red at 100")
-        }
-
-        test("yellow threshold") {
-            let u = UsageData(
-                fiveHour: UsageWindow(utilization: 55.0, remaining: nil, resetsAt: nil),
-                sevenDay: UsageWindow(utilization: 30.0, remaining: nil, resetsAt: nil)
-            )
-            check(formatStatusLine(u).contains(yellow), "yellow at 55")
+            check(formatStatusLine(u) == "100/100", "compact format 100/100")
         }
     }
 }
@@ -1020,14 +990,16 @@ func runUsageHistoryTests() {
             assertEqual(s.count, 8, "limited to width=8")
         }
 
-        test("sparkline with two values") {
+        test("sparkline needs at least 3 entries") {
             var h = UsageHistory()
             h.record(UsageData(fiveHour: UsageWindow(utilization: 0, remaining: nil, resetsAt: nil),
                                sevenDay: UsageWindow(utilization: 0, remaining: nil, resetsAt: nil)))
             h.record(UsageData(fiveHour: UsageWindow(utilization: 100, remaining: nil, resetsAt: nil),
                                sevenDay: UsageWindow(utilization: 0, remaining: nil, resetsAt: nil)))
-            let s = h.sparkline(for: \.fiveHour)
-            assertEqual(s, "▁█", "min to max")
+            assertEqual(h.sparkline(for: \.fiveHour), "", "two entries not enough")
+            h.record(UsageData(fiveHour: UsageWindow(utilization: 50, remaining: nil, resetsAt: nil),
+                               sevenDay: UsageWindow(utilization: 0, remaining: nil, resetsAt: nil)))
+            assertEqual(h.sparkline(for: \.fiveHour), "▁█▄", "three entries works")
         }
     }
 }
@@ -1036,19 +1008,7 @@ func runUsageHistoryTests() {
 
 func runFormatStatusLineWithHistoryTests() {
     suite("formatStatusLine with history") {
-        let green = "\u{1F7E2}"
-
-        test("default history shows flat arrows") {
-            let u = UsageData(
-                fiveHour: UsageWindow(utilization: 10, remaining: nil, resetsAt: nil),
-                sevenDay: UsageWindow(utilization: 20, remaining: nil, resetsAt: nil)
-            )
-            let line = formatStatusLine(u)
-            check(line.contains("→5h:"), "flat arrow for 5h")
-            check(line.contains("→7d:"), "flat arrow for 7d")
-        }
-
-        test("rising history shows up arrow") {
+        test("history is ignored in compact format") {
             var h = UsageHistory()
             for v in [10.0, 12.0, 14.0, 16.0, 18.0, 20.0] {
                 h.record(UsageData(fiveHour: UsageWindow(utilization: v, remaining: nil, resetsAt: nil),
@@ -1058,20 +1018,15 @@ func runFormatStatusLineWithHistoryTests() {
                 fiveHour: UsageWindow(utilization: 20, remaining: nil, resetsAt: nil),
                 sevenDay: UsageWindow(utilization: 20, remaining: nil, resetsAt: nil)
             )
-            let line = formatStatusLine(u, history: h)
-            check(line.contains("↑5h:"), "up arrow for 5h")
-            check(line.contains("↑7d:"), "up arrow for 7d")
+            check(formatStatusLine(u, history: h) == "20/20", "compact ignores history")
         }
 
-        test("per-window indicators") {
+        test("mixed values") {
             let u = UsageData(
                 fiveHour: UsageWindow(utilization: 85, remaining: nil, resetsAt: nil),
                 sevenDay: UsageWindow(utilization: 20, remaining: nil, resetsAt: nil)
             )
-            let line = formatStatusLine(u)
-            let red = "\u{1F534}"
-            check(line.contains(red), "red for 5h=85")
-            check(line.contains(green), "green for 7d=20")
+            check(formatStatusLine(u) == "85/20", "compact format 85/20")
         }
     }
 }
@@ -1370,6 +1325,202 @@ func runNotificationTests() {
     }
 }
 
+// MARK: - Depletion Estimate Tests
+
+func runDepletionEstimateTests() {
+    let fiveHours: TimeInterval = 5 * 3600
+    let sevenDays: TimeInterval = 7 * 86400
+    let now = Date(timeIntervalSince1970: 1000000)
+
+    suite("depletionEstimate") {
+        test("nil when resetsAt is nil") {
+            check(depletionEstimate(utilization: 50, resetsAt: nil, windowDuration: fiveHours, now: now) == nil, "nil for nil reset")
+        }
+
+        test("nil when elapsed < 60s") {
+            let resetsAt = now.addingTimeInterval(fiveHours - 30)  // 30s elapsed
+            check(depletionEstimate(utilization: 50, resetsAt: resetsAt, windowDuration: fiveHours, now: now) == nil, "nil for short elapsed")
+        }
+
+        test("nil when utilization near zero") {
+            let resetsAt = now.addingTimeInterval(fiveHours - 3600)  // 1h elapsed
+            check(depletionEstimate(utilization: 0.05, resetsAt: resetsAt, windowDuration: fiveHours, now: now) == nil, "nil for tiny utilization")
+        }
+
+        test("won't deplete when rate is low") {
+            let resetsAt = now.addingTimeInterval(3600)  // 1h left of 5h window, 4h elapsed
+            let result = depletionEstimate(utilization: 10, resetsAt: resetsAt, windowDuration: fiveHours, now: now)
+            check(result == "Won't deplete this window", "won't deplete at low rate")
+        }
+
+        test("shows depletion time when rate is high") {
+            let resetsAt = now.addingTimeInterval(14400)  // 4h left, 1h elapsed
+            let result = depletionEstimate(utilization: 50, resetsAt: resetsAt, windowDuration: fiveHours, now: now)
+            check(result?.contains("Won't") == false, "depletes at high rate")
+            check(result?.contains("Depletes in") == true, "contains depletion label")
+        }
+
+        test("100% utilization") {
+            let resetsAt = now.addingTimeInterval(3600)
+            let result = depletionEstimate(utilization: 100, resetsAt: resetsAt, windowDuration: fiveHours, now: now)
+            // 0% left / rate = 0 time, but (100 - 100) = 0, secsToFull = 0 which is < remaining
+            check(result != nil, "result for 100%")
+        }
+    }
+}
+
+// MARK: - Budget Advice Tests
+
+func runBudgetAdviceTests() {
+    let sevenDays: TimeInterval = 7 * 86400
+    let now = Date(timeIntervalSince1970: 1000000)
+
+    suite("budgetAdvice") {
+        test("nil when resetsAt is nil") {
+            check(budgetAdvice(utilization: 50, resetsAt: nil, windowDuration: sevenDays, now: now) == nil, "nil for nil reset")
+        }
+
+        test("nil when remaining < 60s") {
+            let resetsAt = now.addingTimeInterval(30)
+            check(budgetAdvice(utilization: 50, resetsAt: resetsAt, windowDuration: sevenDays, now: now) == nil, "nil for tiny remaining")
+        }
+
+        test("exhausted when 100%") {
+            let resetsAt = now.addingTimeInterval(86400)
+            assertEqual(budgetAdvice(utilization: 100, resetsAt: resetsAt, windowDuration: sevenDays, now: now), "Budget exhausted", "exhausted at 100%")
+        }
+
+        test("use sparingly near window end") {
+            let resetsAt = now.addingTimeInterval(600)  // 10 min left = 0.17h
+            let result = budgetAdvice(utilization: 50, resetsAt: resetsAt, windowDuration: sevenDays, now: now)
+            assertEqual(result, "Budget: use sparingly", "sparingly near end")
+        }
+
+        test("normal budget with time remaining") {
+            let resetsAt = now.addingTimeInterval(86400)  // 24h left
+            let result = budgetAdvice(utilization: 50, resetsAt: resetsAt, windowDuration: sevenDays, now: now)
+            check(result?.contains("Budget:") == true && result?.contains("/hour") == true, "normal budget format")
+        }
+    }
+}
+
+// MARK: - Daily Breakdown Tests
+
+func runDailyBreakdownTests() {
+    let sevenDays: TimeInterval = 7 * 86400
+    let now = Date(timeIntervalSince1970: 1000000)
+
+    suite("dailyBreakdown") {
+        test("nil when resetsAt is nil") {
+            check(dailyBreakdown(utilization: 50, resetsAt: nil, windowDuration: sevenDays, now: now) == nil, "nil for nil reset")
+        }
+
+        test("nil when barely elapsed") {
+            let resetsAt = now.addingTimeInterval(sevenDays - 10)  // 10s elapsed
+            check(dailyBreakdown(utilization: 50, resetsAt: resetsAt, windowDuration: sevenDays, now: now) == nil, "nil for tiny elapsed")
+        }
+
+        test("shows rate and safe rate") {
+            let resetsAt = now.addingTimeInterval(sevenDays - 86400)  // 1 day elapsed
+            let result = dailyBreakdown(utilization: 20, resetsAt: resetsAt, windowDuration: sevenDays, now: now)
+            check(result != nil, "result exists")
+            check(result?.contains("Today's rate:") == true, "has rate")
+            check(result?.contains("Safe:") == true, "has safe rate")
+        }
+    }
+}
+
+// MARK: - Peak Hours Tests
+
+func runPeakHoursTests() {
+    suite("peakHoursSummary") {
+        test("nil with fewer than 3 entries") {
+            check(peakHoursSummary([]) == nil, "nil for empty")
+            check(peakHoursSummary([Date(), Date()]) == nil, "nil for 2 entries")
+        }
+
+        test("returns peak hour with 3+ entries") {
+            let cal = Calendar.current
+            var dates: [Date] = []
+            for _ in 0..<5 {
+                dates.append(cal.date(bySettingHour: 14, minute: 0, second: 0, of: Date())!)
+            }
+            dates.append(cal.date(bySettingHour: 10, minute: 0, second: 0, of: Date())!)
+            let result = peakHoursSummary(dates)
+            check(result != nil, "result exists")
+            check(result?.contains("14:00") == true, "peak at hour 14")
+        }
+    }
+}
+
+// MARK: - Parse Window Tests
+
+func runParseWindowTests() {
+    suite("parseWindowIfPresent") {
+        test("nil for nil dict") {
+            check(parseWindowIfPresent(nil) == nil, "nil for nil")
+        }
+
+        test("nil for missing utilization") {
+            check(parseWindowIfPresent(["remaining": 50.0]) == nil, "nil for missing util")
+        }
+
+        test("nil for out of range") {
+            check(parseWindowIfPresent(["utilization": 150.0]) == nil, "nil for >100")
+            check(parseWindowIfPresent(["utilization": -5.0]) == nil, "nil for negative")
+        }
+
+        test("parses valid window") {
+            let result = parseWindowIfPresent(["utilization": 25.0, "remaining": 75.0])
+            check(result != nil, "parses valid")
+            check(result?.utilization == 25.0, "correct utilization")
+            check(result?.remaining == 75.0, "correct remaining")
+        }
+
+        test("parses without optional fields") {
+            let result = parseWindowIfPresent(["utilization": 0.0])
+            check(result != nil, "parses minimal")
+            check(result?.remaining == nil, "no remaining")
+            check(result?.resetsAt == nil, "no resetsAt")
+        }
+    }
+}
+
+// MARK: - Model Breakdown Parse Tests
+
+func runModelBreakdownParseTests() {
+    suite("parseUsage with models") {
+        test("parses model breakdown") {
+            let json: [String: Any] = [
+                "five_hour": ["utilization": 30.0],
+                "seven_day": ["utilization": 20.0],
+                "seven_day_sonnet": ["utilization": 5.0],
+                "seven_day_opus": ["utilization": 10.0],
+                "extra_usage": ["is_enabled": true, "utilization": 15.0]
+            ]
+            let data = try! JSONSerialization.data(withJSONObject: json)
+            let result = parseUsage(from: data)
+            check(result != nil, "parses with models")
+            check(result?.models != nil, "has models")
+            assertEqual(result?.models?.sonnet?.utilization, 5.0, "sonnet util")
+            assertEqual(result?.models?.opus?.utilization, 10.0, "opus util")
+            assertEqual(result?.extraUsage?.isEnabled, true, "extra enabled")
+            assertEqual(result?.extraUsage?.utilization, 15.0, "extra util")
+        }
+
+        test("nil models when none present") {
+            let json: [String: Any] = [
+                "five_hour": ["utilization": 30.0],
+                "seven_day": ["utilization": 20.0]
+            ]
+            let data = try! JSONSerialization.data(withJSONObject: json)
+            let result = parseUsage(from: data)
+            check(result != nil, "parses without models")
+            check(result?.models == nil, "no models")
+        }
+    }
+}
+
 // MARK: - Test Runner
 
 func runAllTests() {
@@ -1392,6 +1543,12 @@ func runAllTests() {
     runPacingTests()
     runZoneTests()
     runNotificationTests()
+    runDepletionEstimateTests()
+    runBudgetAdviceTests()
+    runDailyBreakdownTests()
+    runPeakHoursTests()
+    runParseWindowTests()
+    runModelBreakdownParseTests()
 
     print("\n=== Results: \(passedTests)/\(totalTests) passed ===")
     if !failedTests.isEmpty {
