@@ -25,9 +25,30 @@ struct UsageWindow: Equatable {
     let resetsAt: Date?
 }
 
+struct ModelBreakdown: Equatable {
+    let opus: UsageWindow?
+    let sonnet: UsageWindow?
+    let oauthApps: UsageWindow?
+    let cowork: UsageWindow?
+}
+
+struct ExtraUsage: Equatable {
+    let isEnabled: Bool
+    let utilization: Double?
+}
+
 struct UsageData: Equatable {
     let fiveHour: UsageWindow
     let sevenDay: UsageWindow
+    let models: ModelBreakdown?
+    let extraUsage: ExtraUsage?
+
+    init(fiveHour: UsageWindow, sevenDay: UsageWindow, models: ModelBreakdown? = nil, extraUsage: ExtraUsage? = nil) {
+        self.fiveHour = fiveHour
+        self.sevenDay = sevenDay
+        self.models = models
+        self.extraUsage = extraUsage
+    }
 }
 
 // MARK: - Usage Zones & Notifications
@@ -190,6 +211,11 @@ func parseResetDate(_ value: Any?) -> Date? {
     return iso8601Formatter.date(from: str)
 }
 
+func parseWindowIfPresent(_ dict: [String: Any]?) -> UsageWindow? {
+    guard let dict, let util = dict["utilization"] as? Double, util >= 0, util <= 100 else { return nil }
+    return UsageWindow(utilization: util, remaining: dict["remaining"] as? Double, resetsAt: parseResetDate(dict["resets_at"]))
+}
+
 func parseUsage(from data: Data) -> UsageData? {
     guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
           let fiveHour = json["five_hour"] as? [String: Any],
@@ -199,9 +225,25 @@ func parseUsage(from data: Data) -> UsageData? {
           h5 >= 0, h5 <= 100, d7 >= 0, d7 <= 100 else {
         return nil
     }
+
+    let models = ModelBreakdown(
+        opus: parseWindowIfPresent(json["seven_day_opus"] as? [String: Any]),
+        sonnet: parseWindowIfPresent(json["seven_day_sonnet"] as? [String: Any]),
+        oauthApps: parseWindowIfPresent(json["seven_day_oauth_apps"] as? [String: Any]),
+        cowork: parseWindowIfPresent(json["seven_day_cowork"] as? [String: Any])
+    )
+    let hasModels = models.opus != nil || models.sonnet != nil || models.oauthApps != nil || models.cowork != nil
+
+    var extraUsage: ExtraUsage? = nil
+    if let extra = json["extra_usage"] as? [String: Any], let enabled = extra["is_enabled"] as? Bool {
+        extraUsage = ExtraUsage(isEnabled: enabled, utilization: extra["utilization"] as? Double)
+    }
+
     return UsageData(
         fiveHour: UsageWindow(utilization: h5, remaining: fiveHour["remaining"] as? Double, resetsAt: parseResetDate(fiveHour["resets_at"])),
-        sevenDay: UsageWindow(utilization: d7, remaining: sevenDay["remaining"] as? Double, resetsAt: parseResetDate(sevenDay["resets_at"]))
+        sevenDay: UsageWindow(utilization: d7, remaining: sevenDay["remaining"] as? Double, resetsAt: parseResetDate(sevenDay["resets_at"])),
+        models: hasModels ? models : nil,
+        extraUsage: extraUsage
     )
 }
 
@@ -273,7 +315,7 @@ struct UsageHistory {
 
     func sparkline(for keyPath: KeyPath<Entry, Double>, width: Int = 12) -> String {
         let blocks: [Character] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
-        guard !entries.isEmpty else { return "" }
+        guard entries.count >= 3 else { return "" }
         let values = entries.suffix(width).map { $0[keyPath: keyPath] }
         let minVal = values.min() ?? 0
         let maxVal = values.max() ?? 100
@@ -299,6 +341,52 @@ func calculatePace(utilization: Double, resetsAt: Date?, windowDuration: TimeInt
     return utilization / expectedUtilization
 }
 
+func depletionEstimate(utilization: Double, resetsAt: Date?, windowDuration: TimeInterval, now: Date = Date()) -> String? {
+    guard let resetsAt else { return nil }
+    let remaining = resetsAt.timeIntervalSince(now)
+    guard remaining > 0, remaining < windowDuration else { return nil }
+    let elapsed = windowDuration - remaining
+    guard elapsed > 60, utilization > 0.1 else { return nil }
+    let ratePerSec = utilization / elapsed
+    let secsToFull = (100.0 - utilization) / ratePerSec
+    if secsToFull > remaining { return "Won't deplete this window" }
+    let hours = Int(secsToFull) / 3600
+    let minutes = (Int(secsToFull) % 3600) / 60
+    if hours > 24 {
+        let days = hours / 24
+        let remHours = hours % 24
+        return remHours == 0 ? "Depletes in ~\(days)d" : "Depletes in ~\(days)d \(remHours)h"
+    }
+    if hours > 0 { return "Depletes in ~\(hours)h \(minutes)m" }
+    return "Depletes in ~\(minutes)m"
+}
+
+func budgetAdvice(utilization: Double, resetsAt: Date?, windowDuration: TimeInterval, now: Date = Date()) -> String? {
+    guard let resetsAt else { return nil }
+    let remaining = resetsAt.timeIntervalSince(now)
+    guard remaining > 60 else { return nil }
+    let pctLeft = 100.0 - utilization
+    guard pctLeft > 0 else { return "Budget exhausted" }
+    let hoursLeft = remaining / 3600.0
+    guard hoursLeft >= 0.5 else { return "Budget: use sparingly" }
+    let perHour = pctLeft / hoursLeft
+    return String(format: "Budget: %.1f%%/hour to last the window", perHour)
+}
+
+func dailyBreakdown(utilization: Double, resetsAt: Date?, windowDuration: TimeInterval, now: Date = Date()) -> String? {
+    guard let resetsAt else { return nil }
+    let remaining = resetsAt.timeIntervalSince(now)
+    guard remaining > 0, remaining < windowDuration else { return nil }
+    let elapsed = windowDuration - remaining
+    let elapsedDays = elapsed / 86400.0
+    guard elapsedDays > 0.01 else { return nil }
+    let perDay = utilization / elapsedDays
+    let daysLeft = remaining / 86400.0
+    let pctLeft = 100.0 - utilization
+    let sustainablePerDay = daysLeft > 0.01 ? pctLeft / daysLeft : 0
+    return String(format: "Today's rate: %.1f%%/day  •  Safe: %.1f%%/day", perDay, sustainablePerDay)
+}
+
 func paceLabel(_ pace: Double) -> String {
     if pace > 1.2 { return String(format: "▲ %.1fx pace (over budget)", pace) }
     if pace < 0.8 { return String(format: "▼ %.1fx pace (under budget)", pace) }
@@ -308,9 +396,7 @@ func paceLabel(_ pace: Double) -> String {
 func formatStatusLine(_ usage: UsageData, history: UsageHistory = UsageHistory()) -> String {
     let h5 = usage.fiveHour.utilization
     let d7 = usage.sevenDay.utilization
-    let h5Trend = history.trend(for: \.fiveHour)
-    let d7Trend = history.trend(for: \.sevenDay)
-    return "\(usageIndicator(for: h5))\(h5Trend)5h:\(formatValue(h5))%  \(usageIndicator(for: d7))\(d7Trend)7d:\(formatValue(d7))%"
+    return "\(formatValue(h5))/\(formatValue(d7))"
 }
 
 #if !TESTING
@@ -344,43 +430,43 @@ func deliverNotification(_ notification: UsageNotification) {
     UNUserNotificationCenter.current().add(request)
 }
 
-func usageColor(for pct: Double) -> NSColor {
-    if pct >= 80 { return NSColor(red: 0.9, green: 0.2, blue: 0.2, alpha: 1.0) }
-    if pct >= 50 { return NSColor(red: 0.85, green: 0.65, blue: 0.0, alpha: 1.0) }
-    return NSColor.labelColor
+func usageColor(for pct: Double, pace: Double? = nil) -> NSColor {
+    let effective = pace.map { max(pct, pct * $0) } ?? pct
+    if effective >= 80 { return NSColor(red: 0.9, green: 0.2, blue: 0.2, alpha: 1.0) }
+    if effective >= 50 { return NSColor(red: 0.85, green: 0.65, blue: 0.0, alpha: 1.0) }
+    return NSColor(red: 0.2, green: 0.7, blue: 0.3, alpha: 1.0)
 }
 
 func formatAttributedStatusLine(_ usage: UsageData, history: UsageHistory = UsageHistory()) -> NSAttributedString {
     let h5 = usage.fiveHour.utilization
     let d7 = usage.sevenDay.utilization
-    let h5Trend = String(history.trend(for: \.fiveHour))
-    let d7Trend = String(history.trend(for: \.sevenDay))
+    let h5Pace = calculatePace(utilization: h5, resetsAt: usage.fiveHour.resetsAt, windowDuration: 5 * 3600)
+    let d7Pace = calculatePace(utilization: d7, resetsAt: usage.sevenDay.resetsAt, windowDuration: 7 * 86400)
 
-    let baseFont = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
-    let boldFont = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .bold)
-    let base: [NSAttributedString.Key: Any] = [.font: baseFont]
-    let dimmed: [NSAttributedString.Key: Any] = [.font: baseFont, .foregroundColor: NSColor.secondaryLabelColor]
+    let font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .bold)
+    let dimmed: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.secondaryLabelColor]
 
-    func boldColored(_ pct: Double) -> [NSAttributedString.Key: Any] {
-        [.font: boldFont, .foregroundColor: usageColor(for: pct)]
+    func colored(_ pct: Double, pace: Double?) -> [NSAttributedString.Key: Any] {
+        [.font: font, .foregroundColor: usageColor(for: pct, pace: pace)]
     }
 
     let result = NSMutableAttributedString()
-    result.append(NSAttributedString(string: "\(usageIndicator(for: h5))", attributes: base))
-    result.append(NSAttributedString(string: h5Trend, attributes: dimmed))
-    result.append(NSAttributedString(string: "5h:", attributes: base))
-    result.append(NSAttributedString(string: "\(formatValue(h5))%", attributes: boldColored(h5)))
-    result.append(NSAttributedString(string: "  \(usageIndicator(for: d7))", attributes: base))
-    result.append(NSAttributedString(string: d7Trend, attributes: dimmed))
-    result.append(NSAttributedString(string: "7d:", attributes: base))
-    result.append(NSAttributedString(string: "\(formatValue(d7))%", attributes: boldColored(d7)))
+    result.append(NSAttributedString(string: "\(formatValue(h5))", attributes: colored(h5, pace: h5Pace)))
+    result.append(NSAttributedString(string: "/", attributes: dimmed))
+    result.append(NSAttributedString(string: "\(formatValue(d7))", attributes: colored(d7, pace: d7Pace)))
     return result
 }
 
-func progressBar(percent: Double, width: Int = 20) -> String {
-    let filled = Int((percent / 100.0) * Double(width))
-    let empty = width - filled
-    return String(repeating: "\u{2588}", count: filled) + String(repeating: "\u{2591}", count: empty)
+func progressBar(percent: Double, width: Int = 20) -> (filled: String, empty: String) {
+    let filledCount = Int((percent / 100.0) * Double(width))
+    let emptyCount = width - filledCount
+    return (String(repeating: "●", count: filledCount), String(repeating: "○", count: emptyCount))
+}
+
+func miniBar(percent: Double, width: Int = 8) -> (filled: String, empty: String) {
+    let filledCount = Int((percent / 100.0) * Double(width))
+    let emptyCount = width - filledCount
+    return (String(repeating: "●", count: filledCount), String(repeating: "○", count: emptyCount))
 }
 
 func paceColor(_ pace: Double) -> NSColor {
@@ -389,29 +475,179 @@ func paceColor(_ pace: Double) -> NSColor {
     return NSColor.secondaryLabelColor
 }
 
-func formatAttributedMenuItem(label: String, window: UsageWindow, subtitle: String = "", subtitleColor: NSColor? = nil) -> NSAttributedString {
+func formatAttributedMenuItem(label: String, window: UsageWindow, pace: Double? = nil, sparkline: String = "") -> NSAttributedString {
     let pct = window.utilization
     let remaining = window.remaining.map { formatValue($0) } ?? formatValue(100.0 - pct)
     let resetStr = formatResetTime(window.resetsAt)
+    let color = usageColor(for: pct)
 
-    let regular = NSFont.menuFont(ofSize: 13)
-    let mono = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
-    let base: [NSAttributedString.Key: Any] = [.font: regular]
-    let barAttrs: [NSAttributedString.Key: Any] = [.font: mono, .foregroundColor: usageColor(for: pct)]
+    let font = NSFont.systemFont(ofSize: 13)
+    let boldFont = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .bold)
+    let barFont = NSFont.systemFont(ofSize: 9)
 
     let result = NSMutableAttributedString()
-    result.append(NSAttributedString(string: "\(label): \(formatValue(pct))%", attributes: base))
-    result.append(NSAttributedString(string: "  \u{2022} \(remaining)% free", attributes: [.font: regular, .foregroundColor: NSColor.secondaryLabelColor]))
-    result.append(NSAttributedString(string: resetStr, attributes: [.font: regular, .foregroundColor: NSColor.tertiaryLabelColor]))
-    result.append(NSAttributedString(string: "\n    \(progressBar(percent: pct))", attributes: barAttrs))
-    if !subtitle.isEmpty {
-        let color = subtitleColor ?? usageColor(for: pct)
-        let subtitleAttrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .regular),
-            .foregroundColor: color
-        ]
-        result.append(NSAttributedString(string: "\n    \(subtitle)", attributes: subtitleAttrs))
+
+    // Line 1: label + bold colored percentage + free + reset
+    result.append(NSAttributedString(string: "\(label):  ", attributes: [.font: font]))
+    result.append(NSAttributedString(string: "\(formatValue(pct))%", attributes: [.font: boldFont, .foregroundColor: color]))
+    result.append(NSAttributedString(string: "  \u{2022} \(remaining)% free", attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]))
+    result.append(NSAttributedString(string: resetStr, attributes: [.font: font, .foregroundColor: NSColor.tertiaryLabelColor]))
+
+    // Line 2: dot progress bar + pace
+    let bar = progressBar(percent: pct)
+    result.append(NSAttributedString(string: "\n  ", attributes: [.font: barFont]))
+    result.append(NSAttributedString(string: bar.filled, attributes: [.font: barFont, .foregroundColor: color]))
+    result.append(NSAttributedString(string: bar.empty, attributes: [.font: barFont, .foregroundColor: NSColor.separatorColor]))
+    if let pace {
+        result.append(NSAttributedString(string: String(format: "  %.1fx", pace), attributes: [.font: font, .foregroundColor: paceColor(pace)]))
     }
+
+    // Line 3: sparkline if available
+    if !sparkline.isEmpty {
+        result.append(NSAttributedString(string: "\n  \(sparkline)", attributes: [.font: barFont, .foregroundColor: NSColor.tertiaryLabelColor]))
+    }
+
+    return result
+}
+#endif
+
+func formatModelBreakdown(_ models: ModelBreakdown, extraUsage: ExtraUsage? = nil) -> String {
+    var lines: [String] = ["Model Usage (7-day)"]
+    if let opus = models.opus {
+        lines.append("  Opus:   \(formatValue(opus.utilization))%\(formatResetTime(opus.resetsAt))")
+    }
+    if let sonnet = models.sonnet {
+        lines.append("  Sonnet: \(formatValue(sonnet.utilization))%\(formatResetTime(sonnet.resetsAt))")
+    }
+    if let oauth = models.oauthApps {
+        lines.append("  OAuth:  \(formatValue(oauth.utilization))%\(formatResetTime(oauth.resetsAt))")
+    }
+    if let cowork = models.cowork {
+        lines.append("  Cowork: \(formatValue(cowork.utilization))%\(formatResetTime(cowork.resetsAt))")
+    }
+    if let extra = extraUsage, extra.isEnabled {
+        let val = extra.utilization.map { formatValue($0) + "%" } ?? "enabled"
+        lines.append("  Extra:  \(val)")
+    }
+    return lines.joined(separator: "\n")
+}
+
+#if !TESTING
+func formatAttributedModelBreakdown(_ models: ModelBreakdown, extraUsage: ExtraUsage? = nil) -> NSAttributedString {
+    let result = NSMutableAttributedString()
+    let font = NSFont.systemFont(ofSize: 13)
+    let barFont = NSFont.systemFont(ofSize: 9)
+    let boldFont = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .bold)
+
+    func modelRow(_ name: String, _ window: UsageWindow) {
+        let color = usageColor(for: window.utilization)
+        let bar = miniBar(percent: window.utilization)
+        result.append(NSAttributedString(string: "\n  \(name) ", attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]))
+        result.append(NSAttributedString(string: bar.filled, attributes: [.font: barFont, .foregroundColor: color]))
+        result.append(NSAttributedString(string: bar.empty, attributes: [.font: barFont, .foregroundColor: NSColor.separatorColor]))
+        result.append(NSAttributedString(string: " \(formatValue(window.utilization))%", attributes: [.font: boldFont, .foregroundColor: color]))
+        result.append(NSAttributedString(string: formatResetTime(window.resetsAt), attributes: [.font: font, .foregroundColor: NSColor.tertiaryLabelColor]))
+    }
+
+    result.append(NSAttributedString(string: "Models (7-day)", attributes: [.font: font]))
+
+    if let opus = models.opus { modelRow("Opus  ", opus) }
+    if let sonnet = models.sonnet { modelRow("Sonnet", sonnet) }
+    if let oauth = models.oauthApps { modelRow("OAuth ", oauth) }
+    if let cowork = models.cowork { modelRow("Cowork", cowork) }
+    if let extra = extraUsage, extra.isEnabled {
+        let val = extra.utilization.map { formatValue($0) + "%" } ?? "on"
+        result.append(NSAttributedString(string: "\n  Extra  \(val)", attributes: [.font: font, .foregroundColor: NSColor.tertiaryLabelColor]))
+    }
+
+    return result
+}
+#endif
+
+func peakHoursSummary(_ increases: [Date]) -> String? {
+    guard increases.count >= 3 else { return nil }
+    var hourCounts = [Int: Int]()
+    for date in increases {
+        let hour = Calendar.current.component(.hour, from: date)
+        hourCounts[hour, default: 0] += 1
+    }
+    guard let peakHour = hourCounts.max(by: { $0.value < $1.value })?.key else { return nil }
+    let endHour = (peakHour + 1) % 24
+    return String(format: "Peak usage: %02d:00–%02d:00", peakHour, endHour)
+}
+
+func formatInsights(_ usage: UsageData, sessionFetchCount: Int = 0, sessionStart: Date = Date(), usageIncreases: [Date] = []) -> String {
+    var lines: [String] = []
+    if let daily = dailyBreakdown(utilization: usage.sevenDay.utilization, resetsAt: usage.sevenDay.resetsAt, windowDuration: 7 * 86400) {
+        lines.append(daily)
+    }
+    if let depl5 = depletionEstimate(utilization: usage.fiveHour.utilization, resetsAt: usage.fiveHour.resetsAt, windowDuration: 5 * 3600) {
+        lines.append("5h: \(depl5)")
+    }
+    if let depl7 = depletionEstimate(utilization: usage.sevenDay.utilization, resetsAt: usage.sevenDay.resetsAt, windowDuration: 7 * 86400) {
+        lines.append("7d: \(depl7)")
+    }
+    let sessionMinutes = Int(Date().timeIntervalSince(sessionStart)) / 60
+    lines.append("Session: \(sessionFetchCount) checks over \(max(sessionMinutes, 1))m")
+    if let peak = peakHoursSummary(usageIncreases) {
+        lines.append(peak)
+    }
+    if let advice = budgetAdvice(utilization: usage.sevenDay.utilization, resetsAt: usage.sevenDay.resetsAt, windowDuration: 7 * 86400) {
+        lines.append(advice)
+    }
+    return lines.joined(separator: "\n")
+}
+
+#if !TESTING
+func formatAttributedInsights(_ usage: UsageData, sessionFetchCount: Int = 0, sessionStart: Date = Date(), usageIncreases: [Date] = []) -> NSAttributedString {
+    let result = NSMutableAttributedString()
+    let font = NSFont.systemFont(ofSize: 12)
+    let smallFont = NSFont.systemFont(ofSize: 11)
+    let green = NSColor(red: 0.2, green: 0.7, blue: 0.3, alpha: 1.0)
+    let warn = NSColor(red: 0.85, green: 0.65, blue: 0.0, alpha: 1.0)
+    let dim = NSColor.secondaryLabelColor
+
+    result.append(NSAttributedString(string: "Forecast", attributes: [.font: font]))
+
+    // Depletion estimates — combine if both are the same
+    let depl5 = depletionEstimate(utilization: usage.fiveHour.utilization, resetsAt: usage.fiveHour.resetsAt, windowDuration: 5 * 3600)
+    let depl7 = depletionEstimate(utilization: usage.sevenDay.utilization, resetsAt: usage.sevenDay.resetsAt, windowDuration: 7 * 86400)
+
+    if let d5 = depl5, let d7 = depl7, d5 == d7 {
+        let color = d5.contains("Won't") ? green : warn
+        result.append(NSAttributedString(string: "\n  \(d5)", attributes: [.font: smallFont, .foregroundColor: color]))
+    } else {
+        if let d5 = depl5 {
+            let color = d5.contains("Won't") ? green : warn
+            result.append(NSAttributedString(string: "\n  5h: \(d5)", attributes: [.font: smallFont, .foregroundColor: color]))
+        }
+        if let d7 = depl7 {
+            let color = d7.contains("Won't") ? green : warn
+            result.append(NSAttributedString(string: "\n  7d: \(d7)", attributes: [.font: smallFont, .foregroundColor: color]))
+        }
+    }
+
+    // Daily rate
+    if let daily = dailyBreakdown(utilization: usage.sevenDay.utilization, resetsAt: usage.sevenDay.resetsAt, windowDuration: 7 * 86400) {
+        result.append(NSAttributedString(string: "\n  \(daily)", attributes: [.font: smallFont, .foregroundColor: dim]))
+    }
+
+    // Budget advice
+    if let advice = budgetAdvice(utilization: usage.sevenDay.utilization, resetsAt: usage.sevenDay.resetsAt, windowDuration: 7 * 86400) {
+        result.append(NSAttributedString(string: "\n  \(advice)", attributes: [.font: smallFont, .foregroundColor: green]))
+    }
+
+    // Session — only show after 2+ checks
+    if sessionFetchCount >= 2 {
+        let sessionSeconds = Int(Date().timeIntervalSince(sessionStart))
+        let timeStr = sessionSeconds < 60 ? "\(sessionSeconds)s" : "\(sessionSeconds / 60)m"
+        result.append(NSAttributedString(string: "\n  \(sessionFetchCount) refreshes over \(timeStr)", attributes: [.font: smallFont, .foregroundColor: dim]))
+
+        if let peak = peakHoursSummary(usageIncreases) {
+            result.append(NSAttributedString(string: "  \u{2022} \(peak)", attributes: [.font: smallFont, .foregroundColor: dim]))
+        }
+    }
+
     return result
 }
 #endif
@@ -516,6 +752,7 @@ struct FetchSchedule {
 class StatusBarController: NSObject {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private var uiTimer: Timer?
+    private var secondsTimer: Timer?
     private var isFetching = false
     private var didRetryWithRefresh = false
     private var consecutiveRefreshFailures = 0
@@ -527,7 +764,12 @@ class StatusBarController: NSObject {
 
     private let detailFiveHour = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let detailSevenDay = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    private let modelBreakdownItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    private let insightsItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let lastRefreshItem = NSMenuItem(title: "Last refresh: never", action: nil, keyEquivalent: "")
+    private var sessionStartDate = Date()
+    private var sessionFetchCount = 0
+    private var usageIncreases: [Date] = []
     private let versionItem = NSMenuItem(title: "v\(currentVersion)", action: nil, keyEquivalent: "")
     private let updateItem = NSMenuItem(title: "Check for Updates\u{2026}", action: nil, keyEquivalent: "u")
     private var isUpdating = false
@@ -546,6 +788,12 @@ class StatusBarController: NSObject {
 
         menu.addItem(detailFiveHour)
         menu.addItem(detailSevenDay)
+        menu.addItem(.separator())
+        modelBreakdownItem.isEnabled = false
+        modelBreakdownItem.isHidden = true
+        menu.addItem(modelBreakdownItem)
+        insightsItem.isEnabled = false
+        menu.addItem(insightsItem)
         menu.addItem(.separator())
         menu.addItem(lastRefreshItem)
         menu.addItem(.separator())
@@ -591,6 +839,7 @@ class StatusBarController: NSObject {
 
     deinit {
         uiTimer?.invalidate()
+        secondsTimer?.invalidate()
         updateTimer?.invalidate()
     }
 
@@ -600,6 +849,20 @@ class StatusBarController: NSObject {
         if Date() >= schedule.nextFetchAt {
             refresh()
         }
+    }
+
+    /// 1-second timer for the first 60s after a refresh, then auto-stops.
+    private func startSecondsTimer() {
+        secondsTimer?.invalidate()
+        secondsTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] timer in
+            guard let self, let date = self.lastRefreshDate else { timer.invalidate(); return }
+            if Date().timeIntervalSince(date) >= 60 {
+                timer.invalidate()
+                self.secondsTimer = nil
+            }
+            self.updateLastRefreshLabel()
+        }
+        RunLoop.current.add(secondsTimer!, forMode: .common)
     }
 
     // MARK: - Keychain
@@ -816,9 +1079,18 @@ class StatusBarController: NSObject {
     // MARK: - Display
 
     private func updateDisplay(_ usage: UsageData) {
+        // Track usage increases BEFORE recording to history (compare against previous entry)
+        if let prev = history.entries.last {
+            if usage.fiveHour.utilization > prev.fiveHour || usage.sevenDay.utilization > prev.sevenDay {
+                usageIncreases.append(Date())
+            }
+        }
+        sessionFetchCount += 1
+
         lastUsage = usage
         history.record(usage)
         lastRefreshDate = Date()
+        startSecondsTimer()
         didRetryWithRefresh = false
         consecutiveRefreshFailures = 0
         schedule.onSuccess()
@@ -854,26 +1126,32 @@ class StatusBarController: NSObject {
         #if TESTING
         detailFiveHour.title = "\(usageIndicator(for: h5))  5-hour window: \(formatValue(h5))%\(formatResetTime(usage.fiveHour.resetsAt))"
         detailSevenDay.title = "\(usageIndicator(for: d7))  7-day window:  \(formatValue(d7))%\(formatResetTime(usage.sevenDay.resetsAt))"
+        insightsItem.title = formatInsights(usage, sessionFetchCount: sessionFetchCount, sessionStart: sessionStartDate, usageIncreases: usageIncreases)
+        if let models = usage.models {
+            modelBreakdownItem.isHidden = false
+            modelBreakdownItem.title = formatModelBreakdown(models, extraUsage: usage.extraUsage)
+        } else {
+            modelBreakdownItem.isHidden = true
+        }
         #else
-        // 5-hour: sparkline + pace
+        // 5-hour window
+        let h5Pace = calculatePace(utilization: usage.fiveHour.utilization, resetsAt: usage.fiveHour.resetsAt, windowDuration: 5 * 3600)
         let h5Spark = history.sparkline(for: \.fiveHour)
-        var h5Parts: [String] = []
-        if !h5Spark.isEmpty { h5Parts.append("\(h5Spark)  (2h trend)") }
-        var h5Color: NSColor? = nil
-        if let h5Pace = calculatePace(utilization: usage.fiveHour.utilization, resetsAt: usage.fiveHour.resetsAt, windowDuration: 5 * 3600) {
-            h5Parts.append(paceLabel(h5Pace))
-            h5Color = paceColor(h5Pace)
-        }
-        detailFiveHour.attributedTitle = formatAttributedMenuItem(label: "5-hour window", window: usage.fiveHour, subtitle: h5Parts.joined(separator: "\n    "), subtitleColor: h5Color)
+        detailFiveHour.attributedTitle = formatAttributedMenuItem(label: "5-hour window", window: usage.fiveHour, pace: h5Pace, sparkline: h5Spark)
 
-        // 7-day: pace only
-        var d7Subtitle = ""
-        var d7Color: NSColor? = nil
-        if let d7Pace = calculatePace(utilization: usage.sevenDay.utilization, resetsAt: usage.sevenDay.resetsAt, windowDuration: 7 * 86400) {
-            d7Subtitle = paceLabel(d7Pace)
-            d7Color = paceColor(d7Pace)
+        // 7-day window
+        let d7Pace = calculatePace(utilization: usage.sevenDay.utilization, resetsAt: usage.sevenDay.resetsAt, windowDuration: 7 * 86400)
+        detailSevenDay.attributedTitle = formatAttributedMenuItem(label: "7-day window ", window: usage.sevenDay, pace: d7Pace)
+
+        // Model breakdown
+        if let models = usage.models {
+            modelBreakdownItem.isHidden = false
+            modelBreakdownItem.attributedTitle = formatAttributedModelBreakdown(models, extraUsage: usage.extraUsage)
+        } else {
+            modelBreakdownItem.isHidden = true
         }
-        detailSevenDay.attributedTitle = formatAttributedMenuItem(label: "7-day window ", window: usage.sevenDay, subtitle: d7Subtitle, subtitleColor: d7Color)
+
+        insightsItem.attributedTitle = formatAttributedInsights(usage, sessionFetchCount: sessionFetchCount, sessionStart: sessionStartDate, usageIncreases: usageIncreases)
         #endif
 
         updateLastRefreshLabel()
@@ -887,13 +1165,12 @@ class StatusBarController: NSObject {
             return
         }
         guard let date = lastRefreshDate else { return }
-        let minutes = Int(Date().timeIntervalSince(date)) / 60
-        if minutes < 1 {
-            lastRefreshItem.title = "Last refresh: just now"
-        } else if minutes == 1 {
-            lastRefreshItem.title = "Last refresh: 1 minute ago"
+        let seconds = Int(Date().timeIntervalSince(date))
+        if seconds < 60 {
+            lastRefreshItem.title = "Last refresh: \(seconds)s ago"
         } else {
-            lastRefreshItem.title = "Last refresh: \(minutes) minutes ago"
+            let minutes = seconds / 60
+            lastRefreshItem.title = "Last refresh: \(minutes)m ago"
         }
     }
 
