@@ -304,7 +304,7 @@ func formatResetTime(_ date: Date?, relativeTo now: Date = Date()) -> String {
 // MARK: - Usage History
 
 struct UsageHistory {
-    struct Entry {
+    struct Entry: Codable, Equatable {
         let date: Date
         let fiveHour: Double
         let sevenDay: Double
@@ -318,6 +318,12 @@ struct UsageHistory {
         if entries.count > maxEntries {
             entries.removeFirst(entries.count - maxEntries)
         }
+    }
+
+    /// Restore entries from persisted data, pruning stale ones.
+    mutating func restore(_ saved: [Entry], maxAge: TimeInterval = 7200) {
+        let cutoff = Date().addingTimeInterval(-maxAge)
+        entries = saved.filter { $0.date > cutoff }.suffix(maxEntries).map { $0 }
     }
 
     func trend(for keyPath: KeyPath<Entry, Double>) -> Character {
@@ -449,10 +455,14 @@ struct DailyEntry: Codable, Equatable {
 struct DailyUsageData: Codable, Equatable {
     var lastUtilization: Double?
     var days: [DailyEntry]
+    var historyEntries: [UsageHistory.Entry]?
+    var usageIncreases: [Date]?
 
-    init(lastUtilization: Double? = nil, days: [DailyEntry] = []) {
+    init(lastUtilization: Double? = nil, days: [DailyEntry] = [], historyEntries: [UsageHistory.Entry]? = nil, usageIncreases: [Date]? = nil) {
         self.lastUtilization = lastUtilization
         self.days = days
+        self.historyEntries = historyEntries
+        self.usageIncreases = usageIncreases
     }
 }
 
@@ -1314,6 +1324,13 @@ class StatusBarController: NSObject {
     override init() {
         super.init()
         dailyStore = loadDailyStore()
+        // Restore session state from persisted store
+        if let saved = dailyStore.historyEntries {
+            history.restore(saved)
+        }
+        if let saved = dailyStore.usageIncreases {
+            usageIncreases = saved.filter { Date().timeIntervalSince($0) < 86400 }
+        }
 
         statusItem.button?.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
         statusItem.button?.title = "CC ..."
@@ -1471,6 +1488,9 @@ class StatusBarController: NSObject {
     }
 
     private func saveDailyStore() {
+        // Snapshot session state into the store before saving
+        dailyStore.historyEntries = history.entries
+        dailyStore.usageIncreases = usageIncreases
         // Save full data locally (includes lastUtilization for delta tracking)
         if let data = try? JSONEncoder().encode(dailyStore) {
             FileManager.default.createFile(atPath: dailyStorePath, contents: data)
