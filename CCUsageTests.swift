@@ -831,7 +831,7 @@ func runFetchScheduleTests() {
             assertEqual(s.interval, 240.0, "3rd: 60 * 2^2 = 240s")
 
             s.onRateLimit(retryAfter: 0)
-            assertEqual(s.interval, 300.0, "4th: capped at defaultFetchInterval 300s")
+            assertEqual(s.interval, 300.0, "4th: capped at maxBackoffInterval 300s")
 
             s.onRateLimit(retryAfter: 0)
             assertEqual(s.interval, 300.0, "5th: stays capped at 300s")
@@ -879,16 +879,16 @@ func runUsageHistoryTests() {
             assertEqual(h.entries[0].sevenDay, 20.0, "sevenDay value")
         }
 
-        test("record caps at maxEntries (24)") {
+        test("record caps at maxEntries (60)") {
             var h = UsageHistory()
-            for i in 0..<30 {
+            for i in 0..<70 {
                 let u = UsageData(fiveHour: UsageWindow(utilization: Double(i), remaining: nil, resetsAt: nil),
                                   sevenDay: UsageWindow(utilization: Double(i), remaining: nil, resetsAt: nil))
                 h.record(u)
             }
-            assertEqual(h.entries.count, 24, "capped at 24")
-            assertEqual(h.entries[0].fiveHour, 6.0, "oldest entry is #6")
-            assertEqual(h.entries[23].fiveHour, 29.0, "newest entry is #29")
+            assertEqual(h.entries.count, 60, "capped at 60")
+            assertEqual(h.entries[0].fiveHour, 10.0, "oldest entry is #10")
+            assertEqual(h.entries[59].fiveHour, 69.0, "newest entry is #69")
         }
 
         test("trend with empty history returns flat") {
@@ -1611,7 +1611,7 @@ func runFormatInsightsChartsTests() {
                 sevenDay: UsageWindow(utilization: 10, remaining: 90, resetsAt: nil)
             )
             let result = formatInsights(usage, sessionFetchCount: 1, sessionStart: now, usageIncreases: dates)
-            check(result.contains("Activity:"), "contains activity heatmap")
+            check(result.contains("Today:"), "contains today heatmap")
             check(result.contains("00    06    12    18"), "contains heatmap label")
         }
 
@@ -1622,7 +1622,18 @@ func runFormatInsightsChartsTests() {
                 sevenDay: UsageWindow(utilization: 10, remaining: 90, resetsAt: nil)
             )
             let result = formatInsights(usage, sessionFetchCount: 1, sessionStart: now, usageIncreases: [Date()])
-            check(!result.contains("Activity:"), "no heatmap with 1 entry")
+            check(!result.contains("Today:"), "no heatmap with 1 entry")
+        }
+
+        test("includes weekly chart when daily data exists") {
+            let now = Date()
+            let usage = UsageData(
+                fiveHour: UsageWindow(utilization: 10, remaining: 90, resetsAt: nil),
+                sevenDay: UsageWindow(utilization: 10, remaining: 90, resetsAt: nil)
+            )
+            let days = [DailyEntry(date: dailyDateString(now), usage: 5.0)]
+            let result = formatInsights(usage, sessionFetchCount: 1, sessionStart: now, dailyDays: days)
+            check(result.contains("Week:"), "contains weekly chart")
         }
     }
 }
@@ -1863,6 +1874,233 @@ func runAgentTrackingTests() {
     }
 }
 
+// MARK: - Daily Usage Tracking Tests
+
+func runDailyUsageTrackingTests() {
+    suite("dailyDateString") {
+        test("formats date as YYYY-MM-DD") {
+            let cal = Calendar.current
+            let date = cal.date(from: DateComponents(year: 2026, month: 3, day: 15))!
+            assertEqual(dailyDateString(date), "2026-03-15", "date format")
+        }
+    }
+
+    suite("recordDailyUsage") {
+        test("first reading creates entry with zero usage") {
+            var store = DailyUsageData()
+            let now = Date()
+            recordDailyUsage(&store, sevenDayUtilization: 30.0, now: now)
+            assertEqual(store.days.count, 1, "one entry")
+            assertEqual(store.days[0].usage, 0.0, "first reading delta is 0")
+            assertEqual(store.lastUtilization, 30.0, "lastUtilization set")
+        }
+
+        test("second reading records delta") {
+            var store = DailyUsageData()
+            let now = Date()
+            recordDailyUsage(&store, sevenDayUtilization: 30.0, now: now)
+            recordDailyUsage(&store, sevenDayUtilization: 35.0, now: now)
+            assertEqual(store.days.count, 1, "still one entry")
+            assertEqual(store.days[0].usage, 5.0, "delta of 5")
+        }
+
+        test("accumulates multiple deltas in same day") {
+            var store = DailyUsageData()
+            let now = Date()
+            recordDailyUsage(&store, sevenDayUtilization: 10.0, now: now)
+            recordDailyUsage(&store, sevenDayUtilization: 15.0, now: now)
+            recordDailyUsage(&store, sevenDayUtilization: 22.0, now: now)
+            assertEqual(store.days[0].usage, 12.0, "5 + 7 = 12")
+        }
+
+        test("window reset produces zero delta") {
+            var store = DailyUsageData()
+            let now = Date()
+            recordDailyUsage(&store, sevenDayUtilization: 80.0, now: now)
+            recordDailyUsage(&store, sevenDayUtilization: 5.0, now: now)
+            assertEqual(store.days[0].usage, 0.0, "no negative delta on reset")
+            assertEqual(store.lastUtilization, 5.0, "lastUtilization updated after reset")
+        }
+
+        test("resumes tracking after window reset") {
+            var store = DailyUsageData()
+            let now = Date()
+            recordDailyUsage(&store, sevenDayUtilization: 80.0, now: now)
+            recordDailyUsage(&store, sevenDayUtilization: 5.0, now: now)   // reset
+            recordDailyUsage(&store, sevenDayUtilization: 8.0, now: now)   // normal delta
+            assertEqual(store.days[0].usage, 3.0, "tracks delta after reset")
+        }
+
+        test("new day creates new entry") {
+            var store = DailyUsageData()
+            let cal = Calendar.current
+            let yesterday = cal.date(byAdding: .day, value: -1, to: Date())!
+            let today = Date()
+            recordDailyUsage(&store, sevenDayUtilization: 10.0, now: yesterday)
+            recordDailyUsage(&store, sevenDayUtilization: 15.0, now: yesterday)
+            recordDailyUsage(&store, sevenDayUtilization: 20.0, now: today)
+            assertEqual(store.days.count, 2, "two day entries")
+            assertEqual(store.days[0].usage, 5.0, "yesterday usage")
+            assertEqual(store.days[1].usage, 5.0, "today usage")
+        }
+
+        test("prunes entries older than 7 days") {
+            var store = DailyUsageData()
+            let cal = Calendar.current
+            let oldDate = cal.date(byAdding: .day, value: -8, to: Date())!
+            store.days.append(DailyEntry(date: dailyDateString(oldDate), usage: 10.0))
+            recordDailyUsage(&store, sevenDayUtilization: 5.0, now: Date())
+            check(!store.days.contains(where: { $0.date == dailyDateString(oldDate) }), "old entry pruned")
+        }
+    }
+}
+
+// MARK: - Weekly Chart Tests
+
+func runWeeklyChartTests() {
+    suite("weeklyChart") {
+        test("nil with no data") {
+            assertNil(weeklyChart([]), "nil for empty")
+        }
+
+        test("nil when all usage is zero") {
+            let days = [DailyEntry(date: dailyDateString(Date()), usage: 0)]
+            assertNil(weeklyChart(days), "nil for zero usage")
+        }
+
+        test("returns 13-char chart with spaces") {
+            let cal = Calendar.current
+            var days: [DailyEntry] = []
+            for i in 0..<3 {
+                let date = cal.date(byAdding: .day, value: -i, to: Date())!
+                days.append(DailyEntry(date: dailyDateString(date), usage: Double(i + 1) * 5.0))
+            }
+            let result = weeklyChart(days)
+            assertNotNil(result, "produces chart")
+            assertEqual(result!.count, 13, "7 bars + 6 spaces = 13 chars")
+        }
+
+        test("highest usage gets highest block") {
+            let cal = Calendar.current
+            var days: [DailyEntry] = []
+            for i in 0..<7 {
+                let date = cal.date(byAdding: .day, value: -(6 - i), to: Date())!
+                days.append(DailyEntry(date: dailyDateString(date), usage: i == 3 ? 20.0 : 2.0))
+            }
+            let result = weeklyChart(days)!
+            let bars = result.split(separator: " ").map(String.init)
+            assertEqual(bars[3], "\u{2588}", "peak day gets highest block")
+        }
+
+        test("zero usage days get lowest block") {
+            let today = Date()
+            let yesterday = Calendar.current.date(byAdding: .day, value: -1, to: today)!
+            let days = [
+                DailyEntry(date: dailyDateString(yesterday), usage: 10.0),
+                DailyEntry(date: dailyDateString(today), usage: 0),
+            ]
+            let result = weeklyChart(days)!
+            let bars = result.split(separator: " ").map(String.init)
+            assertEqual(bars[6], "\u{2581}", "zero usage day gets lowest block")
+        }
+    }
+
+    suite("weeklyChartLabel") {
+        test("returns 13 chars") {
+            let label = weeklyChartLabel()
+            assertEqual(label.count, 13, "7 letters + 6 spaces = 13 chars")
+        }
+
+        test("contains only valid day letters and spaces") {
+            let label = weeklyChartLabel()
+            let validChars: Set<Character> = ["S", "M", "T", "W", "F", " "]
+            for char in label {
+                check(validChars.contains(char), "valid char: \(char)")
+            }
+        }
+
+        test("last letter matches today") {
+            let weekday = Calendar.current.component(.weekday, from: Date())
+            let letters = ["S", "M", "T", "W", "T", "F", "S"]
+            let expected = letters[weekday - 1]
+            let label = weeklyChartLabel()
+            let lastLetter = String(label.last!)
+            assertEqual(lastLetter, expected, "last letter is today")
+        }
+    }
+}
+
+// MARK: - Merge & iCloud Tests
+
+func runMergeDailyEntriesTests() {
+    suite("mergeDailyEntries") {
+        test("empty input") {
+            let result = mergeDailyEntries([])
+            assertEqual(result.count, 0, "empty merge")
+        }
+
+        test("single device") {
+            let days = [
+                DailyEntry(date: "2026-03-18", usage: 5.0),
+                DailyEntry(date: "2026-03-19", usage: 3.0),
+            ]
+            let result = mergeDailyEntries([days])
+            assertEqual(result.count, 2, "two days")
+            assertEqual(result[0].usage, 5.0, "first day")
+            assertEqual(result[1].usage, 3.0, "second day")
+        }
+
+        test("two devices same days") {
+            let device1 = [
+                DailyEntry(date: "2026-03-18", usage: 5.0),
+                DailyEntry(date: "2026-03-19", usage: 3.0),
+            ]
+            let device2 = [
+                DailyEntry(date: "2026-03-18", usage: 8.0),
+                DailyEntry(date: "2026-03-19", usage: 2.0),
+            ]
+            let result = mergeDailyEntries([device1, device2])
+            assertEqual(result.count, 2, "two days merged")
+            assertEqual(result[0].usage, 13.0, "day 18: 5+8")
+            assertEqual(result[1].usage, 5.0, "day 19: 3+2")
+        }
+
+        test("two devices different days") {
+            let device1 = [DailyEntry(date: "2026-03-18", usage: 5.0)]
+            let device2 = [DailyEntry(date: "2026-03-19", usage: 8.0)]
+            let result = mergeDailyEntries([device1, device2])
+            assertEqual(result.count, 2, "two separate days")
+            assertEqual(result[0].date, "2026-03-18", "sorted by date")
+            assertEqual(result[1].date, "2026-03-19", "sorted by date")
+        }
+
+        test("three devices") {
+            let d1 = [DailyEntry(date: "2026-03-19", usage: 3.0)]
+            let d2 = [DailyEntry(date: "2026-03-19", usage: 7.0)]
+            let d3 = [DailyEntry(date: "2026-03-19", usage: 2.0)]
+            let result = mergeDailyEntries([d1, d2, d3])
+            assertEqual(result.count, 1, "one day")
+            assertEqual(result[0].usage, 12.0, "3+7+2")
+        }
+    }
+
+    suite("deviceId") {
+        test("is not empty") {
+            check(!deviceId.isEmpty, "deviceId should not be empty")
+        }
+
+        test("contains only lowercase alphanumerics and dashes") {
+            for char in deviceId {
+                let valid = char.isLetter || char.isNumber || char == "-"
+                check(valid, "valid char: \(char)")
+                if char.isLetter {
+                    check(char.isLowercase, "lowercase: \(char)")
+                }
+            }
+        }
+    }
+}
+
 // MARK: - Test Runner
 
 func runAllTests() {
@@ -1895,6 +2133,9 @@ func runAllTests() {
     runParseWindowTests()
     runModelBreakdownParseTests()
     runAgentTrackingTests()
+    runDailyUsageTrackingTests()
+    runWeeklyChartTests()
+    runMergeDailyEntriesTests()
 
     print("\n=== Results: \(passedTests)/\(totalTests) passed ===")
     if !failedTests.isEmpty {
