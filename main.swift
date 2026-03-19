@@ -957,7 +957,8 @@ func formatAttributedMenuItem(label: String, window: UsageWindow, pace: Double? 
 
     // Line 3: sparkline if available
     if !sparkline.isEmpty {
-        result.append(NSAttributedString(string: "\n  \(sparkline)", attributes: [.font: barFont, .foregroundColor: NSColor.tertiaryLabelColor]))
+        let sparkFont = NSFont.monospacedSystemFont(ofSize: 9, weight: .regular)
+        result.append(NSAttributedString(string: "\n  \(sparkline)", attributes: [.font: sparkFont, .foregroundColor: NSColor.tertiaryLabelColor]))
     }
 
     return result
@@ -1024,7 +1025,7 @@ func formatAttributedActivity(dailyDays: [DailyEntry], hourlyIncreases: [Date], 
 
     let result = NSMutableAttributedString()
     let font = NSFont.systemFont(ofSize: 13)
-    let monoFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .medium)
+    let monoFont = NSFont.monospacedSystemFont(ofSize: 11, weight: .medium)
     let dimFont = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
 
     result.append(NSAttributedString(string: "Activity", attributes: [.font: font]))
@@ -1163,7 +1164,7 @@ func formatInsights(_ usage: UsageData, sessionFetchCount: Int = 0, sessionStart
 #if !TESTING
 func formatAttributedInsights(_ usage: UsageData, sessionFetchCount: Int = 0, sessionStart: Date = Date(), usageIncreases: [Date] = []) -> NSAttributedString {
     let result = NSMutableAttributedString()
-    let font = NSFont.systemFont(ofSize: 12)
+    let font = NSFont.systemFont(ofSize: 13)
     let smallFont = NSFont.systemFont(ofSize: 11)
     let green = colorGreen
     let warn = colorYellow
@@ -1842,7 +1843,7 @@ class StatusBarController: NSObject {
         // 7-day window
         let d7Pace = calculatePace(utilization: usage.sevenDay.utilization, resetsAt: usage.sevenDay.resetsAt, windowDuration: 7 * 86400)
         let d7Spark = history.sparkline(for: \.sevenDay)
-        detailSevenDay.attributedTitle = formatAttributedMenuItem(label: "7-day window ", window: usage.sevenDay, pace: d7Pace, sparkline: d7Spark)
+        detailSevenDay.attributedTitle = formatAttributedMenuItem(label: "7-day window", window: usage.sevenDay, pace: d7Pace, sparkline: d7Spark)
 
         // Model breakdown
         if let models = usage.models {
