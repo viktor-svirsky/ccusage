@@ -434,19 +434,18 @@ func hourlyHeatmap(_ increases: [Date], now: Date = Date()) -> String? {
         let index = Int((Double(count) / Double(maxCount)) * Double(blocks.count - 1))
         return String(blocks[min(max(index, 0), blocks.count - 1)])
     }
-    return chars.joined(separator: " ")
+    return chars.joined()
 }
 
 func hourlyHeatmapLabel(now: Date = Date()) -> String {
     let currentHour = Calendar.current.component(.hour, from: now)
-    let width = (currentHour + 1) * 2 - 1  // each bar is 1 char + 1 space, minus trailing space
+    let width = currentHour + 1
     var label = Array(repeating: Character(" "), count: width)
-    // Place 2-digit markers at positions 0, 6, 12, 18 (each at charPos = hour * 2)
+    // Place markers at positions 0, 6, 12, 18 (each at charPos = hour)
     for hour in [0, 6, 12, 18] where hour <= currentHour {
-        let pos = hour * 2
-        let text = String(format: "%02d", hour)
-        for (i, ch) in text.enumerated() where pos + i < width {
-            label[pos + i] = ch
+        let text = String(format: "%d", hour)
+        for (i, ch) in text.enumerated() where hour + i < width {
+            label[hour + i] = ch
         }
     }
     return String(label)
@@ -1837,13 +1836,11 @@ class StatusBarController: NSObject {
         #else
         // 5-hour window
         let h5Pace = calculatePace(utilization: usage.fiveHour.utilization, resetsAt: usage.fiveHour.resetsAt, windowDuration: 5 * 3600)
-        let h5Spark = history.sparkline(for: \.fiveHour)
-        detailFiveHour.attributedTitle = formatAttributedMenuItem(label: "5-hour window", window: usage.fiveHour, pace: h5Pace, sparkline: h5Spark)
+        detailFiveHour.attributedTitle = formatAttributedMenuItem(label: "5-hour window", window: usage.fiveHour, pace: h5Pace)
 
         // 7-day window
         let d7Pace = calculatePace(utilization: usage.sevenDay.utilization, resetsAt: usage.sevenDay.resetsAt, windowDuration: 7 * 86400)
-        let d7Spark = history.sparkline(for: \.sevenDay)
-        detailSevenDay.attributedTitle = formatAttributedMenuItem(label: "7-day window", window: usage.sevenDay, pace: d7Pace, sparkline: d7Spark)
+        detailSevenDay.attributedTitle = formatAttributedMenuItem(label: "7-day window", window: usage.sevenDay, pace: d7Pace)
 
         // Model breakdown
         if let models = usage.models {
