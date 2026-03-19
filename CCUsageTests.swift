@@ -1001,6 +1001,41 @@ func runUsageHistoryTests() {
                                sevenDay: UsageWindow(utilization: 0, remaining: nil, resetsAt: nil)))
             assertEqual(h.sparkline(for: \.fiveHour), "▁█▄", "three entries works")
         }
+
+        test("restore loads saved entries") {
+            var h = UsageHistory()
+            let saved = [
+                UsageHistory.Entry(date: Date(), fiveHour: 10, sevenDay: 20),
+                UsageHistory.Entry(date: Date(), fiveHour: 30, sevenDay: 40),
+            ]
+            h.restore(saved)
+            assertEqual(h.entries.count, 2, "restored 2 entries")
+            assertEqual(h.entries[0].fiveHour, 10.0, "first entry")
+            assertEqual(h.entries[1].fiveHour, 30.0, "second entry")
+        }
+
+        test("restore prunes stale entries") {
+            var h = UsageHistory()
+            let old = Date().addingTimeInterval(-8000)  // older than 2h
+            let recent = Date().addingTimeInterval(-60)
+            let saved = [
+                UsageHistory.Entry(date: old, fiveHour: 10, sevenDay: 20),
+                UsageHistory.Entry(date: recent, fiveHour: 30, sevenDay: 40),
+            ]
+            h.restore(saved)
+            assertEqual(h.entries.count, 1, "stale entry pruned")
+            assertEqual(h.entries[0].fiveHour, 30.0, "only recent entry kept")
+        }
+
+        test("restore caps at maxEntries") {
+            var h = UsageHistory()
+            var saved: [UsageHistory.Entry] = []
+            for i in 0..<70 {
+                saved.append(UsageHistory.Entry(date: Date(), fiveHour: Double(i), sevenDay: 0))
+            }
+            h.restore(saved)
+            assertEqual(h.entries.count, 60, "capped at 60")
+        }
     }
 }
 
