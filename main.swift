@@ -15,7 +15,23 @@ let updateRepoName = "ccusage"
 private let allowedDownloadHosts: Set<String> = ["github.com", "objects.githubusercontent.com"]
 private let maxRetryInterval = 86400  // 1 day
 private let minRetryInterval = 60     // 1 minute
-let defaultFetchInterval: TimeInterval = 300  // 5 minutes
+let defaultFetchInterval: TimeInterval = 120  // 2 minutes
+private let maxBackoffInterval: TimeInterval = 300  // 5 minutes
+private let iCloudSubfolder = ".ccusage"
+
+let deviceId: String = {
+    let name = Host.current().localizedName ?? "unknown"
+    var result = ""
+    for scalar in name.lowercased().unicodeScalars {
+        if CharacterSet.alphanumerics.contains(scalar) {
+            result.append(Character(scalar))
+        } else if !result.isEmpty && result.last != "-" {
+            result.append("-")
+        }
+    }
+    if result.last == "-" { result.removeLast() }
+    return result.isEmpty ? "unknown" : result
+}()
 
 // MARK: - API Types
 
@@ -295,7 +311,7 @@ struct UsageHistory {
     }
 
     private(set) var entries: [Entry] = []
-    private let maxEntries = 24  // ~2 hours at 5-min intervals
+    private let maxEntries = 60  // ~2 hours at 2-min intervals
 
     mutating func record(_ usage: UsageData) {
         entries.append(Entry(date: Date(), fiveHour: usage.fiveHour.utilization, sevenDay: usage.sevenDay.utilization))
@@ -421,6 +437,101 @@ func formatStatusLine(_ usage: UsageData, history: UsageHistory = UsageHistory()
     let h5 = usage.fiveHour.utilization
     let d7 = usage.sevenDay.utilization
     return "\(formatValue(h5))/\(formatValue(d7))"
+}
+
+// MARK: - Daily Usage Tracking
+
+struct DailyEntry: Codable, Equatable {
+    let date: String
+    var usage: Double
+}
+
+struct DailyUsageData: Codable, Equatable {
+    var lastUtilization: Double?
+    var days: [DailyEntry]
+
+    init(lastUtilization: Double? = nil, days: [DailyEntry] = []) {
+        self.lastUtilization = lastUtilization
+        self.days = days
+    }
+}
+
+private let dailyDateFormatter: DateFormatter = {
+    let f = DateFormatter()
+    f.dateFormat = "yyyy-MM-dd"
+    f.locale = Locale(identifier: "en_US_POSIX")
+    return f
+}()
+
+func dailyDateString(_ date: Date) -> String {
+    dailyDateFormatter.string(from: date)
+}
+
+func recordDailyUsage(_ store: inout DailyUsageData, sevenDayUtilization: Double, now: Date = Date()) {
+    let today = dailyDateString(now)
+    let delta: Double
+    if let last = store.lastUtilization, sevenDayUtilization >= last {
+        delta = sevenDayUtilization - last
+    } else {
+        delta = 0
+    }
+    store.lastUtilization = sevenDayUtilization
+
+    if let idx = store.days.firstIndex(where: { $0.date == today }) {
+        if delta > 0 { store.days[idx].usage += delta }
+    } else {
+        store.days.append(DailyEntry(date: today, usage: delta))
+    }
+
+    // Prune entries older than 7 days
+    let cutoff = Calendar.current.date(byAdding: .day, value: -7, to: now)!
+    let cutoffStr = dailyDateString(cutoff)
+    store.days = store.days.filter { $0.date > cutoffStr }
+}
+
+func weeklyChart(_ days: [DailyEntry], now: Date = Date()) -> String? {
+    guard days.contains(where: { $0.usage > 0 }) else { return nil }
+    let blocks: [Character] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
+    let cal = Calendar.current
+
+    var values: [Double] = []
+    for i in (0..<7).reversed() {
+        let date = cal.date(byAdding: .day, value: -i, to: now)!
+        let dateStr = dailyDateString(date)
+        values.append(days.first(where: { $0.date == dateStr })?.usage ?? 0)
+    }
+
+    let maxVal = values.max() ?? 0
+    guard maxVal > 0 else { return nil }
+
+    let chars = values.map { val -> String in
+        if val <= 0 { return String(blocks[0]) }
+        let index = Int((val / maxVal) * Double(blocks.count - 1))
+        return String(blocks[min(max(index, 0), blocks.count - 1)])
+    }
+    return chars.joined(separator: " ")
+}
+
+func weeklyChartLabel(now: Date = Date()) -> String {
+    let cal = Calendar.current
+    let letters = ["S", "M", "T", "W", "T", "F", "S"]
+    let dayLetters = (0..<7).reversed().map { i -> String in
+        let date = cal.date(byAdding: .day, value: -i, to: now)!
+        let weekday = cal.component(.weekday, from: date)
+        return letters[weekday - 1]
+    }
+    return dayLetters.joined(separator: " ")
+}
+
+func mergeDailyEntries(_ deviceEntries: [[DailyEntry]]) -> [DailyEntry] {
+    var merged: [String: Double] = [:]
+    for entries in deviceEntries {
+        for entry in entries {
+            merged[entry.date, default: 0] += entry.usage
+        }
+    }
+    return merged.map { DailyEntry(date: $0.key, usage: $0.value) }
+        .sorted { $0.date < $1.date }
 }
 
 // MARK: - Agent Tracking
@@ -875,16 +986,27 @@ func formatAttributedModelBreakdown(_ models: ModelBreakdown, extraUsage: ExtraU
 }
 
 
-func formatAttributedHeatmap(_ increases: [Date]) -> NSAttributedString? {
-    guard let heatmap = hourlyHeatmap(increases) else { return nil }
+func formatAttributedActivity(dailyDays: [DailyEntry], hourlyIncreases: [Date], now: Date = Date()) -> NSAttributedString? {
+    let hasWeekly = weeklyChart(dailyDays, now: now) != nil
+    let hasHourly = hourlyHeatmap(hourlyIncreases) != nil
+    guard hasWeekly || hasHourly else { return nil }
+
     let result = NSMutableAttributedString()
     let font = NSFont.systemFont(ofSize: 13)
     let monoFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .medium)
     let dimFont = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
 
     result.append(NSAttributedString(string: "Activity", attributes: [.font: font]))
-    result.append(NSAttributedString(string: "\n  \(heatmap)", attributes: [.font: monoFont, .foregroundColor: NSColor.labelColor]))
-    result.append(NSAttributedString(string: "\n  \(hourlyHeatmapLabel())", attributes: [.font: dimFont, .foregroundColor: NSColor.secondaryLabelColor]))
+
+    if let chart = weeklyChart(dailyDays, now: now) {
+        result.append(NSAttributedString(string: "\n  Week  \(chart)", attributes: [.font: monoFont, .foregroundColor: NSColor.labelColor]))
+        result.append(NSAttributedString(string: "\n        \(weeklyChartLabel(now: now))", attributes: [.font: dimFont, .foregroundColor: NSColor.secondaryLabelColor]))
+    }
+
+    if let heatmap = hourlyHeatmap(hourlyIncreases) {
+        result.append(NSAttributedString(string: "\n  Today \(heatmap)", attributes: [.font: monoFont, .foregroundColor: NSColor.labelColor]))
+        result.append(NSAttributedString(string: "\n        \(hourlyHeatmapLabel())", attributes: [.font: dimFont, .foregroundColor: NSColor.secondaryLabelColor]))
+    }
 
     return result
 }
@@ -967,7 +1089,7 @@ func peakHoursSummary(_ increases: [Date]) -> String? {
     return String(format: "Peak usage: %02d:00–%02d:00", peakHour, endHour)
 }
 
-func formatInsights(_ usage: UsageData, sessionFetchCount: Int = 0, sessionStart: Date = Date(), usageIncreases: [Date] = []) -> String {
+func formatInsights(_ usage: UsageData, sessionFetchCount: Int = 0, sessionStart: Date = Date(), usageIncreases: [Date] = [], dailyDays: [DailyEntry] = []) -> String {
     var lines: [String] = []
     if let daily = dailyBreakdown(utilization: usage.sevenDay.utilization, resetsAt: usage.sevenDay.resetsAt, windowDuration: 7 * 86400) {
         lines.append(daily)
@@ -981,9 +1103,13 @@ func formatInsights(_ usage: UsageData, sessionFetchCount: Int = 0, sessionStart
     if let advice = budgetAdvice(utilization: usage.sevenDay.utilization, resetsAt: usage.sevenDay.resetsAt, windowDuration: 7 * 86400) {
         lines.append(advice)
     }
+    if let chart = weeklyChart(dailyDays) {
+        lines.append("Week: \(chart)")
+        lines.append("      \(weeklyChartLabel())")
+    }
     if let heatmap = hourlyHeatmap(usageIncreases) {
-        lines.append("Activity: \(heatmap)")
-        lines.append("          \(hourlyHeatmapLabel())")
+        lines.append("Today: \(heatmap)")
+        lines.append("       \(hourlyHeatmapLabel())")
     }
     let sessionMinutes = Int(Date().timeIntervalSince(sessionStart)) / 60
     lines.append("Session: \(sessionFetchCount) checks over \(max(sessionMinutes, 1))m")
@@ -1134,8 +1260,8 @@ struct FetchSchedule {
     mutating func onRateLimit(retryAfter: Int) {
         consecutiveRateLimits += 1
         let clamped = Double(clampRetryAfter(retryAfter))
-        // Exponential backoff: 60s, 120s, 240s, capped at defaultFetchInterval (300s)
-        let backoff = min(clamped * pow(2.0, Double(consecutiveRateLimits - 1)), defaultFetchInterval)
+        // Exponential backoff: 60s, 120s, 240s, capped at maxBackoffInterval (300s)
+        let backoff = min(clamped * pow(2.0, Double(consecutiveRateLimits - 1)), maxBackoffInterval)
         interval = backoff
         nextFetchAt = Date().addingTimeInterval(interval)
         isRateLimited = true
@@ -1162,6 +1288,17 @@ class StatusBarController: NSObject {
     private let modelBreakdownItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let activityItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let insightsItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    private var dailyStore = DailyUsageData()
+    private let dailyStorePath = NSHomeDirectory() + "/.ccusage-daily.json"
+    private let iCloudFolder: String? = {
+        let iCloudDrive = NSHomeDirectory() + "/Library/Mobile Documents/com~apple~CloudDocs"
+        guard FileManager.default.fileExists(atPath: iCloudDrive) else { return nil }
+        let folder = (iCloudDrive as NSString).appendingPathComponent(iCloudSubfolder)
+        if !FileManager.default.fileExists(atPath: folder) {
+            try? FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
+        }
+        return folder
+    }()
     private let lastRefreshItem = NSMenuItem(title: "Last refresh: never", action: nil, keyEquivalent: "")
     private var sessionStartDate = Date()
     private var sessionFetchCount = 0
@@ -1176,6 +1313,7 @@ class StatusBarController: NSObject {
 
     override init() {
         super.init()
+        dailyStore = loadDailyStore()
 
         statusItem.button?.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
         statusItem.button?.title = "CC ..."
@@ -1320,6 +1458,44 @@ class StatusBarController: NSObject {
             self.updateLastRefreshLabel()
         }
         RunLoop.current.add(secondsTimer!, forMode: .common)
+    }
+
+    // MARK: - Daily Store Persistence
+
+    private func loadDailyStore() -> DailyUsageData {
+        guard let data = FileManager.default.contents(atPath: dailyStorePath),
+              let store = try? JSONDecoder().decode(DailyUsageData.self, from: data) else {
+            return DailyUsageData()
+        }
+        return store
+    }
+
+    private func saveDailyStore() {
+        // Save full data locally (includes lastUtilization for delta tracking)
+        if let data = try? JSONEncoder().encode(dailyStore) {
+            FileManager.default.createFile(atPath: dailyStorePath, contents: data)
+        }
+        // Save days to iCloud (device-specific file for cross-device merging)
+        guard let folder = iCloudFolder else { return }
+        let cloudPath = (folder as NSString).appendingPathComponent("\(deviceId).json")
+        if let data = try? JSONEncoder().encode(dailyStore.days) {
+            FileManager.default.createFile(atPath: cloudPath, contents: data)
+        }
+    }
+
+    private func loadMergedDailyDays() -> [DailyEntry] {
+        guard let folder = iCloudFolder else { return dailyStore.days }
+        let fm = FileManager.default
+        guard let files = try? fm.contentsOfDirectory(atPath: folder) else { return dailyStore.days }
+        var deviceEntries: [[DailyEntry]] = []
+        for file in files where file.hasSuffix(".json") {
+            let path = (folder as NSString).appendingPathComponent(file)
+            guard let data = fm.contents(atPath: path),
+                  let days = try? JSONDecoder().decode([DailyEntry].self, from: data) else { continue }
+            deviceEntries.append(days)
+        }
+        guard !deviceEntries.isEmpty else { return dailyStore.days }
+        return mergeDailyEntries(deviceEntries)
     }
 
     // MARK: - Keychain
@@ -1474,7 +1650,7 @@ class StatusBarController: NSObject {
                             self.lastRefreshItem.title = "Refreshing token..."
                             self.refreshOAuthToken { [weak self] newToken in
                                 guard let self, let newToken else {
-                                    self?.handleRateLimit(raw: http.value(forHTTPHeaderField: "retry-after").flatMap { Int($0) } ?? Int(defaultFetchInterval))
+                                    self?.handleRateLimit(raw: http.value(forHTTPHeaderField: "retry-after").flatMap { Int($0) } ?? Int(maxBackoffInterval))
                                     self?.didRetryWithRefresh = false
                                     return
                                 }
@@ -1541,6 +1717,8 @@ class StatusBarController: NSObject {
 
         lastUsage = usage
         history.record(usage)
+        recordDailyUsage(&dailyStore, sevenDayUtilization: usage.sevenDay.utilization)
+        saveDailyStore()
         lastRefreshDate = Date()
         startSecondsTimer()
         didRetryWithRefresh = false
@@ -1575,12 +1753,30 @@ class StatusBarController: NSObject {
         #if TESTING
         detailFiveHour.title = "\(usageIndicator(for: h5))  5-hour window: \(formatValue(h5))%\(formatResetTime(usage.fiveHour.resetsAt))"
         detailSevenDay.title = "\(usageIndicator(for: d7))  7-day window:  \(formatValue(d7))%\(formatResetTime(usage.sevenDay.resetsAt))"
-        insightsItem.title = formatInsights(usage, sessionFetchCount: sessionFetchCount, sessionStart: sessionStartDate, usageIncreases: usageIncreases)
+        let mergedDays = loadMergedDailyDays()
+        insightsItem.title = formatInsights(usage, sessionFetchCount: sessionFetchCount, sessionStart: sessionStartDate, usageIncreases: usageIncreases, dailyDays: mergedDays)
         if let models = usage.models {
             modelBreakdownItem.isHidden = false
             modelBreakdownItem.title = formatModelBreakdown(models, extraUsage: usage.extraUsage)
         } else {
             modelBreakdownItem.isHidden = true
+        }
+        let hasWeeklyTest = weeklyChart(mergedDays) != nil
+        let hasHourlyTest = hourlyHeatmap(usageIncreases) != nil
+        if hasWeeklyTest || hasHourlyTest {
+            activityItem.isHidden = false
+            var activityLines: [String] = []
+            if let chart = weeklyChart(mergedDays) {
+                activityLines.append("Week: \(chart)")
+                activityLines.append("      \(weeklyChartLabel())")
+            }
+            if let heatmap = hourlyHeatmap(usageIncreases) {
+                activityLines.append("Today: \(heatmap)")
+                activityLines.append("       \(hourlyHeatmapLabel())")
+            }
+            activityItem.title = activityLines.joined(separator: "\n")
+        } else {
+            activityItem.isHidden = true
         }
         #else
         // 5-hour window
@@ -1601,10 +1797,11 @@ class StatusBarController: NSObject {
             modelBreakdownItem.isHidden = true
         }
 
-        // Activity heatmap
-        if let heatmapAttr = formatAttributedHeatmap(usageIncreases) {
+        // Activity (weekly chart + hourly heatmap)
+        let mergedDays = loadMergedDailyDays()
+        if let activityAttr = formatAttributedActivity(dailyDays: mergedDays, hourlyIncreases: usageIncreases) {
             activityItem.isHidden = false
-            activityItem.attributedTitle = heatmapAttr
+            activityItem.attributedTitle = activityAttr
         } else {
             activityItem.isHidden = true
         }
