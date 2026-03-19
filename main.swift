@@ -371,6 +371,7 @@ func depletionEstimate(utilization: Double, resetsAt: Date?, windowDuration: Tim
     guard remaining > 0, remaining < windowDuration else { return nil }
     let elapsed = windowDuration - remaining
     guard elapsed > 60, utilization > 0.1 else { return nil }
+    if utilization >= 100 { return "Depleted" }
     let ratePerSec = utilization / elapsed
     let secsToFull = (100.0 - utilization) / ratePerSec
     if secsToFull > remaining { return "Won't deplete this window" }
@@ -408,7 +409,7 @@ func dailyBreakdown(utilization: Double, resetsAt: Date?, windowDuration: TimeIn
     let daysLeft = remaining / 86400.0
     let pctLeft = 100.0 - utilization
     let sustainablePerDay = daysLeft > 0.01 ? pctLeft / daysLeft : 0
-    return String(format: "Today's rate: %.1f%%/day  •  Safe: %.1f%%/day", perDay, sustainablePerDay)
+    return String(format: "Daily rate: %.1f%%/day  •  Safe: %.1f%%/day", perDay, sustainablePerDay)
 }
 
 func paceLabel(_ pace: Double) -> String {
