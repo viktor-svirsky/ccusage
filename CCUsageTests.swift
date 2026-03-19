@@ -1394,11 +1394,10 @@ func runDepletionEstimateTests() {
             check(result?.contains("Depletes in") == true, "contains depletion label")
         }
 
-        test("100% utilization") {
+        test("100% utilization returns Depleted") {
             let resetsAt = now.addingTimeInterval(3600)
             let result = depletionEstimate(utilization: 100, resetsAt: resetsAt, windowDuration: fiveHours, now: now)
-            // 0% left / rate = 0 time, but (100 - 100) = 0, secsToFull = 0 which is < remaining
-            check(result != nil, "result for 100%")
+            assertEqual(result, "Depleted", "100% shows Depleted")
         }
     }
 }
@@ -1458,7 +1457,7 @@ func runDailyBreakdownTests() {
             let resetsAt = now.addingTimeInterval(sevenDays - 86400)  // 1 day elapsed
             let result = dailyBreakdown(utilization: 20, resetsAt: resetsAt, windowDuration: sevenDays, now: now)
             check(result != nil, "result exists")
-            check(result?.contains("Today's rate:") == true, "has rate")
+            check(result?.contains("Daily rate:") == true, "has rate")
             check(result?.contains("Safe:") == true, "has safe rate")
         }
     }
