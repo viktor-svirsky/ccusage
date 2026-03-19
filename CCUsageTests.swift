@@ -1557,51 +1557,63 @@ func runModelBreakdownParseTests() {
 // MARK: - Hourly Heatmap Tests
 
 func runHourlyHeatmapTests() {
+    // Use hour 23 as "now" so all 24 hours are visible in tests
+    let cal = Calendar.current
+    let endOfDay = cal.date(bySettingHour: 23, minute: 59, second: 0, of: Date())!
+
     suite("hourlyHeatmap") {
         test("nil with fewer than 3 entries") {
             assertNil(hourlyHeatmap([]), "nil for empty")
             assertNil(hourlyHeatmap([Date(), Date()]), "nil for 2 entries")
         }
 
-        test("returns 24-char heatmap with 3+ entries") {
-            let cal = Calendar.current
+        test("returns 24-char heatmap at end of day") {
             let dates = [
                 cal.date(bySettingHour: 14, minute: 0, second: 0, of: Date())!,
                 cal.date(bySettingHour: 14, minute: 30, second: 0, of: Date())!,
                 cal.date(bySettingHour: 10, minute: 0, second: 0, of: Date())!,
             ]
-            let result = hourlyHeatmap(dates)
+            let result = hourlyHeatmap(dates, now: endOfDay)
             assertNotNil(result, "produces heatmap")
             assertEqual(result!.count, 24, "24 characters for 24 hours")
         }
 
+        test("truncates to current hour") {
+            let noon = cal.date(bySettingHour: 11, minute: 30, second: 0, of: Date())!
+            let dates = [
+                cal.date(bySettingHour: 9, minute: 0, second: 0, of: Date())!,
+                cal.date(bySettingHour: 10, minute: 0, second: 0, of: Date())!,
+                cal.date(bySettingHour: 11, minute: 0, second: 0, of: Date())!,
+            ]
+            let result = hourlyHeatmap(dates, now: noon)
+            assertNotNil(result, "produces heatmap")
+            assertEqual(result!.count, 12, "12 characters for hours 0-11")
+        }
+
         test("peak hour gets highest block") {
-            let cal = Calendar.current
             var dates: [Date] = []
             for _ in 0..<10 {
                 dates.append(cal.date(bySettingHour: 14, minute: 0, second: 0, of: Date())!)
             }
             dates.append(cal.date(bySettingHour: 10, minute: 0, second: 0, of: Date())!)
-            let result = hourlyHeatmap(dates)!
+            let result = hourlyHeatmap(dates, now: endOfDay)!
             let chars = Array(result)
             assertEqual(chars[14], Character("█"), "peak hour at index 14 gets highest block")
         }
 
         test("empty hours get lowest block") {
-            let cal = Calendar.current
             let dates = [
                 cal.date(bySettingHour: 14, minute: 0, second: 0, of: Date())!,
                 cal.date(bySettingHour: 14, minute: 30, second: 0, of: Date())!,
                 cal.date(bySettingHour: 14, minute: 45, second: 0, of: Date())!,
             ]
-            let result = hourlyHeatmap(dates)!
+            let result = hourlyHeatmap(dates, now: endOfDay)!
             let chars = Array(result)
             assertEqual(chars[0], Character("▁"), "empty hour gets lowest block")
             assertEqual(chars[3], Character("▁"), "empty hour gets lowest block")
         }
 
         test("multiple peaks distribute correctly") {
-            let cal = Calendar.current
             var dates: [Date] = []
             for _ in 0..<8 {
                 dates.append(cal.date(bySettingHour: 14, minute: 0, second: 0, of: Date())!)
@@ -1609,7 +1621,7 @@ func runHourlyHeatmapTests() {
             for _ in 0..<4 {
                 dates.append(cal.date(bySettingHour: 10, minute: 0, second: 0, of: Date())!)
             }
-            let result = hourlyHeatmap(dates)!
+            let result = hourlyHeatmap(dates, now: endOfDay)!
             let chars = Array(result)
             assertEqual(chars[14], Character("█"), "peak hour 14")
             // 4/8 = 0.5, index = 0.5 * 7 = 3 → "▄"
@@ -1621,9 +1633,22 @@ func runHourlyHeatmapTests() {
 // MARK: - Hourly Heatmap Label Tests
 
 func runHourlyHeatmapLabelTests() {
+    let cal = Calendar.current
+
     suite("hourlyHeatmapLabel") {
-        test("returns correct label") {
-            assertEqual(hourlyHeatmapLabel(), "00    06    12    18", "label format")
+        test("full day shows all markers") {
+            let endOfDay = cal.date(bySettingHour: 23, minute: 59, second: 0, of: Date())!
+            assertEqual(hourlyHeatmapLabel(now: endOfDay), "00    06    12    18", "full day label")
+        }
+
+        test("morning shows only early markers") {
+            let morning = cal.date(bySettingHour: 5, minute: 30, second: 0, of: Date())!
+            assertEqual(hourlyHeatmapLabel(now: morning), "00", "only 00 marker before hour 6")
+        }
+
+        test("midday shows up to 12") {
+            let midday = cal.date(bySettingHour: 13, minute: 0, second: 0, of: Date())!
+            assertEqual(hourlyHeatmapLabel(now: midday), "00    06    12", "markers up to 12")
         }
     }
 }
@@ -1646,7 +1671,7 @@ func runFormatInsightsChartsTests() {
             )
             let result = formatInsights(usage, sessionFetchCount: 1, sessionStart: now, usageIncreases: dates)
             check(result.contains("Today:"), "contains today heatmap")
-            check(result.contains("00    06    12    18"), "contains heatmap label")
+            check(result.contains("00"), "contains heatmap label start")
         }
 
         test("no heatmap with insufficient data") {

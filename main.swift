@@ -418,16 +418,17 @@ func paceLabel(_ pace: Double) -> String {
     return String(format: "● %.1fx pace (on track)", pace)
 }
 
-func hourlyHeatmap(_ increases: [Date]) -> String? {
+func hourlyHeatmap(_ increases: [Date], now: Date = Date()) -> String? {
     guard increases.count >= 3 else { return nil }
     let blocks: [Character] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
+    let currentHour = Calendar.current.component(.hour, from: now)
     var hourCounts = [Int: Int]()
     for date in increases {
         let hour = Calendar.current.component(.hour, from: date)
         hourCounts[hour, default: 0] += 1
     }
     let maxCount = hourCounts.values.max() ?? 1
-    let chars = (0..<24).map { hour -> Character in
+    let chars = (0...currentHour).map { hour -> Character in
         let count = hourCounts[hour, default: 0]
         if count == 0 { return blocks[0] }
         let index = Int((Double(count) / Double(maxCount)) * Double(blocks.count - 1))
@@ -436,8 +437,14 @@ func hourlyHeatmap(_ increases: [Date]) -> String? {
     return String(chars)
 }
 
-func hourlyHeatmapLabel() -> String {
-    return "00    06    12    18"
+func hourlyHeatmapLabel(now: Date = Date()) -> String {
+    let currentHour = Calendar.current.component(.hour, from: now)
+    let markers = [(0, "00"), (6, "06"), (12, "12"), (18, "18")]
+    var parts: [String] = []
+    for (pos, text) in markers where pos <= currentHour {
+        parts.append(text)
+    }
+    return parts.joined(separator: "    ")
 }
 
 func formatStatusLine(_ usage: UsageData, history: UsageHistory = UsageHistory()) -> String {
@@ -521,6 +528,14 @@ func weeklyChart(_ days: [DailyEntry], now: Date = Date()) -> String? {
         return String(blocks[min(max(index, 0), blocks.count - 1)])
     }
     return chars.joined(separator: " ")
+}
+
+func weeklyChartValues(_ days: [DailyEntry], now: Date = Date()) -> [Double] {
+    let cal = Calendar.current
+    return (0..<7).reversed().map { i -> Double in
+        let date = cal.date(byAdding: .day, value: -i, to: now)!
+        return days.first(where: { $0.date == dailyDateString(date) })?.usage ?? 0
+    }
 }
 
 func weeklyChartLabel(now: Date = Date()) -> String {
@@ -1010,13 +1025,21 @@ func formatAttributedActivity(dailyDays: [DailyEntry], hourlyIncreases: [Date], 
     result.append(NSAttributedString(string: "Activity", attributes: [.font: font]))
 
     if let chart = weeklyChart(dailyDays, now: now) {
+        let values = weeklyChartValues(dailyDays, now: now)
+        let total = values.reduce(0, +)
+        let totalStr = String(format: " %.0f%%", total)
         result.append(NSAttributedString(string: "\n  Week  \(chart)", attributes: [.font: monoFont, .foregroundColor: NSColor.labelColor]))
-        result.append(NSAttributedString(string: "\n        \(weeklyChartLabel(now: now))", attributes: [.font: dimFont, .foregroundColor: NSColor.secondaryLabelColor]))
+        result.append(NSAttributedString(string: totalStr, attributes: [.font: dimFont, .foregroundColor: NSColor.secondaryLabelColor]))
+        // Per-day percentages under each bar
+        let pctLabels = values.map { $0 < 1 ? "·" : String(format: "%.0f", $0) }
+        let pctLine = pctLabels.joined(separator: " ")
+        result.append(NSAttributedString(string: "\n        \(pctLine)", attributes: [.font: dimFont, .foregroundColor: NSColor.secondaryLabelColor]))
+        result.append(NSAttributedString(string: "\n        \(weeklyChartLabel(now: now))", attributes: [.font: dimFont, .foregroundColor: NSColor.tertiaryLabelColor]))
     }
 
-    if let heatmap = hourlyHeatmap(hourlyIncreases) {
+    if let heatmap = hourlyHeatmap(hourlyIncreases, now: now) {
         result.append(NSAttributedString(string: "\n  Today \(heatmap)", attributes: [.font: monoFont, .foregroundColor: NSColor.labelColor]))
-        result.append(NSAttributedString(string: "\n        \(hourlyHeatmapLabel())", attributes: [.font: dimFont, .foregroundColor: NSColor.secondaryLabelColor]))
+        result.append(NSAttributedString(string: "\n        \(hourlyHeatmapLabel(now: now))", attributes: [.font: dimFont, .foregroundColor: NSColor.secondaryLabelColor]))
     }
 
     return result
@@ -1115,7 +1138,9 @@ func formatInsights(_ usage: UsageData, sessionFetchCount: Int = 0, sessionStart
         lines.append(advice)
     }
     if let chart = weeklyChart(dailyDays) {
-        lines.append("Week: \(chart)")
+        let values = weeklyChartValues(dailyDays)
+        let total = values.reduce(0, +)
+        lines.append(String(format: "Week: \(chart) %.0f%%", total))
         lines.append("      \(weeklyChartLabel())")
     }
     if let heatmap = hourlyHeatmap(usageIncreases) {
@@ -1788,7 +1813,11 @@ class StatusBarController: NSObject {
             activityItem.isHidden = false
             var activityLines: [String] = []
             if let chart = weeklyChart(mergedDays) {
-                activityLines.append("Week: \(chart)")
+                let values = weeklyChartValues(mergedDays)
+                let total = values.reduce(0, +)
+                let pctLabels = values.map { $0 < 1 ? "·" : String(format: "%.0f", $0) }
+                activityLines.append(String(format: "Week: \(chart) %.0f%%", total))
+                activityLines.append("      \(pctLabels.joined(separator: " "))")
                 activityLines.append("      \(weeklyChartLabel())")
             }
             if let heatmap = hourlyHeatmap(usageIncreases) {
