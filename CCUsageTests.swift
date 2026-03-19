@@ -1001,6 +1001,41 @@ func runUsageHistoryTests() {
                                sevenDay: UsageWindow(utilization: 0, remaining: nil, resetsAt: nil)))
             assertEqual(h.sparkline(for: \.fiveHour), "▁█▄", "three entries works")
         }
+
+        test("restore loads saved entries") {
+            var h = UsageHistory()
+            let saved = [
+                UsageHistory.Entry(date: Date(), fiveHour: 10, sevenDay: 20),
+                UsageHistory.Entry(date: Date(), fiveHour: 30, sevenDay: 40),
+            ]
+            h.restore(saved)
+            assertEqual(h.entries.count, 2, "restored 2 entries")
+            assertEqual(h.entries[0].fiveHour, 10.0, "first entry")
+            assertEqual(h.entries[1].fiveHour, 30.0, "second entry")
+        }
+
+        test("restore prunes stale entries") {
+            var h = UsageHistory()
+            let old = Date().addingTimeInterval(-8000)  // older than 2h
+            let recent = Date().addingTimeInterval(-60)
+            let saved = [
+                UsageHistory.Entry(date: old, fiveHour: 10, sevenDay: 20),
+                UsageHistory.Entry(date: recent, fiveHour: 30, sevenDay: 40),
+            ]
+            h.restore(saved)
+            assertEqual(h.entries.count, 1, "stale entry pruned")
+            assertEqual(h.entries[0].fiveHour, 30.0, "only recent entry kept")
+        }
+
+        test("restore caps at maxEntries") {
+            var h = UsageHistory()
+            var saved: [UsageHistory.Entry] = []
+            for i in 0..<70 {
+                saved.append(UsageHistory.Entry(date: Date(), fiveHour: Double(i), sevenDay: 0))
+            }
+            h.restore(saved)
+            assertEqual(h.entries.count, 60, "capped at 60")
+        }
     }
 }
 
@@ -1359,11 +1394,10 @@ func runDepletionEstimateTests() {
             check(result?.contains("Depletes in") == true, "contains depletion label")
         }
 
-        test("100% utilization") {
+        test("100% utilization returns Depleted") {
             let resetsAt = now.addingTimeInterval(3600)
             let result = depletionEstimate(utilization: 100, resetsAt: resetsAt, windowDuration: fiveHours, now: now)
-            // 0% left / rate = 0 time, but (100 - 100) = 0, secsToFull = 0 which is < remaining
-            check(result != nil, "result for 100%")
+            assertEqual(result, "Depleted", "100% shows Depleted")
         }
     }
 }
@@ -1423,7 +1457,7 @@ func runDailyBreakdownTests() {
             let resetsAt = now.addingTimeInterval(sevenDays - 86400)  // 1 day elapsed
             let result = dailyBreakdown(utilization: 20, resetsAt: resetsAt, windowDuration: sevenDays, now: now)
             check(result != nil, "result exists")
-            check(result?.contains("Today's rate:") == true, "has rate")
+            check(result?.contains("Daily rate:") == true, "has rate")
             check(result?.contains("Safe:") == true, "has safe rate")
         }
     }
@@ -1523,51 +1557,65 @@ func runModelBreakdownParseTests() {
 // MARK: - Hourly Heatmap Tests
 
 func runHourlyHeatmapTests() {
+    // Use hour 23 as "now" so all 24 hours are visible in tests
+    let cal = Calendar.current
+    let endOfDay = cal.date(bySettingHour: 23, minute: 59, second: 0, of: Date())!
+
     suite("hourlyHeatmap") {
         test("nil with fewer than 3 entries") {
             assertNil(hourlyHeatmap([]), "nil for empty")
             assertNil(hourlyHeatmap([Date(), Date()]), "nil for 2 entries")
         }
 
-        test("returns 24-char heatmap with 3+ entries") {
-            let cal = Calendar.current
+        test("space-separated bars at end of day") {
             let dates = [
                 cal.date(bySettingHour: 14, minute: 0, second: 0, of: Date())!,
                 cal.date(bySettingHour: 14, minute: 30, second: 0, of: Date())!,
                 cal.date(bySettingHour: 10, minute: 0, second: 0, of: Date())!,
             ]
-            let result = hourlyHeatmap(dates)
+            let result = hourlyHeatmap(dates, now: endOfDay)
             assertNotNil(result, "produces heatmap")
-            assertEqual(result!.count, 24, "24 characters for 24 hours")
+            let bars = result!.split(separator: " ").map(String.init)
+            assertEqual(bars.count, 24, "24 bars for 24 hours")
+        }
+
+        test("truncates to current hour") {
+            let noon = cal.date(bySettingHour: 11, minute: 30, second: 0, of: Date())!
+            let dates = [
+                cal.date(bySettingHour: 9, minute: 0, second: 0, of: Date())!,
+                cal.date(bySettingHour: 10, minute: 0, second: 0, of: Date())!,
+                cal.date(bySettingHour: 11, minute: 0, second: 0, of: Date())!,
+            ]
+            let result = hourlyHeatmap(dates, now: noon)
+            assertNotNil(result, "produces heatmap")
+            let bars = result!.split(separator: " ").map(String.init)
+            assertEqual(bars.count, 12, "12 bars for hours 0-11")
         }
 
         test("peak hour gets highest block") {
-            let cal = Calendar.current
             var dates: [Date] = []
             for _ in 0..<10 {
                 dates.append(cal.date(bySettingHour: 14, minute: 0, second: 0, of: Date())!)
             }
             dates.append(cal.date(bySettingHour: 10, minute: 0, second: 0, of: Date())!)
-            let result = hourlyHeatmap(dates)!
-            let chars = Array(result)
-            assertEqual(chars[14], Character("█"), "peak hour at index 14 gets highest block")
+            let result = hourlyHeatmap(dates, now: endOfDay)!
+            let bars = result.split(separator: " ").map(String.init)
+            assertEqual(bars[14], "\u{2588}", "peak hour 14 gets highest block")
         }
 
         test("empty hours get lowest block") {
-            let cal = Calendar.current
             let dates = [
                 cal.date(bySettingHour: 14, minute: 0, second: 0, of: Date())!,
                 cal.date(bySettingHour: 14, minute: 30, second: 0, of: Date())!,
                 cal.date(bySettingHour: 14, minute: 45, second: 0, of: Date())!,
             ]
-            let result = hourlyHeatmap(dates)!
-            let chars = Array(result)
-            assertEqual(chars[0], Character("▁"), "empty hour gets lowest block")
-            assertEqual(chars[3], Character("▁"), "empty hour gets lowest block")
+            let result = hourlyHeatmap(dates, now: endOfDay)!
+            let bars = result.split(separator: " ").map(String.init)
+            assertEqual(bars[0], "\u{2581}", "empty hour gets lowest block")
+            assertEqual(bars[3], "\u{2581}", "empty hour gets lowest block")
         }
 
         test("multiple peaks distribute correctly") {
-            let cal = Calendar.current
             var dates: [Date] = []
             for _ in 0..<8 {
                 dates.append(cal.date(bySettingHour: 14, minute: 0, second: 0, of: Date())!)
@@ -1575,11 +1623,10 @@ func runHourlyHeatmapTests() {
             for _ in 0..<4 {
                 dates.append(cal.date(bySettingHour: 10, minute: 0, second: 0, of: Date())!)
             }
-            let result = hourlyHeatmap(dates)!
-            let chars = Array(result)
-            assertEqual(chars[14], Character("█"), "peak hour 14")
-            // 4/8 = 0.5, index = 0.5 * 7 = 3 → "▄"
-            assertEqual(chars[10], Character("▄"), "half-peak hour 10")
+            let result = hourlyHeatmap(dates, now: endOfDay)!
+            let bars = result.split(separator: " ").map(String.init)
+            assertEqual(bars[14], "\u{2588}", "peak hour 14")
+            assertEqual(bars[10], "\u{2584}", "half-peak hour 10")
         }
     }
 }
@@ -1587,9 +1634,35 @@ func runHourlyHeatmapTests() {
 // MARK: - Hourly Heatmap Label Tests
 
 func runHourlyHeatmapLabelTests() {
+    let cal = Calendar.current
+
     suite("hourlyHeatmapLabel") {
-        test("returns correct label") {
-            assertEqual(hourlyHeatmapLabel(), "00    06    12    18", "label format")
+        test("full day shows all markers") {
+            let endOfDay = cal.date(bySettingHour: 23, minute: 59, second: 0, of: Date())!
+            let label = hourlyHeatmapLabel(now: endOfDay)
+            check(label.contains("00"), "has 00 marker")
+            check(label.contains("06"), "has 06 marker")
+            check(label.contains("12"), "has 12 marker")
+            check(label.contains("18"), "has 18 marker")
+        }
+
+        test("morning shows only early markers") {
+            let morning = cal.date(bySettingHour: 5, minute: 30, second: 0, of: Date())!
+            let label = hourlyHeatmapLabel(now: morning)
+            check(label.contains("00"), "has 00 marker")
+            check(!label.contains("06"), "no 06 marker before hour 6")
+        }
+
+        test("label width matches heatmap width") {
+            let endOfDay = cal.date(bySettingHour: 23, minute: 59, second: 0, of: Date())!
+            let dates = [
+                cal.date(bySettingHour: 1, minute: 0, second: 0, of: Date())!,
+                cal.date(bySettingHour: 2, minute: 0, second: 0, of: Date())!,
+                cal.date(bySettingHour: 3, minute: 0, second: 0, of: Date())!,
+            ]
+            let heatmap = hourlyHeatmap(dates, now: endOfDay)!
+            let label = hourlyHeatmapLabel(now: endOfDay)
+            assertEqual(heatmap.count, label.count, "heatmap and label same width")
         }
     }
 }
@@ -1612,7 +1685,7 @@ func runFormatInsightsChartsTests() {
             )
             let result = formatInsights(usage, sessionFetchCount: 1, sessionStart: now, usageIncreases: dates)
             check(result.contains("Today:"), "contains today heatmap")
-            check(result.contains("00    06    12    18"), "contains heatmap label")
+            check(result.contains("00"), "contains heatmap label start")
         }
 
         test("no heatmap with insufficient data") {
