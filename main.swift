@@ -428,23 +428,28 @@ func hourlyHeatmap(_ increases: [Date], now: Date = Date()) -> String? {
         hourCounts[hour, default: 0] += 1
     }
     let maxCount = hourCounts.values.max() ?? 1
-    let chars = (0...currentHour).map { hour -> Character in
+    let chars = (0...currentHour).map { hour -> String in
         let count = hourCounts[hour, default: 0]
-        if count == 0 { return blocks[0] }
+        if count == 0 { return String(blocks[0]) }
         let index = Int((Double(count) / Double(maxCount)) * Double(blocks.count - 1))
-        return blocks[min(max(index, 0), blocks.count - 1)]
+        return String(blocks[min(max(index, 0), blocks.count - 1)])
     }
-    return String(chars)
+    return chars.joined(separator: " ")
 }
 
 func hourlyHeatmapLabel(now: Date = Date()) -> String {
     let currentHour = Calendar.current.component(.hour, from: now)
-    let markers = [(0, "00"), (6, "06"), (12, "12"), (18, "18")]
-    var parts: [String] = []
-    for (pos, text) in markers where pos <= currentHour {
-        parts.append(text)
+    let width = (currentHour + 1) * 2 - 1  // each bar is 1 char + 1 space, minus trailing space
+    var label = Array(repeating: Character(" "), count: width)
+    // Place 2-digit markers at positions 0, 6, 12, 18 (each at charPos = hour * 2)
+    for hour in [0, 6, 12, 18] where hour <= currentHour {
+        let pos = hour * 2
+        let text = String(format: "%02d", hour)
+        for (i, ch) in text.enumerated() where pos + i < width {
+            label[pos + i] = ch
+        }
     }
-    return parts.joined(separator: "    ")
+    return String(label)
 }
 
 func formatStatusLine(_ usage: UsageData, history: UsageHistory = UsageHistory()) -> String {

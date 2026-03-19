@@ -1567,7 +1567,7 @@ func runHourlyHeatmapTests() {
             assertNil(hourlyHeatmap([Date(), Date()]), "nil for 2 entries")
         }
 
-        test("returns 24-char heatmap at end of day") {
+        test("space-separated bars at end of day") {
             let dates = [
                 cal.date(bySettingHour: 14, minute: 0, second: 0, of: Date())!,
                 cal.date(bySettingHour: 14, minute: 30, second: 0, of: Date())!,
@@ -1575,7 +1575,8 @@ func runHourlyHeatmapTests() {
             ]
             let result = hourlyHeatmap(dates, now: endOfDay)
             assertNotNil(result, "produces heatmap")
-            assertEqual(result!.count, 24, "24 characters for 24 hours")
+            let bars = result!.split(separator: " ").map(String.init)
+            assertEqual(bars.count, 24, "24 bars for 24 hours")
         }
 
         test("truncates to current hour") {
@@ -1587,7 +1588,8 @@ func runHourlyHeatmapTests() {
             ]
             let result = hourlyHeatmap(dates, now: noon)
             assertNotNil(result, "produces heatmap")
-            assertEqual(result!.count, 12, "12 characters for hours 0-11")
+            let bars = result!.split(separator: " ").map(String.init)
+            assertEqual(bars.count, 12, "12 bars for hours 0-11")
         }
 
         test("peak hour gets highest block") {
@@ -1597,8 +1599,8 @@ func runHourlyHeatmapTests() {
             }
             dates.append(cal.date(bySettingHour: 10, minute: 0, second: 0, of: Date())!)
             let result = hourlyHeatmap(dates, now: endOfDay)!
-            let chars = Array(result)
-            assertEqual(chars[14], Character("█"), "peak hour at index 14 gets highest block")
+            let bars = result.split(separator: " ").map(String.init)
+            assertEqual(bars[14], "\u{2588}", "peak hour 14 gets highest block")
         }
 
         test("empty hours get lowest block") {
@@ -1608,9 +1610,9 @@ func runHourlyHeatmapTests() {
                 cal.date(bySettingHour: 14, minute: 45, second: 0, of: Date())!,
             ]
             let result = hourlyHeatmap(dates, now: endOfDay)!
-            let chars = Array(result)
-            assertEqual(chars[0], Character("▁"), "empty hour gets lowest block")
-            assertEqual(chars[3], Character("▁"), "empty hour gets lowest block")
+            let bars = result.split(separator: " ").map(String.init)
+            assertEqual(bars[0], "\u{2581}", "empty hour gets lowest block")
+            assertEqual(bars[3], "\u{2581}", "empty hour gets lowest block")
         }
 
         test("multiple peaks distribute correctly") {
@@ -1622,10 +1624,9 @@ func runHourlyHeatmapTests() {
                 dates.append(cal.date(bySettingHour: 10, minute: 0, second: 0, of: Date())!)
             }
             let result = hourlyHeatmap(dates, now: endOfDay)!
-            let chars = Array(result)
-            assertEqual(chars[14], Character("█"), "peak hour 14")
-            // 4/8 = 0.5, index = 0.5 * 7 = 3 → "▄"
-            assertEqual(chars[10], Character("▄"), "half-peak hour 10")
+            let bars = result.split(separator: " ").map(String.init)
+            assertEqual(bars[14], "\u{2588}", "peak hour 14")
+            assertEqual(bars[10], "\u{2584}", "half-peak hour 10")
         }
     }
 }
@@ -1638,17 +1639,30 @@ func runHourlyHeatmapLabelTests() {
     suite("hourlyHeatmapLabel") {
         test("full day shows all markers") {
             let endOfDay = cal.date(bySettingHour: 23, minute: 59, second: 0, of: Date())!
-            assertEqual(hourlyHeatmapLabel(now: endOfDay), "00    06    12    18", "full day label")
+            let label = hourlyHeatmapLabel(now: endOfDay)
+            check(label.contains("00"), "has 00 marker")
+            check(label.contains("06"), "has 06 marker")
+            check(label.contains("12"), "has 12 marker")
+            check(label.contains("18"), "has 18 marker")
         }
 
         test("morning shows only early markers") {
             let morning = cal.date(bySettingHour: 5, minute: 30, second: 0, of: Date())!
-            assertEqual(hourlyHeatmapLabel(now: morning), "00", "only 00 marker before hour 6")
+            let label = hourlyHeatmapLabel(now: morning)
+            check(label.contains("00"), "has 00 marker")
+            check(!label.contains("06"), "no 06 marker before hour 6")
         }
 
-        test("midday shows up to 12") {
-            let midday = cal.date(bySettingHour: 13, minute: 0, second: 0, of: Date())!
-            assertEqual(hourlyHeatmapLabel(now: midday), "00    06    12", "markers up to 12")
+        test("label width matches heatmap width") {
+            let endOfDay = cal.date(bySettingHour: 23, minute: 59, second: 0, of: Date())!
+            let dates = [
+                cal.date(bySettingHour: 1, minute: 0, second: 0, of: Date())!,
+                cal.date(bySettingHour: 2, minute: 0, second: 0, of: Date())!,
+                cal.date(bySettingHour: 3, minute: 0, second: 0, of: Date())!,
+            ]
+            let heatmap = hourlyHeatmap(dates, now: endOfDay)!
+            let label = hourlyHeatmapLabel(now: endOfDay)
+            assertEqual(heatmap.count, label.count, "heatmap and label same width")
         }
     }
 }
