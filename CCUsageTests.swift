@@ -1130,6 +1130,71 @@ func runPacingTests() {
         }
     }
 
+    suite("paceIndicator") {
+        test("nil pace returns empty") {
+            assertEqual(paceIndicator(pace: nil), "", "nil pace")
+        }
+
+        test("over-pacing returns up arrow") {
+            assertEqual(paceIndicator(pace: 1.5), "▲", "1.5x pace")
+            assertEqual(paceIndicator(pace: 1.21), "▲", "1.21x pace")
+        }
+
+        test("under-pacing returns down arrow") {
+            assertEqual(paceIndicator(pace: 0.5), "▼", "0.5x pace")
+            assertEqual(paceIndicator(pace: 0.79), "▼", "0.79x pace")
+        }
+
+        test("on track returns dot") {
+            assertEqual(paceIndicator(pace: 1.0), "●", "1.0x pace")
+            assertEqual(paceIndicator(pace: 1.2), "●", "1.2x boundary")
+            assertEqual(paceIndicator(pace: 0.8), "●", "0.8x boundary")
+        }
+    }
+
+    suite("formatStatusLine with pace indicator") {
+        test("over-pacing shows up arrow") {
+            // 7-day window: 50% used, resets in 5.25 days (elapsed 1.75 days = 25% expected, pace = 2.0)
+            let resetsAt = Date().addingTimeInterval(5.25 * 86400)
+            let u = UsageData(
+                fiveHour: UsageWindow(utilization: 10, remaining: nil, resetsAt: nil),
+                sevenDay: UsageWindow(utilization: 50, remaining: nil, resetsAt: resetsAt)
+            )
+            let line = formatStatusLine(u)
+            check(line.hasSuffix("▲"), "should end with up arrow, got: \(line)")
+        }
+
+        test("under-pacing shows down arrow") {
+            // 7-day window: 10% used, resets in 1 day (elapsed 6 days = 85.7% expected, pace ≈ 0.12)
+            let resetsAt = Date().addingTimeInterval(1 * 86400)
+            let u = UsageData(
+                fiveHour: UsageWindow(utilization: 10, remaining: nil, resetsAt: nil),
+                sevenDay: UsageWindow(utilization: 10, remaining: nil, resetsAt: resetsAt)
+            )
+            let line = formatStatusLine(u)
+            check(line.hasSuffix("▼"), "should end with down arrow, got: \(line)")
+        }
+
+        test("on-track shows no indicator") {
+            // 7-day window: 50% used, resets in 3.5 days (elapsed 3.5 days = 50% expected, pace = 1.0)
+            let resetsAt = Date().addingTimeInterval(3.5 * 86400)
+            let u = UsageData(
+                fiveHour: UsageWindow(utilization: 10, remaining: nil, resetsAt: nil),
+                sevenDay: UsageWindow(utilization: 50, remaining: nil, resetsAt: resetsAt)
+            )
+            let line = formatStatusLine(u)
+            check(line.hasSuffix("●"), "should end with dot, got: \(line)")
+        }
+
+        test("no resetsAt shows no indicator") {
+            let u = UsageData(
+                fiveHour: UsageWindow(utilization: 42, remaining: nil, resetsAt: nil),
+                sevenDay: UsageWindow(utilization: 15, remaining: nil, resetsAt: nil)
+            )
+            check(formatStatusLine(u) == "42/15", "no indicator without resetsAt")
+        }
+    }
+
     suite("paceLabel") {
         test("over budget label") {
             let label = paceLabel(1.5)
