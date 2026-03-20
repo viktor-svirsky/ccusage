@@ -389,6 +389,13 @@ func dailyBreakdown(utilization: Double, resetsAt: Date?, windowDuration: TimeIn
     return String(format: "Today's rate: %.1f%%/day  •  Safe: %.1f%%/day", perDay, sustainablePerDay)
 }
 
+func paceIndicator(pace: Double?) -> String {
+    guard let pace else { return "" }
+    if pace > 1.2 { return "▲" }
+    if pace < 0.8 { return "▼" }
+    return "●"
+}
+
 func paceLabel(_ pace: Double) -> String {
     if pace > 1.2 { return String(format: "▲ %.1fx pace (over budget)", pace) }
     if pace < 0.8 { return String(format: "▼ %.1fx pace (under budget)", pace) }
@@ -420,7 +427,9 @@ func hourlyHeatmapLabel() -> String {
 func formatStatusLine(_ usage: UsageData, history: UsageHistory = UsageHistory()) -> String {
     let h5 = usage.fiveHour.utilization
     let d7 = usage.sevenDay.utilization
-    return "\(formatValue(h5))/\(formatValue(d7))"
+    let d7Pace = calculatePace(utilization: d7, resetsAt: usage.sevenDay.resetsAt, windowDuration: 7 * 86400)
+    let indicator = paceIndicator(pace: d7Pace)
+    return "\(formatValue(h5))/\(formatValue(d7))\(indicator)"
 }
 
 // MARK: - Agent Tracking
@@ -771,6 +780,14 @@ func formatAttributedStatusLine(_ usage: UsageData, history: UsageHistory = Usag
     result.append(NSAttributedString(string: "\(formatValue(h5))", attributes: colored(h5, pace: h5Pace)))
     result.append(NSAttributedString(string: "/", attributes: dimmed))
     result.append(NSAttributedString(string: "\(formatValue(d7))", attributes: colored(d7, pace: d7Pace)))
+    let indicator = paceIndicator(pace: d7Pace)
+    if !indicator.isEmpty {
+        let indicatorColor: NSColor
+        if d7Pace! > 1.2 { indicatorColor = colorRed }
+        else if d7Pace! < 0.8 { indicatorColor = NSColor.systemBlue }
+        else { indicatorColor = colorGreen }
+        result.append(NSAttributedString(string: indicator, attributes: [.font: font, .foregroundColor: indicatorColor]))
+    }
     return result
 }
 
