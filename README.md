@@ -2,7 +2,7 @@
 
 [![macOS 13+](https://img.shields.io/badge/macOS-13%2B-blue?logo=apple&logoColor=white)](https://www.apple.com/macos/)
 [![Swift](https://img.shields.io/badge/Swift-5.9-F05138?logo=swift&logoColor=white)](https://swift.org)
-[![Tests](https://img.shields.io/badge/tests-311%20passing-brightgreen)](https://github.com/viktor-svirsky/ccusage)
+[![Tests](https://img.shields.io/badge/tests-440%20passing-brightgreen)](https://github.com/viktor-svirsky/ccusage)
 [![GitHub release](https://img.shields.io/github/v/release/viktor-svirsky/ccusage)](https://github.com/viktor-svirsky/ccusage/releases/latest)
 [![Homebrew](https://img.shields.io/badge/Homebrew-tap-FBB040?logo=homebrew&logoColor=white)](https://github.com/viktor-svirsky/homebrew-ccusage)
 
@@ -50,9 +50,9 @@ The dropdown menu shows all usage details organized into sections:
 - Hidden when no model data is available
 
 #### Activity
-- 24-hour heatmap (`▁▁▁▃▅▇▆▅▃▂▁▁▁▁▂▅▇▇▆▃▁▁▁▁`) showing which hours have the most usage
-- Time axis below (`00    06    12    18`)
-- Appears after 3+ usage increases are detected in the session
+- **Weekly chart** (`▁ ▃ ▇ ▅ ▄ ▂ ▁`) — per-day usage over the last 7 days, persisted to disk and synced across devices via iCloud Drive
+- Day labels below (`T F S S M T W`)
+- **Today's heatmap** (`▁▁▁▃▅▇▆▅▃▂▁▁▁▁▂▅▇▇▆▃▁▁▁▁`) — which hours have the most usage (session-scoped, appears after 3+ usage increases)
 
 #### Forecast
 - **Depletion estimate** — when each window will hit 100% at current rate, or "Won't deplete this window" (green) if safe
@@ -68,12 +68,13 @@ The dropdown menu shows all usage details organized into sections:
 - Quit (⌘Q)
 
 ### Infrastructure
-- Auto-refresh every 5 minutes + on wake from sleep
+- Auto-refresh every 2 minutes + on wake from sleep
 - Live "last refresh" counter — updates every second for the first minute
 - Independent OAuth token refresh — works even when Claude Code isn't running
 - Proactive token renewal before expiry + automatic retry on 401 with graceful degradation
 - Adaptive rate-limit handling with exponential backoff (respects Retry-After, auto-refreshes OAuth token on 429)
-- Session-scoped usage history (last 24 data points, ~2 hours)
+- Session-scoped usage history (last 60 data points, ~2 hours)
+- Persistent daily usage tracking with iCloud Drive sync across devices
 - Auto-update from GitHub Releases with one-click install
 - Registers as login item automatically
 
@@ -103,7 +104,7 @@ make install
 ## Build & Test
 
 ```bash
-make test    # run 311 unit tests
+make test    # run 440 unit tests
 make build   # compile .app bundle
 ```
 
