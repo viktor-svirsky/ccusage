@@ -19,7 +19,7 @@ Tests compile with `-DTESTING` flag, which gates out AppKit/system-dependent cod
 
 ## Architecture
 
-**Single-file app** — everything is in `main.swift` (~2030 lines), organized by `// MARK: -` sections:
+**Single-file app** — everything is in `main.swift` (~2215 lines), organized by `// MARK: -` sections:
 
 | Section | Lines | Purpose |
 |---------|-------|---------|
@@ -27,17 +27,17 @@ Tests compile with `-DTESTING` flag, which gates out AppKit/system-dependent cod
 | API Types | ~36-68 | `UsageData`, `UsageWindow`, `ModelBreakdown`, `ExtraUsage` structs |
 | Usage Zones & Notifications | ~70-179 | Zone enum (green/yellow/red/depleted), notification logic |
 | Pure Logic | ~181-302 | Token/usage JSON parsing, formatting functions (all testable) |
-| Usage History | ~304-348 | Session-scoped ring buffer (60 entries, ~2h), sparkline/trend generation |
-| Pacing | ~350-440 | Pace calculation, depletion estimates, budget advice, heatmaps |
-| Daily Usage Tracking | ~442-535 | Persistent per-day usage deltas, weekly chart, iCloud merge logic |
-| Agent Tracking | ~537-707 | Parses Claude Code JSONL session files for active subagents |
-| Agent Session Tracker | ~709-1205 | `AgentTracker` class — polls `~/.claude/projects/` for live sessions |
-| Version Comparison | ~1207-1235 | Semver comparison for auto-update |
-| Fetch Schedule | ~1245-1269 | Rate limit handling with exponential backoff |
-| Status Bar Controller | ~1271-2015 | `StatusBarController` — all AppKit UI, API calls, OAuth, auto-update, daily store persistence, iCloud sync |
-| Main | ~2017-2032 | Entry point — `#if TESTING` runs tests, else starts the app |
+| Usage History | ~304-354 | Session-scoped ring buffer (60 entries, ~2h), sparkline/trend generation |
+| Pacing | ~356-468 | Pace calculation, depletion estimates, budget advice, heatmaps |
+| Daily Usage Tracking | ~469-575 | Persistent per-day usage deltas, weekly chart, iCloud merge logic |
+| Agent Tracking | ~576-835 | JSONL parsing for agents, session tokens, model; `SessionTokens`, `AgentStats`, formatting |
+| Agent Session Tracker | ~836-1375 | `AgentTracker` class — polls `~/.claude/projects/` for live sessions, tracks tokens/model |
+| Version Comparison | ~1377-1405 | Semver comparison for auto-update |
+| Fetch Schedule | ~1415-1439 | Rate limit handling with exponential backoff |
+| Status Bar Controller | ~1441-2198 | `StatusBarController` — all AppKit UI, API calls, OAuth, auto-update, daily store persistence, iCloud sync |
+| Main | ~2200-2215 | Entry point — `#if TESTING` runs tests, else starts the app |
 
-**Data flow**: Keychain (OAuth token) → Anthropic usage API → parse JSON → update `UsageData` → format menu items. Agent tracking polls JSONL files independently on a 3-second timer. Daily usage deltas are persisted to `~/.ccusage-daily.json` and synced via iCloud Drive (`~/Library/Mobile Documents/com~apple~CloudDocs/.ccusage/<device-id>.json`).
+**Data flow**: Keychain (OAuth token) → Anthropic usage API → parse JSON → update `UsageData` → format menu items. Agent tracking polls JSONL files independently on a 3-second timer, extracting agent events, per-turn token usage (`message.usage`), model identification, and cache hit rates. Daily usage deltas are persisted to `~/.ccusage-daily.json` and synced via iCloud Drive (`~/Library/Mobile Documents/com~apple~CloudDocs/.ccusage/<device-id>.json`).
 
 ## Testing
 

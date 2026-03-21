@@ -1944,7 +1944,15 @@ func runAgentTrackingTests() {
 
         test("stale session") {
             let result = formatAgentSection([], isStale: true)
+            check(result.contains("Session"), "shows Session header")
             check(result.contains("session idle"), "shows idle message")
+        }
+
+        test("header says Session") {
+            let now = Date()
+            let agents = [TrackedAgent(toolUseId: "t1", description: "Test", subagentType: "gp", launchedAt: now)]
+            let result = formatAgentSection(agents, now: now)
+            check(result.hasPrefix("Session"), "header starts with Session")
         }
     }
 
@@ -2008,6 +2016,225 @@ func runAgentTrackingTests() {
             check(line.contains("2 agents"), "agent count")
             check(line.contains("34K tok"), "total tokens")
             check(line.contains("avg 10s"), "average duration")
+        }
+    }
+}
+
+// MARK: - Session Token Tests
+
+func runSessionTokenTests() {
+    suite("SessionTokens") {
+        test("initial state") {
+            let tokens = SessionTokens()
+            assertEqual(tokens.totalTokens, 0)
+            assertEqual(tokens.totalInputTokens, 0)
+            assertNil(tokens.cacheHitRate)
+        }
+
+        test("add tokens") {
+            var tokens = SessionTokens()
+            tokens.add(input: 1000, output: 500, cacheCreation: 200, cacheRead: 3000)
+            assertEqual(tokens.inputTokens, 1000)
+            assertEqual(tokens.outputTokens, 500)
+            assertEqual(tokens.cacheCreationTokens, 200)
+            assertEqual(tokens.cacheReadTokens, 3000)
+            assertEqual(tokens.totalTokens, 4700)
+            assertEqual(tokens.totalInputTokens, 4200)
+        }
+
+        test("accumulates across calls") {
+            var tokens = SessionTokens()
+            tokens.add(input: 1000, output: 500, cacheCreation: 0, cacheRead: 0)
+            tokens.add(input: 2000, output: 1000, cacheCreation: 100, cacheRead: 5000)
+            assertEqual(tokens.inputTokens, 3000)
+            assertEqual(tokens.outputTokens, 1500)
+            assertEqual(tokens.cacheReadTokens, 5000)
+            assertEqual(tokens.totalTokens, 9600)
+        }
+
+        test("cache hit rate") {
+            var tokens = SessionTokens()
+            tokens.add(input: 1000, output: 500, cacheCreation: 0, cacheRead: 4000)
+            // cacheHitRate = 4000 / (1000 + 0 + 4000) = 0.8
+            let rate = tokens.cacheHitRate!
+            check(abs(rate - 0.8) < 0.001, "cache hit rate should be 0.8, got \(rate)")
+        }
+
+        test("cache hit rate nil when no cache reads") {
+            var tokens = SessionTokens()
+            tokens.add(input: 1000, output: 500, cacheCreation: 0, cacheRead: 0)
+            assertNil(tokens.cacheHitRate)
+        }
+    }
+
+    suite("parseTokenUsage") {
+        test("parses usage under message") {
+            let json = Data("""
+            {"type": "assistant", "message": {"role": "assistant", "content": [], "model": "claude-opus-4-6", "usage": {"input_tokens": 1500, "output_tokens": 800, "cache_creation_input_tokens": 200, "cache_read_input_tokens": 5000}}}
+            """.utf8)
+            let result = parseTokenUsage(from: json)
+            assertNotNil(result)
+            assertEqual(result!.input, 1500)
+            assertEqual(result!.output, 800)
+            assertEqual(result!.cacheCreation, 200)
+            assertEqual(result!.cacheRead, 5000)
+        }
+
+        test("falls back to top-level usage") {
+            let json = Data("""
+            {"type": "assistant", "usage": {"input_tokens": 1000, "output_tokens": 300}}
+            """.utf8)
+            let result = parseTokenUsage(from: json)
+            assertNotNil(result)
+            assertEqual(result!.input, 1000)
+            assertEqual(result!.output, 300)
+            assertEqual(result!.cacheCreation, 0)
+            assertEqual(result!.cacheRead, 0)
+        }
+
+        test("returns nil for no usage") {
+            let json = Data("""
+            {"type": "user", "message": {"role": "user", "content": []}}
+            """.utf8)
+            assertNil(parseTokenUsage(from: json))
+        }
+
+        test("returns nil for zero usage") {
+            let json = Data("""
+            {"type": "assistant", "message": {"usage": {"input_tokens": 0, "output_tokens": 0}}}
+            """.utf8)
+            assertNil(parseTokenUsage(from: json))
+        }
+
+        test("returns nil for invalid JSON") {
+            assertNil(parseTokenUsage(from: Data("not json".utf8)))
+        }
+    }
+
+    suite("parseModel") {
+        test("parses model under message") {
+            let json = Data("""
+            {"type": "assistant", "message": {"role": "assistant", "model": "claude-opus-4-6"}}
+            """.utf8)
+            assertEqual(parseModel(from: json), "claude-opus-4-6")
+        }
+
+        test("falls back to top-level model") {
+            let json = Data("""
+            {"type": "assistant", "model": "claude-sonnet-4-6"}
+            """.utf8)
+            assertEqual(parseModel(from: json), "claude-sonnet-4-6")
+        }
+
+        test("returns nil when no model") {
+            let json = Data("""
+            {"type": "user", "message": {"role": "user"}}
+            """.utf8)
+            assertNil(parseModel(from: json))
+        }
+
+        test("returns nil for empty model") {
+            let json = Data("""
+            {"type": "assistant", "message": {"model": ""}}
+            """.utf8)
+            assertNil(parseModel(from: json))
+        }
+    }
+
+    suite("modelDisplayName") {
+        test("opus") {
+            assertEqual(modelDisplayName("claude-opus-4-6"), "Opus 4.6")
+        }
+        test("sonnet") {
+            assertEqual(modelDisplayName("claude-sonnet-4-6"), "Sonnet 4.6")
+        }
+        test("haiku with date suffix") {
+            assertEqual(modelDisplayName("claude-haiku-4-5-20251001"), "Haiku 4.5")
+        }
+        test("unknown model returns as-is") {
+            assertEqual(modelDisplayName("some-other-model"), "some-other-model")
+        }
+        test("opus older version") {
+            assertEqual(modelDisplayName("claude-opus-4-1"), "Opus 4.1")
+        }
+    }
+
+    suite("formatSessionStats") {
+        test("empty tokens returns empty") {
+            assertEqual(formatSessionStats(SessionTokens()), "")
+        }
+
+        test("tokens only") {
+            var tokens = SessionTokens()
+            tokens.add(input: 15000, output: 3000, cacheCreation: 0, cacheRead: 0)
+            let result = formatSessionStats(tokens)
+            check(result.contains("15K in"), "shows input tokens: \(result)")
+            check(result.contains("3K out"), "shows output tokens: \(result)")
+        }
+
+        test("with model") {
+            var tokens = SessionTokens()
+            tokens.add(input: 15000, output: 3000, cacheCreation: 0, cacheRead: 0)
+            let result = formatSessionStats(tokens, model: "claude-opus-4-6")
+            check(result.contains("Opus 4.6"), "shows model name: \(result)")
+            check(result.contains("15K in"), "shows input tokens: \(result)")
+        }
+
+        test("with cache") {
+            var tokens = SessionTokens()
+            tokens.add(input: 1000, output: 500, cacheCreation: 0, cacheRead: 4000)
+            let result = formatSessionStats(tokens)
+            check(result.contains("5K in"), "shows total input: \(result)")
+            check(result.contains("80% cache"), "shows cache rate: \(result)")
+        }
+
+        test("million tokens") {
+            var tokens = SessionTokens()
+            tokens.add(input: 500000, output: 100000, cacheCreation: 0, cacheRead: 1500000)
+            let result = formatSessionStats(tokens)
+            check(result.contains("2.0M in"), "shows millions: \(result)")
+        }
+    }
+
+    suite("formatTokenCount millions") {
+        test("1M") {
+            assertEqual(formatTokenCount(1_000_000), "1.0M")
+        }
+        test("1.5M") {
+            assertEqual(formatTokenCount(1_500_000), "1.5M")
+        }
+        test("999K stays K") {
+            assertEqual(formatTokenCount(999_000), "999K")
+        }
+    }
+
+    suite("formatAgentSection with session tokens") {
+        test("tokens only, no agents") {
+            var tokens = SessionTokens()
+            tokens.add(input: 50000, output: 10000, cacheCreation: 0, cacheRead: 0)
+            let result = formatAgentSection([], sessionTokens: tokens, currentModel: "claude-sonnet-4-6")
+            check(result.contains("Session"), "header shows Session")
+            check(result.contains("Sonnet 4.6"), "shows model: \(result)")
+            check(result.contains("50K in"), "shows tokens: \(result)")
+        }
+
+        test("agents with tokens") {
+            let now = Date()
+            let agents = [TrackedAgent(toolUseId: "t1", description: "Test", subagentType: "gp", launchedAt: now)]
+            var tokens = SessionTokens()
+            tokens.add(input: 20000, output: 5000, cacheCreation: 0, cacheRead: 0)
+            let result = formatAgentSection(agents, sessionTokens: tokens, currentModel: "claude-opus-4-6", now: now)
+            check(result.contains("Session"), "header shows Session")
+            check(result.contains("Opus 4.6"), "shows model: \(result)")
+            check(result.contains("1 running"), "shows agents: \(result)")
+        }
+
+        test("stale with tokens") {
+            var tokens = SessionTokens()
+            tokens.add(input: 30000, output: 8000, cacheCreation: 0, cacheRead: 0)
+            let result = formatAgentSection([], isStale: true, sessionTokens: tokens, currentModel: "claude-opus-4-6")
+            check(result.contains("session idle"), "shows idle: \(result)")
+            check(result.contains("Opus 4.6"), "shows model: \(result)")
         }
     }
 }
@@ -2271,6 +2498,7 @@ func runAllTests() {
     runParseWindowTests()
     runModelBreakdownParseTests()
     runAgentTrackingTests()
+    runSessionTokenTests()
     runDailyUsageTrackingTests()
     runWeeklyChartTests()
     runMergeDailyEntriesTests()

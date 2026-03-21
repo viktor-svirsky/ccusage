@@ -682,6 +682,7 @@ func formatAgentDuration(_ agent: TrackedAgent, now: Date = Date()) -> String {
 }
 
 func formatTokenCount(_ tokens: Int) -> String {
+    if tokens >= 1_000_000 { return String(format: "%.1fM", Double(tokens) / 1_000_000.0) }
     if tokens >= 1000 { return "\(tokens / 1000)K" }
     return "\(tokens)"
 }
@@ -713,19 +714,105 @@ struct AgentStats: Equatable {
     }
 }
 
+struct SessionTokens: Equatable {
+    var inputTokens: Int = 0
+    var outputTokens: Int = 0
+    var cacheCreationTokens: Int = 0
+    var cacheReadTokens: Int = 0
+
+    var totalTokens: Int { inputTokens + outputTokens + cacheCreationTokens + cacheReadTokens }
+    var totalInputTokens: Int { inputTokens + cacheCreationTokens + cacheReadTokens }
+
+    var cacheHitRate: Double? {
+        let total = Double(totalInputTokens)
+        guard total > 0, cacheReadTokens > 0 else { return nil }
+        return Double(cacheReadTokens) / total
+    }
+
+    mutating func add(input: Int, output: Int, cacheCreation: Int, cacheRead: Int) {
+        inputTokens += input
+        outputTokens += output
+        cacheCreationTokens += cacheCreation
+        cacheReadTokens += cacheRead
+    }
+}
+
+func parseTokenUsage(from jsonLine: Data) -> (input: Int, output: Int, cacheCreation: Int, cacheRead: Int)? {
+    guard let json = try? JSONSerialization.jsonObject(with: jsonLine) as? [String: Any] else {
+        return nil
+    }
+    // Usage lives under message.usage in Claude Code JSONL
+    let message = json["message"] as? [String: Any]
+    guard let usage = (message?["usage"] as? [String: Any]) ?? (json["usage"] as? [String: Any]) else {
+        return nil
+    }
+    let input = usage["input_tokens"] as? Int ?? 0
+    let output = usage["output_tokens"] as? Int ?? 0
+    let cacheCreation = usage["cache_creation_input_tokens"] as? Int ?? 0
+    let cacheRead = usage["cache_read_input_tokens"] as? Int ?? 0
+    guard input > 0 || output > 0 || cacheCreation > 0 || cacheRead > 0 else { return nil }
+    return (input, output, cacheCreation, cacheRead)
+}
+
+func parseModel(from jsonLine: Data) -> String? {
+    guard let json = try? JSONSerialization.jsonObject(with: jsonLine) as? [String: Any] else {
+        return nil
+    }
+    // Model lives under message.model in Claude Code JSONL
+    let message = json["message"] as? [String: Any]
+    if let model = message?["model"] as? String, !model.isEmpty { return model }
+    if let model = json["model"] as? String, !model.isEmpty { return model }
+    return nil
+}
+
+func modelDisplayName(_ model: String) -> String {
+    let parts = model.lowercased().split(separator: "-")
+    let families = ["opus", "sonnet", "haiku"]
+    guard let familyIndex = parts.firstIndex(where: { families.contains(String($0)) }) else {
+        return model
+    }
+    let family = String(parts[familyIndex]).capitalized
+    let versionParts = parts.dropFirst(familyIndex + 1).prefix(2)
+    let version = versionParts.compactMap { part -> String? in
+        let digits = part.prefix(while: { $0.isNumber })
+        return digits.isEmpty ? nil : String(digits)
+    }
+    if version.isEmpty { return family }
+    return "\(family) \(version.joined(separator: "."))"
+}
+
+func formatSessionStats(_ tokens: SessionTokens, model: String? = nil) -> String {
+    guard tokens.totalTokens > 0 else { return "" }
+    var parts: [String] = []
+    if let model { parts.append(modelDisplayName(model)) }
+    parts.append("\(formatTokenCount(tokens.totalInputTokens)) in")
+    parts.append("\(formatTokenCount(tokens.outputTokens)) out")
+    if let rate = tokens.cacheHitRate {
+        parts.append(String(format: "%.0f%% cache", rate * 100))
+    }
+    return parts.joined(separator: " \u{00B7} ")
+}
+
 func formatAgentStatsLine(_ stats: AgentStats) -> String {
     guard stats.completedCount > 0 else { return "" }
     let avgSecs = stats.avgDurationMs / 1000
     return "Session: \(stats.completedCount) agents \u{00B7} \(formatTokenCount(stats.totalTokens)) tok \u{00B7} avg \(avgSecs)s"
 }
 
-func formatAgentSection(_ agents: [TrackedAgent], projectName: String? = nil, stats: AgentStats = AgentStats(), isStale: Bool = false, now: Date = Date()) -> String {
-    if isStale { return "Agents \u{00B7} session idle" }
-    guard !agents.isEmpty else { return "" }
+func formatAgentSection(_ agents: [TrackedAgent], projectName: String? = nil, stats: AgentStats = AgentStats(), isStale: Bool = false, sessionTokens: SessionTokens = SessionTokens(), currentModel: String? = nil, now: Date = Date()) -> String {
+    let sessionStatsLine = formatSessionStats(sessionTokens, model: currentModel)
+    if isStale {
+        var lines = ["Session \u{00B7} session idle"]
+        if !sessionStatsLine.isEmpty { lines.append("  \(sessionStatsLine)") }
+        let agentStatsLine = formatAgentStatsLine(stats)
+        if !agentStatsLine.isEmpty { lines.append("  \(agentStatsLine)") }
+        return lines.joined(separator: "\n")
+    }
+    guard !agents.isEmpty || sessionTokens.totalTokens > 0 else { return "" }
     let running = agents.filter { $0.isRunning }.count
     let done = agents.count - running
 
-    var header = "Agents"
+    var header = "Session"
     if let name = projectName { header += " \u{00B7} \(name)" }
     var parts: [String] = []
     if running > 0 { parts.append("\(running) running") }
@@ -733,6 +820,7 @@ func formatAgentSection(_ agents: [TrackedAgent], projectName: String? = nil, st
     if !parts.isEmpty { header += " (\(parts.joined(separator: " \u{00B7} ")))" }
 
     var lines = [header]
+    if !sessionStatsLine.isEmpty { lines.append("  \(sessionStatsLine)") }
     for agent in agents {
         let status = agent.isRunning ? "\u{25CF}" : "\u{2713}"
         let duration = formatAgentDuration(agent, now: now)
@@ -740,8 +828,8 @@ func formatAgentSection(_ agents: [TrackedAgent], projectName: String? = nil, st
         let state = agent.isRunning ? " running" : ""
         lines.append("  \(status) \(agent.description)  \(duration)\(tokens)\(state)")
     }
-    let statsLine = formatAgentStatsLine(stats)
-    if !statsLine.isEmpty { lines.append("  \(statsLine)") }
+    let agentStatsLine = formatAgentStatsLine(stats)
+    if !agentStatsLine.isEmpty { lines.append("  \(agentStatsLine)") }
     return lines.joined(separator: "\n")
 }
 
@@ -750,6 +838,8 @@ func formatAgentSection(_ agents: [TrackedAgent], projectName: String? = nil, st
 class AgentTracker {
     private(set) var agents: [TrackedAgent] = []
     private(set) var stats = AgentStats()
+    private(set) var sessionTokens = SessionTokens()
+    private(set) var currentModel: String?
     private(set) var projectName: String?
     private(set) var lastFileModification: Date?
     private var lastFileOffset: UInt64 = 0
@@ -763,7 +853,8 @@ class AgentTracker {
 
     var isSessionStale: Bool {
         guard let lastMod = lastFileModification else { return false }
-        return !agents.isEmpty && !hasActiveAgents && Date().timeIntervalSince(lastMod) > staleThreshold
+        let hasData = !agents.isEmpty || sessionTokens.totalTokens > 0
+        return hasData && !hasActiveAgents && Date().timeIntervalSince(lastMod) > staleThreshold
     }
 
     func findActiveSession() -> String? {
@@ -786,15 +877,17 @@ class AgentTracker {
         return newest?.path
     }
 
-    /// Poll for changes. Returns true if agents list changed.
+    /// Poll for changes. Returns true if session state changed.
     @discardableResult
     func poll() -> Bool {
         guard let sessionPath = findActiveSession() else {
-            if !agents.isEmpty {
-                agents.removeAll()
-                return true
-            }
-            return false
+            let hadData = !agents.isEmpty || sessionTokens.totalTokens > 0
+            agents.removeAll()
+            sessionTokens = SessionTokens()
+            currentModel = nil
+            activeSessionPath = nil
+            projectName = nil
+            return hadData
         }
 
         if sessionPath != activeSessionPath {
@@ -802,6 +895,8 @@ class AgentTracker {
             lastFileOffset = 0
             agents.removeAll()
             stats = AgentStats()
+            sessionTokens = SessionTokens()
+            currentModel = nil
             projectName = projectNameFromSessionPath(sessionPath)
         }
 
@@ -843,6 +938,15 @@ class AgentTracker {
                     stats.record(tokens: tokens, durationMs: duration)
                     changed = true
                 }
+            }
+
+            if let usage = parseTokenUsage(from: lineData) {
+                sessionTokens.add(input: usage.input, output: usage.output, cacheCreation: usage.cacheCreation, cacheRead: usage.cacheRead)
+                changed = true
+            }
+            if let model = parseModel(from: lineData), model != currentModel {
+                currentModel = model
+                changed = true
             }
         }
         return changed
@@ -1067,21 +1171,25 @@ func formatAttributedActivity(dailyDays: [DailyEntry], hourlyIncreases: [Date], 
     return result
 }
 
-func formatAttributedAgentSection(_ agents: [TrackedAgent], projectName: String? = nil, stats: AgentStats = AgentStats(), isStale: Bool = false, now: Date = Date()) -> NSAttributedString {
+func formatAttributedAgentSection(_ agents: [TrackedAgent], projectName: String? = nil, stats: AgentStats = AgentStats(), isStale: Bool = false, sessionTokens: SessionTokens = SessionTokens(), currentModel: String? = nil, now: Date = Date()) -> NSAttributedString {
     let result = NSMutableAttributedString()
     let font = NSFont.systemFont(ofSize: 13)
     let smallFont = NSFont.systemFont(ofSize: 11)
     let monoFont = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+    let sessionStatsLine = formatSessionStats(sessionTokens, model: currentModel)
 
     if isStale {
-        result.append(NSAttributedString(string: "Agents", attributes: [.font: font]))
+        result.append(NSAttributedString(string: "Session", attributes: [.font: font]))
         if let name = projectName {
             result.append(NSAttributedString(string: " \u{00B7} \(name)", attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]))
         }
         result.append(NSAttributedString(string: "\n  Session idle", attributes: [.font: smallFont, .foregroundColor: NSColor.tertiaryLabelColor]))
-        let statsLine = formatAgentStatsLine(stats)
-        if !statsLine.isEmpty {
-            result.append(NSAttributedString(string: "\n  \(statsLine)", attributes: [.font: monoFont, .foregroundColor: NSColor.tertiaryLabelColor]))
+        if !sessionStatsLine.isEmpty {
+            result.append(NSAttributedString(string: "\n  \(sessionStatsLine)", attributes: [.font: monoFont, .foregroundColor: NSColor.secondaryLabelColor]))
+        }
+        let agentStatsLine = formatAgentStatsLine(stats)
+        if !agentStatsLine.isEmpty {
+            result.append(NSAttributedString(string: "\n  \(agentStatsLine)", attributes: [.font: monoFont, .foregroundColor: NSColor.tertiaryLabelColor]))
         }
         return result
     }
@@ -1089,7 +1197,7 @@ func formatAttributedAgentSection(_ agents: [TrackedAgent], projectName: String?
     let running = agents.filter { $0.isRunning }.count
     let done = agents.count - running
 
-    result.append(NSAttributedString(string: "Agents", attributes: [.font: font]))
+    result.append(NSAttributedString(string: "Session", attributes: [.font: font]))
     if let name = projectName {
         result.append(NSAttributedString(string: " \u{00B7} \(name)", attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]))
     }
@@ -1099,6 +1207,10 @@ func formatAttributedAgentSection(_ agents: [TrackedAgent], projectName: String?
     if done > 0 { headerParts.append("\(done) done") }
     if !headerParts.isEmpty {
         result.append(NSAttributedString(string: " (\(headerParts.joined(separator: " \u{00B7} ")))", attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]))
+    }
+
+    if !sessionStatsLine.isEmpty {
+        result.append(NSAttributedString(string: "\n  \(sessionStatsLine)", attributes: [.font: monoFont, .foregroundColor: NSColor.secondaryLabelColor]))
     }
 
     for agent in agents {
@@ -1124,9 +1236,9 @@ func formatAttributedAgentSection(_ agents: [TrackedAgent], projectName: String?
         }
     }
 
-    let statsLine = formatAgentStatsLine(stats)
-    if !statsLine.isEmpty {
-        result.append(NSAttributedString(string: "\n  \(statsLine)", attributes: [.font: monoFont, .foregroundColor: NSColor.tertiaryLabelColor]))
+    let agentStatsLine = formatAgentStatsLine(stats)
+    if !agentStatsLine.isEmpty {
+        result.append(NSAttributedString(string: "\n  \(agentStatsLine)", attributes: [.font: monoFont, .foregroundColor: NSColor.tertiaryLabelColor]))
     }
 
     return result
@@ -1478,16 +1590,17 @@ class StatusBarController: NSObject {
         let isStale = agentTracker.isSessionStale
         let hasAgents = !agentTracker.agents.isEmpty
         let hasStats = agentTracker.stats.completedCount > 0
+        let hasTokens = agentTracker.sessionTokens.totalTokens > 0
 
-        guard hasAgents || isStale && hasStats else {
+        guard hasAgents || hasTokens || (isStale && (hasStats || hasTokens)) else {
             agentsItem.isHidden = true
             return
         }
         agentsItem.isHidden = false
         #if TESTING
-        agentsItem.title = formatAgentSection(agentTracker.agents, projectName: agentTracker.projectName, stats: agentTracker.stats, isStale: isStale)
+        agentsItem.title = formatAgentSection(agentTracker.agents, projectName: agentTracker.projectName, stats: agentTracker.stats, isStale: isStale, sessionTokens: agentTracker.sessionTokens, currentModel: agentTracker.currentModel)
         #else
-        agentsItem.attributedTitle = formatAttributedAgentSection(agentTracker.agents, projectName: agentTracker.projectName, stats: agentTracker.stats, isStale: isStale)
+        agentsItem.attributedTitle = formatAttributedAgentSection(agentTracker.agents, projectName: agentTracker.projectName, stats: agentTracker.stats, isStale: isStale, sessionTokens: agentTracker.sessionTokens, currentModel: agentTracker.currentModel)
         #endif
     }
 
