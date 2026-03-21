@@ -446,10 +446,12 @@ func hourlyHeatmap(_ increases: [Date], now: Date = Date()) -> String? {
 
 func hourlyHeatmapLabel(now: Date = Date()) -> String {
     let currentHour = Calendar.current.component(.hour, from: now)
-    let width = currentHour + 1
+    let markers = [0, 6, 12, 18].filter { $0 <= currentHour }
+    let lastMarkerEnd = markers.last.map { $0 + String($0).count } ?? 0
+    let width = max(currentHour + 1, lastMarkerEnd)
     var label = Array(repeating: Character(" "), count: width)
     // Place markers at positions 0, 6, 12, 18 (each at charPos = hour)
-    for hour in [0, 6, 12, 18] where hour <= currentHour {
+    for hour in markers {
         let text = String(format: "%d", hour)
         for (i, ch) in text.enumerated() where hour + i < width {
             label[hour + i] = ch
