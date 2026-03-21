@@ -564,6 +564,22 @@ func weeklyChartLabel(now: Date = Date()) -> String {
     return dayLetters.joined(separator: " ")
 }
 
+func alignedWeeklyColumns(chart: String, values: [Double], dayLabel: String) -> (chart: String, pcts: String, days: String) {
+    let pctLabels = values.map { $0 < 1 ? "·" : String(format: "%.0f", $0) }
+    let colWidth = pctLabels.map { $0.count }.max() ?? 1
+    guard colWidth > 1 else {
+        return (chart, pctLabels.joined(separator: " "), dayLabel)
+    }
+    let rjust = { (s: String) -> String in
+        s.count >= colWidth ? s : String(repeating: " ", count: colWidth - s.count) + s
+    }
+    return (
+        chart.components(separatedBy: " ").map(rjust).joined(separator: " "),
+        pctLabels.map(rjust).joined(separator: " "),
+        dayLabel.components(separatedBy: " ").map(rjust).joined(separator: " ")
+    )
+}
+
 func mergeDailyEntries(_ deviceEntries: [[DailyEntry]]) -> [DailyEntry] {
     var merged: [String: Double] = [:]
     for entries in deviceEntries {
@@ -1156,13 +1172,11 @@ func formatAttributedActivity(dailyDays: [DailyEntry], hourlyIncreases: [Date], 
         let values = weeklyChartValues(dailyDays, now: now)
         let total = values.reduce(0, +)
         let totalStr = String(format: " %.0f%%", total)
-        result.append(NSAttributedString(string: "\n  Week  \(chart)", attributes: [.font: monoFont, .foregroundColor: NSColor.labelColor]))
+        let aligned = alignedWeeklyColumns(chart: chart, values: values, dayLabel: weeklyChartLabel(now: now))
+        result.append(NSAttributedString(string: "\n  Week  \(aligned.chart)", attributes: [.font: monoFont, .foregroundColor: NSColor.labelColor]))
         result.append(NSAttributedString(string: totalStr, attributes: [.font: dimFont, .foregroundColor: NSColor.secondaryLabelColor]))
-        // Per-day percentages under each bar
-        let pctLabels = values.map { $0 < 1 ? "·" : String(format: "%.0f", $0) }
-        let pctLine = pctLabels.joined(separator: " ")
-        result.append(NSAttributedString(string: "\n        \(pctLine)", attributes: [.font: dimFont, .foregroundColor: NSColor.secondaryLabelColor]))
-        result.append(NSAttributedString(string: "\n        \(weeklyChartLabel(now: now))", attributes: [.font: dimFont, .foregroundColor: NSColor.tertiaryLabelColor]))
+        result.append(NSAttributedString(string: "\n        \(aligned.pcts)", attributes: [.font: dimFont, .foregroundColor: NSColor.secondaryLabelColor]))
+        result.append(NSAttributedString(string: "\n        \(aligned.days)", attributes: [.font: dimFont, .foregroundColor: NSColor.tertiaryLabelColor]))
     }
 
     if let heatmap = hourlyHeatmap(hourlyIncreases, now: now) {
@@ -1952,10 +1966,10 @@ class StatusBarController: NSObject {
             if let chart = weeklyChart(mergedDays) {
                 let values = weeklyChartValues(mergedDays)
                 let total = values.reduce(0, +)
-                let pctLabels = values.map { $0 < 1 ? "·" : String(format: "%.0f", $0) }
-                activityLines.append(String(format: "Week: \(chart) %.0f%%", total))
-                activityLines.append("      \(pctLabels.joined(separator: " "))")
-                activityLines.append("      \(weeklyChartLabel())")
+                let aligned = alignedWeeklyColumns(chart: chart, values: values, dayLabel: weeklyChartLabel())
+                activityLines.append(String(format: "Week: \(aligned.chart) %.0f%%", total))
+                activityLines.append("      \(aligned.pcts)")
+                activityLines.append("      \(aligned.days)")
             }
             if let heatmap = hourlyHeatmap(usageIncreases) {
                 activityLines.append("Today: \(heatmap)")

@@ -2408,6 +2408,50 @@ func runWeeklyChartTests() {
     }
 }
 
+func runAlignedWeeklyColumnsTests() {
+    suite("alignedWeeklyColumns") {
+        test("single-digit values unchanged") {
+            let chart = "▁ ▁ ▁ ▁ ▁ ▁ █"
+            let values: [Double] = [0, 0, 0, 0, 0, 0, 9.0]
+            let dayLabel = "S M T W T F S"
+            let result = alignedWeeklyColumns(chart: chart, values: values, dayLabel: dayLabel)
+            assertEqual(result.chart, chart, "chart unchanged for single-digit")
+            assertEqual(result.pcts, "· · · · · · 9", "pcts single-digit")
+            assertEqual(result.days, dayLabel, "days unchanged for single-digit")
+        }
+
+        test("multi-digit values right-justify all columns") {
+            let chart = "▁ ▁ ▁ ▁ ▅ █ ▆"
+            let values: [Double] = [0, 0, 0, 0, 5.0, 14.0, 12.0]
+            let dayLabel = "S M T W T F S"
+            let result = alignedWeeklyColumns(chart: chart, values: values, dayLabel: dayLabel)
+            assertEqual(result.chart, " ▁  ▁  ▁  ▁  ▅  █  ▆", "chart padded to 2-char columns")
+            assertEqual(result.pcts, " ·  ·  ·  ·  5 14 12", "pcts right-justified")
+            assertEqual(result.days, " S  M  T  W  T  F  S", "days right-justified")
+        }
+
+        test("three-digit values") {
+            let chart = "▁ █ ▁ ▁ ▁ ▁ ▁"
+            let values: [Double] = [0, 100.0, 0, 0, 0, 0, 0]
+            let dayLabel = "S M T W T F S"
+            let result = alignedWeeklyColumns(chart: chart, values: values, dayLabel: dayLabel)
+            assertEqual(result.pcts.contains("100"), true, "contains 100")
+            // All columns should have consistent width
+            let pctCols = result.pcts.components(separatedBy: " ").filter { !$0.isEmpty }
+            assertEqual(pctCols.count, 7, "7 pct columns")
+        }
+
+        test("all zero usage") {
+            let chart = "▁ ▁ ▁ ▁ ▁ ▁ ▁"
+            let values: [Double] = [0, 0, 0, 0, 0, 0, 0]
+            let dayLabel = "S M T W T F S"
+            let result = alignedWeeklyColumns(chart: chart, values: values, dayLabel: dayLabel)
+            assertEqual(result.pcts, "· · · · · · ·", "all dots for zero usage")
+            assertEqual(result.chart, chart, "chart unchanged")
+        }
+    }
+}
+
 // MARK: - Merge & iCloud Tests
 
 func runMergeDailyEntriesTests() {
@@ -2514,6 +2558,7 @@ func runAllTests() {
     runSessionTokenTests()
     runDailyUsageTrackingTests()
     runWeeklyChartTests()
+    runAlignedWeeklyColumnsTests()
     runMergeDailyEntriesTests()
 
     print("\n=== Results: \(passedTests)/\(totalTests) passed ===")
