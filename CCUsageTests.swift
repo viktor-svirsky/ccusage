@@ -1718,7 +1718,7 @@ func runHourlyHeatmapLabelTests() {
             check(!label.contains("6"), "no 6 marker before hour 6")
         }
 
-        test("label width matches heatmap width") {
+        test("label width at least heatmap width") {
             let endOfDay = cal.date(bySettingHour: 23, minute: 59, second: 0, of: Date())!
             let dates = [
                 cal.date(bySettingHour: 1, minute: 0, second: 0, of: Date())!,
@@ -1727,7 +1727,20 @@ func runHourlyHeatmapLabelTests() {
             ]
             let heatmap = hourlyHeatmap(dates, now: endOfDay)!
             let label = hourlyHeatmapLabel(now: endOfDay)
-            assertEqual(heatmap.count, label.count, "heatmap and label same width")
+            check(label.count >= heatmap.count, "label at least as wide as heatmap")
+        }
+
+        test("hour 18 shows full 18 marker not truncated") {
+            let hour18 = cal.date(bySettingHour: 18, minute: 0, second: 0, of: Date())!
+            let label = hourlyHeatmapLabel(now: hour18)
+            check(label.contains("18"), "has full 18 marker at hour 18")
+            check(!label.hasSuffix("1"), "does not end with truncated 1")
+        }
+
+        test("hour 12 shows full 12 marker not truncated") {
+            let hour12 = cal.date(bySettingHour: 12, minute: 0, second: 0, of: Date())!
+            let label = hourlyHeatmapLabel(now: hour12)
+            check(label.contains("12"), "has full 12 marker at hour 12")
         }
     }
 }
