@@ -783,6 +783,42 @@ func parseModel(from jsonLine: Data) -> String? {
     return nil
 }
 
+func parseBashUses(from jsonLine: Data) -> Int {
+    guard let json = try? JSONSerialization.jsonObject(with: jsonLine) as? [String: Any],
+          let type = json["type"] as? String, type == "assistant",
+          let message = json["message"] as? [String: Any],
+          let content = message["content"] as? [[String: Any]] else {
+        return 0
+    }
+    return content.filter {
+        ($0["type"] as? String) == "tool_use" && ($0["name"] as? String) == "Bash"
+    }.count
+}
+
+func parseContextWindow(from jsonLine: Data) -> (contextTokens: Int, contextMax: Int)? {
+    guard let json = try? JSONSerialization.jsonObject(with: jsonLine) as? [String: Any] else {
+        return nil
+    }
+    let message = json["message"] as? [String: Any]
+    guard let usage = (message?["usage"] as? [String: Any]) ?? (json["usage"] as? [String: Any]) else {
+        return nil
+    }
+    let input = usage["input_tokens"] as? Int ?? 0
+    let cacheCreation = usage["cache_creation_input_tokens"] as? Int ?? 0
+    let cacheRead = usage["cache_read_input_tokens"] as? Int ?? 0
+    let contextTokens = input + cacheCreation + cacheRead
+    if let contextMax = usage["context_window"] as? Int, contextMax > 0 {
+        return (contextTokens, contextMax)
+    }
+    guard contextTokens > 0 else { return nil }
+    return (contextTokens, modelMaxContextTokens(message?["model"] as? String ?? (json["model"] as? String ?? "")))
+}
+
+func modelMaxContextTokens(_ model: String) -> Int {
+    // All current Claude models default to 200K context
+    return 200_000
+}
+
 func modelDisplayName(_ model: String) -> String {
     let parts = model.lowercased().split(separator: "-")
     let families = ["opus", "sonnet", "haiku"]
@@ -817,7 +853,7 @@ func formatAgentStatsLine(_ stats: AgentStats) -> String {
     return "Session: \(stats.completedCount) agents \u{00B7} \(formatTokenCount(stats.totalTokens)) tok \u{00B7} avg \(avgSecs)s"
 }
 
-func formatAgentSection(_ agents: [TrackedAgent], projectName: String? = nil, stats: AgentStats = AgentStats(), isStale: Bool = false, sessionTokens: SessionTokens = SessionTokens(), currentModel: String? = nil, now: Date = Date()) -> String {
+func formatAgentSection(_ agents: [TrackedAgent], projectName: String? = nil, stats: AgentStats = AgentStats(), isStale: Bool = false, sessionTokens: SessionTokens = SessionTokens(), currentModel: String? = nil, shellRequestCount: Int = 0, contextTokens: Int = 0, contextWindowMax: Int = 0, now: Date = Date()) -> String {
     let sessionStatsLine = formatSessionStats(sessionTokens, model: currentModel)
     if isStale {
         var lines = ["Session \u{00B7} session idle"]
@@ -839,6 +875,11 @@ func formatAgentSection(_ agents: [TrackedAgent], projectName: String? = nil, st
 
     var lines = [header]
     if !sessionStatsLine.isEmpty { lines.append("  \(sessionStatsLine)") }
+    var detailParts: [String] = []
+    if sessionTokens.totalTokens > 0 { detailParts.append("\(formatTokenCount(sessionTokens.totalTokens)) tokens") }
+    if contextWindowMax > 0 { detailParts.append("\(formatTokenCount(contextTokens))/\(formatTokenCount(contextWindowMax)) ctx") }
+    if shellRequestCount > 0 { detailParts.append("\(shellRequestCount) shell") }
+    if !detailParts.isEmpty { lines.append("  \(detailParts.joined(separator: " \u{00B7} "))") }
     for agent in agents {
         let status = agent.isRunning ? "\u{25CF}" : "\u{2713}"
         let duration = formatAgentDuration(agent, now: now)
@@ -851,91 +892,68 @@ func formatAgentSection(_ agents: [TrackedAgent], projectName: String? = nil, st
     return lines.joined(separator: "\n")
 }
 
+func formatMultiSessionSection(_ sessions: [TrackedSession], now: Date = Date()) -> String {
+    guard !sessions.isEmpty else { return "" }
+    let nonStale = sessions.filter { !$0.isStale }
+    let headerCount = nonStale.isEmpty ? sessions.count : nonStale.count
+    let headerLabel = nonStale.isEmpty ? "idle" : "active"
+    var lines = ["Sessions (\(headerCount) \(headerLabel))"]
+    for session in sessions {
+        var header = "  "
+        if let name = session.projectName { header += name } else { header += "unknown" }
+        if let model = session.currentModel { header += " \u{00B7} \(modelDisplayName(model))" }
+        if session.isStale { header += " \u{00B7} idle" }
+        lines.append(header)
+        var detailParts: [String] = []
+        if session.sessionTokens.totalTokens > 0 { detailParts.append("\(formatTokenCount(session.sessionTokens.totalTokens)) tokens") }
+        if session.contextWindowMax > 0 { detailParts.append("\(formatTokenCount(session.lastContextTokens))/\(formatTokenCount(session.contextWindowMax)) ctx") }
+        if session.shellRequestCount > 0 { detailParts.append("\(session.shellRequestCount) shell") }
+        if !detailParts.isEmpty { lines.append("    \(detailParts.joined(separator: " \u{00B7} "))") }
+        for agent in session.agents {
+            let status = agent.isRunning ? "\u{25CF}" : "\u{2713}"
+            let duration = formatAgentDuration(agent, now: now)
+            let tokens = agent.totalTokens.map { " \(formatTokenCount($0)) tok" } ?? ""
+            let state = agent.isRunning ? " running" : ""
+            lines.append("    \(status) \(agent.description)  \(duration)\(tokens)\(state)")
+        }
+    }
+    return lines.joined(separator: "\n")
+}
+
 // MARK: - Agent Session Tracker
 
-class AgentTracker {
-    private(set) var agents: [TrackedAgent] = []
-    private(set) var stats = AgentStats()
-    private(set) var sessionTokens = SessionTokens()
-    private(set) var currentModel: String?
-    private(set) var projectName: String?
-    private(set) var lastFileModification: Date?
-    private var lastFileOffset: UInt64 = 0
-    private var activeSessionPath: String?
-    private let claudeDir: String
-    private let staleThreshold: TimeInterval = 300  // 5 minutes
+struct TrackedSession {
+    let path: String
+    let projectName: String?
+    var agents: [TrackedAgent] = []
+    var stats = AgentStats()
+    var sessionTokens = SessionTokens()
+    var currentModel: String?
+    var lastFileOffset: UInt64 = 0
+    var lastFileModification: Date?
+    var shellRequestCount: Int = 0
+    var lastContextTokens: Int = 0
+    var contextWindowMax: Int = 0
+    private let staleThreshold: TimeInterval = 300
 
-    init(claudeDir: String? = nil) {
-        self.claudeDir = claudeDir ?? (NSHomeDirectory() + "/.claude/projects")
+    init(path: String) {
+        self.path = path
+        self.projectName = projectNameFromSessionPath(path)
     }
 
-    var isSessionStale: Bool {
+    var isStale: Bool {
         guard let lastMod = lastFileModification else { return false }
         let hasData = !agents.isEmpty || sessionTokens.totalTokens > 0
         return hasData && !hasActiveAgents && Date().timeIntervalSince(lastMod) > staleThreshold
     }
 
-    func findActiveSession() -> String? {
-        let fm = FileManager.default
-        guard let projectDirs = try? fm.contentsOfDirectory(atPath: claudeDir) else { return nil }
+    var hasActiveAgents: Bool { agents.contains { $0.isRunning } }
+    var runningCount: Int { agents.filter { $0.isRunning }.count }
+    var hasDisplayableData: Bool { !agents.isEmpty || sessionTokens.totalTokens > 0 }
 
-        var newest: (path: String, date: Date)?
-        for dir in projectDirs {
-            let projectPath = (claudeDir as NSString).appendingPathComponent(dir)
-            guard let files = try? fm.contentsOfDirectory(atPath: projectPath) else { continue }
-            for file in files where file.hasSuffix(".jsonl") {
-                let path = (projectPath as NSString).appendingPathComponent(file)
-                guard let attrs = try? fm.attributesOfItem(atPath: path),
-                      let modified = attrs[.modificationDate] as? Date else { continue }
-                if newest == nil || modified > newest!.date {
-                    newest = (path, modified)
-                }
-            }
-        }
-        return newest?.path
-    }
-
-    /// Poll for changes. Returns true if session state changed.
-    @discardableResult
-    func poll() -> Bool {
-        guard let sessionPath = findActiveSession() else {
-            let hadData = !agents.isEmpty || sessionTokens.totalTokens > 0
-            agents.removeAll()
-            sessionTokens = SessionTokens()
-            currentModel = nil
-            activeSessionPath = nil
-            projectName = nil
-            return hadData
-        }
-
-        if sessionPath != activeSessionPath {
-            activeSessionPath = sessionPath
-            lastFileOffset = 0
-            agents.removeAll()
-            stats = AgentStats()
-            sessionTokens = SessionTokens()
-            currentModel = nil
-            projectName = projectNameFromSessionPath(sessionPath)
-        }
-
-        guard let attrs = try? FileManager.default.attributesOfItem(atPath: sessionPath),
-              let fileSize = attrs[.size] as? UInt64 else { return false }
-
-        if let modified = attrs[.modificationDate] as? Date {
-            lastFileModification = modified
-        }
-
-        guard fileSize > lastFileOffset else { return false }
-
-        guard let handle = FileHandle(forReadingAtPath: sessionPath) else { return false }
-        defer { handle.closeFile() }
-
-        handle.seek(toFileOffset: lastFileOffset)
-        let newData = handle.readDataToEndOfFile()
-        lastFileOffset = fileSize
-
+    /// Process new JSONL lines. Returns true if state changed.
+    mutating func processNewData(_ newData: Data) -> Bool {
         guard !newData.isEmpty else { return false }
-
         var changed = false
         let lines = newData.split(separator: UInt8(ascii: "\n"))
         for line in lines {
@@ -966,21 +984,111 @@ class AgentTracker {
                 currentModel = model
                 changed = true
             }
+            if let ctx = parseContextWindow(from: lineData) {
+                lastContextTokens = ctx.contextTokens
+                contextWindowMax = ctx.contextMax
+                changed = true
+            }
+            let bashCount = parseBashUses(from: lineData)
+            if bashCount > 0 {
+                shellRequestCount += bashCount
+                changed = true
+            }
+        }
+        return changed
+    }
+
+    mutating func pruneCompleted(olderThan interval: TimeInterval = 300) {
+        let cutoff = Date().addingTimeInterval(-interval)
+        agents.removeAll { !$0.isRunning && ($0.completedAt ?? .distantFuture) < cutoff }
+    }
+}
+
+class AgentTracker {
+    private(set) var sessions: [String: TrackedSession] = [:]
+    private let claudeDir: String
+    private let staleThreshold: TimeInterval = 300
+
+    init(claudeDir: String? = nil) {
+        self.claudeDir = claudeDir ?? (NSHomeDirectory() + "/.claude/projects")
+    }
+
+    var activeSessions: [TrackedSession] {
+        sessions.values
+            .filter { $0.hasDisplayableData || $0.isStale }
+            .sorted { ($0.lastFileModification ?? .distantPast) > ($1.lastFileModification ?? .distantPast) }
+    }
+
+    var totalRunningCount: Int {
+        sessions.values.reduce(0) { $0 + $1.runningCount }
+    }
+
+    func findAllSessions() -> [(path: String, modified: Date, size: UInt64)] {
+        let fm = FileManager.default
+        // Use 2x staleThreshold so sessions can be displayed as "stale/idle"
+        // before being evicted from the dictionary
+        let cutoff = Date().addingTimeInterval(-staleThreshold * 2)
+        guard let projectDirs = try? fm.contentsOfDirectory(atPath: claudeDir) else { return [] }
+        var found: [(String, Date, UInt64)] = []
+        for dir in projectDirs {
+            let projectPath = (claudeDir as NSString).appendingPathComponent(dir)
+            guard let files = try? fm.contentsOfDirectory(atPath: projectPath) else { continue }
+            for file in files where file.hasSuffix(".jsonl") {
+                let path = (projectPath as NSString).appendingPathComponent(file)
+                guard let attrs = try? fm.attributesOfItem(atPath: path),
+                      let modified = attrs[.modificationDate] as? Date,
+                      modified > cutoff,
+                      let size = attrs[.size] as? UInt64 else { continue }
+                found.append((path, modified, size))
+            }
+        }
+        return found
+    }
+
+    /// Poll all sessions for changes. Returns true if any session state changed.
+    @discardableResult
+    func poll() -> Bool {
+        let foundSessions = findAllSessions()
+        let foundPathSet = Set(foundSessions.map { $0.path })
+
+        let removed = sessions.keys.filter { !foundPathSet.contains($0) }
+        var changed = !removed.isEmpty
+        removed.forEach { sessions.removeValue(forKey: $0) }
+
+        for (path, modified, fileSize) in foundSessions {
+            let isNew = sessions[path] == nil
+            if isNew {
+                sessions[path] = TrackedSession(path: path)
+                // For newly discovered sessions, skip to near end to avoid parsing
+                // megabytes of history. Read only the last 64KB for recent state.
+                let tailSize: UInt64 = 65536
+                if fileSize > tailSize {
+                    sessions[path]!.lastFileOffset = fileSize - tailSize
+                }
+            }
+
+            sessions[path]!.lastFileModification = modified
+
+            guard fileSize > sessions[path]!.lastFileOffset else { continue }
+
+            guard let handle = FileHandle(forReadingAtPath: path) else { continue }
+            defer { handle.closeFile() }
+
+            handle.seek(toFileOffset: sessions[path]!.lastFileOffset)
+            let newData = handle.readDataToEndOfFile()
+            sessions[path]!.lastFileOffset += UInt64(newData.count)
+
+            if sessions[path]!.processNewData(newData) {
+                changed = true
+            }
         }
         return changed
     }
 
     func pruneCompleted(olderThan interval: TimeInterval = 300) {
-        let cutoff = Date().addingTimeInterval(-interval)
-        agents.removeAll { !$0.isRunning && ($0.completedAt ?? .distantFuture) < cutoff }
-    }
-
-    var hasActiveAgents: Bool {
-        agents.contains { $0.isRunning }
-    }
-
-    var runningCount: Int {
-        agents.filter { $0.isRunning }.count
+        for key in sessions.keys {
+            sessions[key]?.pruneCompleted(olderThan: interval)
+        }
     }
 }
 
@@ -1187,7 +1295,7 @@ func formatAttributedActivity(dailyDays: [DailyEntry], hourlyIncreases: [Date], 
     return result
 }
 
-func formatAttributedAgentSection(_ agents: [TrackedAgent], projectName: String? = nil, stats: AgentStats = AgentStats(), isStale: Bool = false, sessionTokens: SessionTokens = SessionTokens(), currentModel: String? = nil, now: Date = Date()) -> NSAttributedString {
+func formatAttributedAgentSection(_ agents: [TrackedAgent], projectName: String? = nil, stats: AgentStats = AgentStats(), isStale: Bool = false, sessionTokens: SessionTokens = SessionTokens(), currentModel: String? = nil, shellRequestCount: Int = 0, contextTokens: Int = 0, contextWindowMax: Int = 0, now: Date = Date()) -> NSAttributedString {
     let result = NSMutableAttributedString()
     let font = NSFont.systemFont(ofSize: 13)
     let smallFont = NSFont.systemFont(ofSize: 11)
@@ -1229,6 +1337,14 @@ func formatAttributedAgentSection(_ agents: [TrackedAgent], projectName: String?
         result.append(NSAttributedString(string: "\n  \(sessionStatsLine)", attributes: [.font: monoFont, .foregroundColor: NSColor.secondaryLabelColor]))
     }
 
+    var detailParts: [String] = []
+    if sessionTokens.totalTokens > 0 { detailParts.append("\(formatTokenCount(sessionTokens.totalTokens)) tokens") }
+    if contextWindowMax > 0 { detailParts.append("\(formatTokenCount(contextTokens))/\(formatTokenCount(contextWindowMax)) ctx") }
+    if shellRequestCount > 0 { detailParts.append("\(shellRequestCount) shell") }
+    if !detailParts.isEmpty {
+        result.append(NSAttributedString(string: "\n  \(detailParts.joined(separator: " \u{00B7} "))", attributes: [.font: monoFont, .foregroundColor: NSColor.tertiaryLabelColor]))
+    }
+
     for agent in agents {
         let isRunning = agent.isRunning
         let statusIcon = isRunning ? "\u{25CF}" : "\u{2713}"
@@ -1255,6 +1371,55 @@ func formatAttributedAgentSection(_ agents: [TrackedAgent], projectName: String?
     let agentStatsLine = formatAgentStatsLine(stats)
     if !agentStatsLine.isEmpty {
         result.append(NSAttributedString(string: "\n  \(agentStatsLine)", attributes: [.font: monoFont, .foregroundColor: NSColor.tertiaryLabelColor]))
+    }
+
+    return result
+}
+
+func formatAttributedMultiSessionSection(_ sessions: [TrackedSession], now: Date = Date()) -> NSAttributedString {
+    let result = NSMutableAttributedString()
+    let font = NSFont.systemFont(ofSize: 13)
+    let smallFont = NSFont.systemFont(ofSize: 11)
+    let monoFont = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+
+    let nonStale = sessions.filter { !$0.isStale }
+    let headerCount = nonStale.isEmpty ? sessions.count : nonStale.count
+    let headerLabel = nonStale.isEmpty ? "idle" : "active"
+    result.append(NSAttributedString(string: "Sessions (\(headerCount) \(headerLabel))", attributes: [.font: font]))
+
+    for session in sessions {
+        let name = session.projectName ?? "unknown"
+        result.append(NSAttributedString(string: "\n  \(name)", attributes: [.font: smallFont]))
+        if let model = session.currentModel {
+            result.append(NSAttributedString(string: " \u{00B7} \(modelDisplayName(model))", attributes: [.font: smallFont, .foregroundColor: NSColor.secondaryLabelColor]))
+        }
+        if session.isStale {
+            result.append(NSAttributedString(string: " \u{00B7} idle", attributes: [.font: smallFont, .foregroundColor: NSColor.tertiaryLabelColor]))
+        }
+
+        var detailParts: [String] = []
+        if session.sessionTokens.totalTokens > 0 { detailParts.append("\(formatTokenCount(session.sessionTokens.totalTokens)) tokens") }
+        if session.contextWindowMax > 0 { detailParts.append("\(formatTokenCount(session.lastContextTokens))/\(formatTokenCount(session.contextWindowMax)) ctx") }
+        if session.shellRequestCount > 0 { detailParts.append("\(session.shellRequestCount) shell") }
+        if !detailParts.isEmpty {
+            result.append(NSAttributedString(string: "\n    \(detailParts.joined(separator: " \u{00B7} "))", attributes: [.font: monoFont, .foregroundColor: NSColor.tertiaryLabelColor]))
+        }
+
+        for agent in session.agents {
+            let isRunning = agent.isRunning
+            let statusIcon = isRunning ? "\u{25CF}" : "\u{2713}"
+            let statusColor = isRunning ? NSColor.systemOrange : colorGreen
+            result.append(NSAttributedString(string: "\n    ", attributes: [.font: smallFont]))
+            result.append(NSAttributedString(string: statusIcon, attributes: [.font: smallFont, .foregroundColor: statusColor]))
+            result.append(NSAttributedString(string: " \(agent.description)", attributes: [.font: smallFont]))
+            let duration = formatAgentDuration(agent, now: now)
+            if !duration.isEmpty {
+                result.append(NSAttributedString(string: "  \(duration)", attributes: [.font: monoFont, .foregroundColor: NSColor.secondaryLabelColor]))
+            }
+            if isRunning {
+                result.append(NSAttributedString(string: "  running", attributes: [.font: monoFont, .foregroundColor: NSColor.systemOrange]))
+            }
+        }
     }
 
     return result
@@ -1493,7 +1658,7 @@ class StatusBarController: NSObject {
     private let updateItem = NSMenuItem(title: "Check for Updates\u{2026}", action: nil, keyEquivalent: "u")
     private var isUpdating = false
     private var updateTimer: Timer?
-    private let agentsItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    private let sessionsItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private var agentTracker = AgentTracker()
     private var agentTimer: Timer?
 
@@ -1522,9 +1687,9 @@ class StatusBarController: NSObject {
         modelBreakdownItem.isEnabled = false
         modelBreakdownItem.isHidden = true
         menu.addItem(modelBreakdownItem)
-        agentsItem.isEnabled = false
-        agentsItem.isHidden = true
-        menu.addItem(agentsItem)
+        sessionsItem.isEnabled = false
+        sessionsItem.isHidden = true
+        menu.addItem(sessionsItem)
         activityItem.isEnabled = false
         activityItem.isHidden = true
         menu.addItem(activityItem)
@@ -1603,26 +1768,23 @@ class StatusBarController: NSObject {
     }
 
     private func updateAgentsUI() {
-        let isStale = agentTracker.isSessionStale
-        let hasAgents = !agentTracker.agents.isEmpty
-        let hasStats = agentTracker.stats.completedCount > 0
-        let hasTokens = agentTracker.sessionTokens.totalTokens > 0
+        let active = agentTracker.activeSessions
 
-        guard hasAgents || hasTokens || (isStale && (hasStats || hasTokens)) else {
-            agentsItem.isHidden = true
+        guard !active.isEmpty else {
+            sessionsItem.isHidden = true
             return
         }
-        agentsItem.isHidden = false
+        sessionsItem.isHidden = false
         #if TESTING
-        agentsItem.title = formatAgentSection(agentTracker.agents, projectName: agentTracker.projectName, stats: agentTracker.stats, isStale: isStale, sessionTokens: agentTracker.sessionTokens, currentModel: agentTracker.currentModel)
+        sessionsItem.title = formatMultiSessionSection(active)
         #else
-        agentsItem.attributedTitle = formatAttributedAgentSection(agentTracker.agents, projectName: agentTracker.projectName, stats: agentTracker.stats, isStale: isStale, sessionTokens: agentTracker.sessionTokens, currentModel: agentTracker.currentModel)
+        sessionsItem.attributedTitle = formatAttributedMultiSessionSection(active)
         #endif
     }
 
     private func updateStatusBarAgentIndicator() {
         guard let usage = lastUsage else { return }
-        let runningCount = agentTracker.runningCount
+        let runningCount = agentTracker.totalRunningCount
         #if TESTING
         var title = formatStatusLine(usage, history: history)
         if runningCount > 0 { title += " \u{26A1}\(runningCount)" }

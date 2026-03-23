@@ -2523,6 +2523,290 @@ func runMergeDailyEntriesTests() {
     }
 }
 
+// MARK: - Parse Bash Uses Tests
+
+func runParseBashUsesTests() {
+    suite("parseBashUses") {
+        test("counts single Bash tool_use") {
+            let json = Data("""
+            {"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}]}}
+            """.utf8)
+            assertEqual(parseBashUses(from: json), 1)
+        }
+        test("counts multiple Bash tool_use blocks") {
+            let json = Data("""
+            {"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}},{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"pwd"}}]}}
+            """.utf8)
+            assertEqual(parseBashUses(from: json), 2)
+        }
+        test("ignores non-Bash tools") {
+            let json = Data("""
+            {"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Read","input":{}},{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"ls"}}]}}
+            """.utf8)
+            assertEqual(parseBashUses(from: json), 1)
+        }
+        test("returns 0 for user messages") {
+            let json = Data("""
+            {"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1"}]}}
+            """.utf8)
+            assertEqual(parseBashUses(from: json), 0)
+        }
+        test("returns 0 for no content") {
+            let json = Data("""
+            {"type":"assistant","message":{"content":[]}}
+            """.utf8)
+            assertEqual(parseBashUses(from: json), 0)
+        }
+        test("returns 0 for invalid JSON") {
+            assertEqual(parseBashUses(from: Data("bad".utf8)), 0)
+        }
+    }
+}
+
+// MARK: - Parse Context Window Tests
+
+func runParseContextWindowTests() {
+    suite("parseContextWindow") {
+        test("returns context_window and token sum") {
+            let json = Data("""
+            {"type":"assistant","message":{"usage":{"input_tokens":1000,"cache_creation_input_tokens":200,"cache_read_input_tokens":3000,"context_window":200000}}}
+            """.utf8)
+            let result = parseContextWindow(from: json)
+            assertNotNil(result)
+            assertEqual(result!.contextTokens, 4200)
+            assertEqual(result!.contextMax, 200000)
+        }
+        test("falls back to model default when no context_window field") {
+            let json = Data("""
+            {"type":"assistant","message":{"model":"claude-sonnet-4-6","usage":{"input_tokens":5000,"output_tokens":500,"cache_creation_input_tokens":1000,"cache_read_input_tokens":2000}}}
+            """.utf8)
+            let result = parseContextWindow(from: json)
+            assertNotNil(result)
+            assertEqual(result!.contextTokens, 8000)
+            assertEqual(result!.contextMax, 200000)
+        }
+        test("returns nil when no usage block") {
+            let json = Data("""
+            {"type":"assistant","message":{"model":"claude-sonnet-4-6"}}
+            """.utf8)
+            assertNil(parseContextWindow(from: json))
+        }
+        test("returns nil when all tokens zero and no context_window") {
+            let json = Data("""
+            {"type":"assistant","message":{"usage":{"input_tokens":0,"output_tokens":500}}}
+            """.utf8)
+            assertNil(parseContextWindow(from: json))
+        }
+        test("returns nil for invalid JSON") {
+            assertNil(parseContextWindow(from: Data("not json".utf8)))
+        }
+        test("uses top-level usage as fallback") {
+            let json = Data("""
+            {"usage":{"input_tokens":3000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"context_window":200000}}
+            """.utf8)
+            let result = parseContextWindow(from: json)
+            assertNotNil(result)
+            assertEqual(result!.contextTokens, 3000)
+            assertEqual(result!.contextMax, 200000)
+        }
+    }
+}
+
+// MARK: - Model Max Context Tokens Tests
+
+func runModelMaxContextTokensTests() {
+    suite("modelMaxContextTokens") {
+        test("returns 200K for any model") {
+            assertEqual(modelMaxContextTokens("claude-opus-4-6"), 200_000)
+            assertEqual(modelMaxContextTokens("claude-sonnet-4-6"), 200_000)
+            assertEqual(modelMaxContextTokens("claude-haiku-4-5"), 200_000)
+            assertEqual(modelMaxContextTokens("unknown-model"), 200_000)
+        }
+    }
+}
+
+// MARK: - TrackedSession Tests
+
+func runTrackedSessionTests() {
+    suite("TrackedSession") {
+        test("init sets projectName from path") {
+            let home = NSHomeDirectory()
+            let encodedHome = home.replacingOccurrences(of: "/", with: "-")
+            let session = TrackedSession(path: "\(home)/.claude/projects/\(encodedHome)-Projects-my-app/abc.jsonl")
+            assertEqual(session.projectName, "my-app")
+        }
+        test("processNewData accumulates tokens") {
+            var session = TrackedSession(path: "/tmp/test.jsonl")
+            let line = Data("""
+            {"type":"assistant","message":{"usage":{"input_tokens":100,"output_tokens":50,"cache_creation_input_tokens":10,"cache_read_input_tokens":20}}}
+            """.utf8)
+            let changed = session.processNewData(line)
+            check(changed, "should report change")
+            assertEqual(session.sessionTokens.inputTokens, 100)
+            assertEqual(session.sessionTokens.outputTokens, 50)
+        }
+        test("processNewData tracks model") {
+            var session = TrackedSession(path: "/tmp/test.jsonl")
+            let line = Data("""
+            {"type":"assistant","message":{"model":"claude-sonnet-4-6","usage":{"input_tokens":10,"output_tokens":5}}}
+            """.utf8)
+            _ = session.processNewData(line)
+            assertEqual(session.currentModel, "claude-sonnet-4-6")
+        }
+        test("processNewData counts bash uses") {
+            var session = TrackedSession(path: "/tmp/test.jsonl")
+            let line = Data("""
+            {"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}},{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"pwd"}}]}}
+            """.utf8)
+            _ = session.processNewData(line)
+            assertEqual(session.shellRequestCount, 2)
+        }
+        test("processNewData tracks context window") {
+            var session = TrackedSession(path: "/tmp/test.jsonl")
+            let line = Data("""
+            {"type":"assistant","message":{"usage":{"input_tokens":5000,"output_tokens":500,"cache_creation_input_tokens":1000,"cache_read_input_tokens":2000,"context_window":200000}}}
+            """.utf8)
+            _ = session.processNewData(line)
+            assertEqual(session.lastContextTokens, 8000)
+            assertEqual(session.contextWindowMax, 200000)
+        }
+        test("processNewData returns false for empty data") {
+            var session = TrackedSession(path: "/tmp/test.jsonl")
+            let changed = session.processNewData(Data())
+            check(!changed, "empty data should not change state")
+        }
+        test("hasDisplayableData is false initially") {
+            let session = TrackedSession(path: "/tmp/test.jsonl")
+            check(!session.hasDisplayableData, "new session has no data")
+        }
+        test("hasDisplayableData is true after tokens") {
+            var session = TrackedSession(path: "/tmp/test.jsonl")
+            let line = Data("""
+            {"type":"assistant","message":{"usage":{"input_tokens":10,"output_tokens":5}}}
+            """.utf8)
+            _ = session.processNewData(line)
+            check(session.hasDisplayableData, "session with tokens has data")
+        }
+        test("isStale returns false when no lastFileModification") {
+            let session = TrackedSession(path: "/tmp/test.jsonl")
+            check(!session.isStale, "no modification date = not stale")
+        }
+        test("isStale returns false when no data") {
+            var session = TrackedSession(path: "/tmp/test.jsonl")
+            session.lastFileModification = Date().addingTimeInterval(-600)
+            check(!session.isStale, "no data = not stale")
+        }
+        test("isStale returns true when threshold exceeded with data no agents") {
+            var session = TrackedSession(path: "/tmp/test.jsonl")
+            _ = session.processNewData(Data("""
+            {"type":"assistant","message":{"usage":{"input_tokens":100,"output_tokens":50}}}
+            """.utf8))
+            session.lastFileModification = Date().addingTimeInterval(-600)
+            check(session.isStale, "old data with no agents = stale")
+        }
+        test("isStale returns false when active agents present") {
+            var session = TrackedSession(path: "/tmp/test.jsonl")
+            _ = session.processNewData(Data("""
+            {"type":"assistant","message":{"usage":{"input_tokens":100,"output_tokens":50}}}
+            """.utf8))
+            session.agents.append(TrackedAgent(toolUseId: "t1", description: "test", subagentType: "general", launchedAt: Date()))
+            session.lastFileModification = Date().addingTimeInterval(-600)
+            check(!session.isStale, "active agent = not stale")
+        }
+        test("processNewData handles multiple lines") {
+            var session = TrackedSession(path: "/tmp/test.jsonl")
+            let lines = Data("""
+            {"type":"assistant","message":{"model":"claude-opus-4-6","usage":{"input_tokens":100,"output_tokens":50}}}
+            {"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}]}}
+            """.utf8)
+            _ = session.processNewData(lines)
+            assertEqual(session.currentModel, "claude-opus-4-6")
+            assertEqual(session.sessionTokens.inputTokens, 100)
+            assertEqual(session.shellRequestCount, 1)
+        }
+    }
+}
+
+// MARK: - Format Multi Session Section Tests
+
+func runFormatMultiSessionSectionTests() {
+    suite("formatMultiSessionSection") {
+        test("returns empty for no sessions") {
+            assertEqual(formatMultiSessionSection([]), "")
+        }
+        test("single session with tokens") {
+            var session = TrackedSession(path: "/tmp/test.jsonl")
+            let line = Data("""
+            {"type":"assistant","message":{"model":"claude-sonnet-4-6","usage":{"input_tokens":50000,"output_tokens":5000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"context_window":200000}}}
+            """.utf8)
+            _ = session.processNewData(line)
+            let result = formatMultiSessionSection([session])
+            check(result.contains("Sessions (1 active)"), "header: \(result)")
+            check(result.contains("Sonnet 4.6"), "model: \(result)")
+            check(result.contains("55K tokens"), "tokens: \(result)")
+            check(result.contains("50K/200K ctx"), "context: \(result)")
+        }
+        test("multiple sessions") {
+            var s1 = TrackedSession(path: "/tmp/test1.jsonl")
+            _ = s1.processNewData(Data("""
+            {"type":"assistant","message":{"model":"claude-opus-4-6","usage":{"input_tokens":100000,"output_tokens":10000}}}
+            """.utf8))
+            var s2 = TrackedSession(path: "/tmp/test2.jsonl")
+            _ = s2.processNewData(Data("""
+            {"type":"assistant","message":{"model":"claude-sonnet-4-6","usage":{"input_tokens":50000,"output_tokens":5000}}}
+            """.utf8))
+            let result = formatMultiSessionSection([s1, s2])
+            check(result.contains("Sessions (2 active)"), "header: \(result)")
+            check(result.contains("Opus 4.6"), "opus model: \(result)")
+            check(result.contains("Sonnet 4.6"), "sonnet model: \(result)")
+        }
+        test("session with shell count") {
+            var session = TrackedSession(path: "/tmp/test.jsonl")
+            _ = session.processNewData(Data("""
+            {"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}]}}
+            {"type":"assistant","message":{"usage":{"input_tokens":1000,"output_tokens":100}}}
+            """.utf8))
+            let result = formatMultiSessionSection([session])
+            check(result.contains("1 shell"), "shell count: \(result)")
+        }
+        test("stale session shows idle") {
+            var session = TrackedSession(path: "/tmp/test.jsonl")
+            _ = session.processNewData(Data("""
+            {"type":"assistant","message":{"model":"claude-sonnet-4-6","usage":{"input_tokens":1000,"output_tokens":100}}}
+            """.utf8))
+            session.lastFileModification = Date().addingTimeInterval(-600)
+            let result = formatMultiSessionSection([session])
+            check(result.contains("idle"), "stale shows idle: \(result)")
+            check(!result.contains("1 active"), "not labeled active: \(result)")
+        }
+        test("mixed stale and active sessions") {
+            var active = TrackedSession(path: "/tmp/active.jsonl")
+            _ = active.processNewData(Data("""
+            {"type":"assistant","message":{"model":"claude-opus-4-6","usage":{"input_tokens":1000,"output_tokens":100}}}
+            """.utf8))
+            active.lastFileModification = Date()
+            var stale = TrackedSession(path: "/tmp/stale.jsonl")
+            _ = stale.processNewData(Data("""
+            {"type":"assistant","message":{"model":"claude-sonnet-4-6","usage":{"input_tokens":500,"output_tokens":50}}}
+            """.utf8))
+            stale.lastFileModification = Date().addingTimeInterval(-600)
+            let result = formatMultiSessionSection([active, stale])
+            check(result.contains("Sessions (1 active)"), "counts only active: \(result)")
+        }
+        test("session with agents") {
+            let now = Date()
+            var session = TrackedSession(path: "/tmp/test.jsonl")
+            _ = session.processNewData(Data("""
+            {"type":"assistant","message":{"usage":{"input_tokens":1000,"output_tokens":100}}}
+            """.utf8))
+            session.agents.append(TrackedAgent(toolUseId: "t1", description: "Review code", subagentType: "code-reviewer", launchedAt: now))
+            let result = formatMultiSessionSection([session], now: now)
+            check(result.contains("\u{25CF} Review code"), "running agent: \(result)")
+            check(result.contains("running"), "running state: \(result)")
+        }
+    }
+}
+
 // MARK: - Test Runner
 
 func runAllTests() {
@@ -2560,6 +2844,11 @@ func runAllTests() {
     runWeeklyChartTests()
     runAlignedWeeklyColumnsTests()
     runMergeDailyEntriesTests()
+    runParseBashUsesTests()
+    runParseContextWindowTests()
+    runModelMaxContextTokensTests()
+    runTrackedSessionTests()
+    runFormatMultiSessionSectionTests()
 
     print("\n=== Results: \(passedTests)/\(totalTests) passed ===")
     if !failedTests.isEmpty {
