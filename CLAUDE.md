@@ -10,7 +10,7 @@ CCUsage is a macOS menu bar app (macOS 13+) that displays Claude Code usage limi
 
 ```bash
 make build    # Compile .app bundle (includes icon generation)
-make test     # Run all unit tests (~440 tests)
+make test     # Run all unit tests (~590 tests)
 make install  # Build + copy to /Applications + launch
 make clean    # Remove build artifacts
 ```
@@ -30,8 +30,8 @@ Tests compile with `-DTESTING` flag, which gates out AppKit/system-dependent cod
 | Usage History | ~304-354 | Session-scoped ring buffer (60 entries, ~2h), sparkline/trend generation |
 | Pacing | ~356-468 | Pace calculation, depletion estimates, budget advice, heatmaps |
 | Daily Usage Tracking | ~469-575 | Persistent per-day usage deltas, weekly chart, iCloud merge logic |
-| Agent Tracking | ~576-835 | JSONL parsing for agents, session tokens, model; `SessionTokens`, `AgentStats`, formatting |
-| Agent Session Tracker | ~836-1375 | `AgentTracker` class — polls `~/.claude/projects/` for live sessions, tracks tokens/model |
+| Agent Tracking | ~576-835 | JSONL parsing for agents, session tokens, model, bash uses, context window; `SessionTokens`, `AgentStats`, `TrackedSession`, formatting |
+| Agent Session Tracker | ~836-1375 | `AgentTracker` class — polls `~/.claude/projects/` for ALL live sessions, tracks tokens/model/context/shell per session |
 | Version Comparison | ~1377-1405 | Semver comparison for auto-update |
 | Fetch Schedule | ~1415-1439 | Rate limit handling with exponential backoff |
 | Status Bar Controller | ~1441-2198 | `StatusBarController` — all AppKit UI, API calls, OAuth, auto-update, daily store persistence, iCloud sync |
@@ -54,7 +54,7 @@ All pure logic functions are tested. `StatusBarController` methods that depend o
 - **OAuth flow**: Reads credentials from macOS Keychain (`Claude Code-credentials` service), refreshes tokens independently via `platform.claude.com/v1/oauth/token`.
 - **Rate limiting**: `FetchSchedule` struct handles exponential backoff on 429s, respects `Retry-After` headers. Backoff caps at `maxBackoffInterval` (300s). The 429 fallback (when no `Retry-After` header) also uses `maxBackoffInterval`, not `defaultFetchInterval`.
 - **Auto-update**: Checks GitHub Releases API, validates download URLs against allowlist, replaces app bundle with rollback on failure.
-- **Agent tracking**: `AgentTracker` scans `~/.claude/projects/` for the most recently modified `.jsonl` session file, reads new lines incrementally (tracks file offset), parses agent launch/completion events.
+- **Agent tracking**: `AgentTracker` scans `~/.claude/projects/` for ALL `.jsonl` session files, tracking multiple sessions simultaneously via `TrackedSession` structs. Each session independently tracks tokens, model, context window usage, shell request count, and sub-agents. Sessions are read incrementally (file offset per session). The menu shows all active sessions with per-session stats.
 - **Daily usage tracking**: `DailyUsageData` stores per-day utilization deltas. Each device writes its own file to iCloud Drive; `loadMergedDailyDays()` reads all device files and merges them via `mergeDailyEntries()`. Local file stores `lastUtilization` for delta tracking; iCloud files store only the `days` array.
 
 ## Version
