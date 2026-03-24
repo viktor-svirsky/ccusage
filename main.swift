@@ -448,7 +448,7 @@ func hourlyHeatmap(_ increases: [Date], now: Date = Date()) -> String? {
     let maxCount = hourCounts.values.max() ?? 1
     let chars = (0...currentHour).map { hour -> String in
         let count = hourCounts[hour, default: 0]
-        if count == 0 { return String(blocks[0]) }
+        if count == 0 { return "\u{00B7}" }
         let index = Int((Double(count) / Double(maxCount)) * Double(blocks.count - 1))
         return String(blocks[min(max(index, 0), blocks.count - 1)])
     }
@@ -822,11 +822,13 @@ func parseContextWindow(from jsonLine: Data) -> (contextTokens: Int, contextMax:
         return (contextTokens, contextMax)
     }
     guard contextTokens > 0 else { return nil }
-    return (contextTokens, modelMaxContextTokens(message?["model"] as? String ?? (json["model"] as? String ?? "")))
+    let model = message?["model"] as? String ?? (json["model"] as? String ?? "")
+    return (contextTokens, modelMaxContextTokens(model, observedTokens: contextTokens))
 }
 
-func modelMaxContextTokens(_ model: String) -> Int {
-    // All current Claude models default to 200K context
+func modelMaxContextTokens(_ model: String, observedTokens: Int = 0) -> Int {
+    // If observed tokens exceed 200K, the model must have extended context (1M)
+    if observedTokens > 200_000 { return 1_000_000 }
     return 200_000
 }
 
@@ -997,7 +999,7 @@ struct TrackedSession {
             }
             if let ctx = parseContextWindow(from: lineData) {
                 lastContextTokens = ctx.contextTokens
-                contextWindowMax = ctx.contextMax
+                contextWindowMax = max(contextWindowMax, ctx.contextMax)
                 changed = true
             }
             let bashCount = parseBashUses(from: lineData)
@@ -1146,29 +1148,17 @@ func usageColor(for pct: Double, pace: Double? = nil) -> NSColor {
 }
 
 func formatAttributedStatusLine(_ usage: UsageData, history: UsageHistory = UsageHistory()) -> NSAttributedString {
-    let h5 = usage.fiveHour.utilization
     let d7 = usage.sevenDay.utilization
-    let h5Pace = calculatePace(utilization: h5, resetsAt: usage.fiveHour.resetsAt, windowDuration: 5 * 3600)
     let d7Pace = calculatePace(utilization: d7, resetsAt: usage.sevenDay.resetsAt, windowDuration: 7 * 86400)
 
-    let font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .bold)
-    let dimmed: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.secondaryLabelColor]
-
-    func colored(_ pct: Double, pace: Double?) -> [NSAttributedString.Key: Any] {
-        [.font: font, .foregroundColor: usageColor(for: pct, pace: pace)]
-    }
+    let font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+    let attrs: [NSAttributedString.Key: Any] = [.font: font]
 
     let result = NSMutableAttributedString()
-    result.append(NSAttributedString(string: "\(formatValue(h5))", attributes: colored(h5, pace: h5Pace)))
-    result.append(NSAttributedString(string: "/", attributes: dimmed))
-    result.append(NSAttributedString(string: "\(formatValue(d7))", attributes: colored(d7, pace: d7Pace)))
+    result.append(NSAttributedString(string: "\(formatValue(usage.fiveHour.utilization))/\(formatValue(d7))", attributes: attrs))
     let indicator = paceIndicator(pace: d7Pace)
     if !indicator.isEmpty {
-        let indicatorColor: NSColor
-        if d7Pace! > 1.2 { indicatorColor = colorRed }
-        else if d7Pace! < 0.8 { indicatorColor = NSColor.systemBlue }
-        else { indicatorColor = colorGreen }
-        result.append(NSAttributedString(string: indicator, attributes: [.font: font, .foregroundColor: indicatorColor]))
+        result.append(NSAttributedString(string: indicator, attributes: attrs))
     }
     return result
 }
@@ -1449,7 +1439,7 @@ func peakHoursSummary(_ increases: [Date]) -> String? {
     return String(format: "Peak usage: %02d:00–%02d:00", peakHour, endHour)
 }
 
-func formatInsights(_ usage: UsageData, sessionFetchCount: Int = 0, sessionStart: Date = Date(), usageIncreases: [Date] = [], dailyDays: [DailyEntry] = []) -> String {
+func formatInsights(_ usage: UsageData) -> String {
     var lines: [String] = []
     if let daily = dailyBreakdown(utilization: usage.sevenDay.utilization, resetsAt: usage.sevenDay.resetsAt, windowDuration: 7 * 86400) {
         lines.append(daily)
@@ -1463,26 +1453,11 @@ func formatInsights(_ usage: UsageData, sessionFetchCount: Int = 0, sessionStart
     if let advice = budgetAdvice(utilization: usage.sevenDay.utilization, resetsAt: usage.sevenDay.resetsAt, windowDuration: 7 * 86400) {
         lines.append(advice)
     }
-    if let chart = weeklyChart(dailyDays) {
-        let values = weeklyChartValues(dailyDays)
-        let total = values.reduce(0, +)
-        lines.append(String(format: "Week: \(chart) %.0f%%", total))
-        lines.append("      \(weeklyChartLabel())")
-    }
-    if let heatmap = hourlyHeatmap(usageIncreases) {
-        lines.append("Today: \(heatmap)")
-        lines.append("       \(hourlyHeatmapLabel())")
-    }
-    let sessionMinutes = Int(Date().timeIntervalSince(sessionStart)) / 60
-    lines.append("Session: \(sessionFetchCount) checks over \(max(sessionMinutes, 1))m")
-    if let peak = peakHoursSummary(usageIncreases) {
-        lines.append(peak)
-    }
     return lines.joined(separator: "\n")
 }
 
 #if !TESTING
-func formatAttributedInsights(_ usage: UsageData, sessionFetchCount: Int = 0, sessionStart: Date = Date(), usageIncreases: [Date] = []) -> NSAttributedString {
+func formatAttributedInsights(_ usage: UsageData) -> NSAttributedString {
     let result = NSMutableAttributedString()
     let font = NSFont.systemFont(ofSize: 13)
     let smallFont = NSFont.systemFont(ofSize: 11)
@@ -1518,17 +1493,6 @@ func formatAttributedInsights(_ usage: UsageData, sessionFetchCount: Int = 0, se
     // Budget advice
     if let advice = budgetAdvice(utilization: usage.sevenDay.utilization, resetsAt: usage.sevenDay.resetsAt, windowDuration: 7 * 86400) {
         result.append(NSAttributedString(string: "\n  \(advice)", attributes: [.font: smallFont, .foregroundColor: green]))
-    }
-
-    // Session — only show after 2+ checks
-    if sessionFetchCount >= 2 {
-        let sessionSeconds = Int(Date().timeIntervalSince(sessionStart))
-        let timeStr = sessionSeconds < 60 ? "\(sessionSeconds)s" : "\(sessionSeconds / 60)m"
-        result.append(NSAttributedString(string: "\n  \(sessionFetchCount) refreshes over \(timeStr)", attributes: [.font: smallFont, .foregroundColor: dim]))
-
-        if let peak = peakHoursSummary(usageIncreases) {
-            result.append(NSAttributedString(string: "  \u{2022} \(peak)", attributes: [.font: smallFont, .foregroundColor: dim]))
-        }
     }
 
     return result
@@ -2150,7 +2114,7 @@ class StatusBarController: NSObject {
         detailFiveHour.title = "\(usageIndicator(for: h5))  5-hour window: \(formatValue(h5))%\(formatResetTime(usage.fiveHour.resetsAt))"
         detailSevenDay.title = "\(usageIndicator(for: d7))  7-day window:  \(formatValue(d7))%\(formatResetTime(usage.sevenDay.resetsAt))"
         let mergedDays = loadMergedDailyDays()
-        insightsItem.title = formatInsights(usage, sessionFetchCount: sessionFetchCount, sessionStart: sessionStartDate, usageIncreases: usageIncreases, dailyDays: mergedDays)
+        insightsItem.title = formatInsights(usage)
         if let models = usage.models {
             modelBreakdownItem.isHidden = false
             modelBreakdownItem.title = formatModelBreakdown(models, extraUsage: usage.extraUsage)
@@ -2204,7 +2168,7 @@ class StatusBarController: NSObject {
             activityItem.isHidden = true
         }
 
-        insightsItem.attributedTitle = formatAttributedInsights(usage, sessionFetchCount: sessionFetchCount, sessionStart: sessionStartDate, usageIncreases: usageIncreases)
+        insightsItem.attributedTitle = formatAttributedInsights(usage)
         #endif
 
         updateLastRefreshLabel()
