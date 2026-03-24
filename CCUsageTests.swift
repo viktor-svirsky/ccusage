@@ -1730,7 +1730,7 @@ func runHourlyHeatmapTests() {
             assertEqual(String(bars[14]), "\u{2588}", "peak hour 14 gets highest block")
         }
 
-        test("empty hours get lowest block") {
+        test("empty hours get middle dot") {
             let dates = [
                 cal.date(bySettingHour: 14, minute: 0, second: 0, of: Date())!,
                 cal.date(bySettingHour: 14, minute: 30, second: 0, of: Date())!,
@@ -1738,8 +1738,8 @@ func runHourlyHeatmapTests() {
             ]
             let result = hourlyHeatmap(dates, now: endOfDay)!
             let bars = Array(result)
-            assertEqual(String(bars[0]), "\u{2581}", "empty hour gets lowest block")
-            assertEqual(String(bars[3]), "\u{2581}", "empty hour gets lowest block")
+            assertEqual(String(bars[0]), "\u{00B7}", "empty hour gets middle dot")
+            assertEqual(String(bars[3]), "\u{00B7}", "empty hour gets middle dot")
         }
 
         test("multiple peaks distribute correctly") {
@@ -1810,43 +1810,26 @@ func runHourlyHeatmapLabelTests() {
 // MARK: - Format Insights with Charts Tests
 
 func runFormatInsightsChartsTests() {
-    suite("formatInsights with charts") {
-        test("includes heatmap when enough activity data") {
-            let cal = Calendar.current
-            let dates = [
-                cal.date(bySettingHour: 14, minute: 0, second: 0, of: Date())!,
-                cal.date(bySettingHour: 14, minute: 30, second: 0, of: Date())!,
-                cal.date(bySettingHour: 10, minute: 0, second: 0, of: Date())!,
-            ]
-            let now = Date()
+    suite("formatInsights") {
+        test("includes depletion and budget for active usage") {
+            let resetDate = Date().addingTimeInterval(3 * 86400)
             let usage = UsageData(
-                fiveHour: UsageWindow(utilization: 10, remaining: 90, resetsAt: nil),
-                sevenDay: UsageWindow(utilization: 10, remaining: 90, resetsAt: nil)
+                fiveHour: UsageWindow(utilization: 50, remaining: 50, resetsAt: Date().addingTimeInterval(3600)),
+                sevenDay: UsageWindow(utilization: 50, remaining: 50, resetsAt: resetDate)
             )
-            let result = formatInsights(usage, sessionFetchCount: 1, sessionStart: now, usageIncreases: dates)
-            check(result.contains("Today:"), "contains today heatmap")
-            check(result.contains("00"), "contains heatmap label start")
+            let result = formatInsights(usage)
+            check(result.contains("Won't deplete") || result.contains("Depletes"), "contains depletion estimate")
         }
 
-        test("no heatmap with insufficient data") {
-            let now = Date()
+        test("does not contain charts or session info") {
             let usage = UsageData(
                 fiveHour: UsageWindow(utilization: 10, remaining: 90, resetsAt: nil),
                 sevenDay: UsageWindow(utilization: 10, remaining: 90, resetsAt: nil)
             )
-            let result = formatInsights(usage, sessionFetchCount: 1, sessionStart: now, usageIncreases: [Date()])
-            check(!result.contains("Today:"), "no heatmap with 1 entry")
-        }
-
-        test("includes weekly chart when daily data exists") {
-            let now = Date()
-            let usage = UsageData(
-                fiveHour: UsageWindow(utilization: 10, remaining: 90, resetsAt: nil),
-                sevenDay: UsageWindow(utilization: 10, remaining: 90, resetsAt: nil)
-            )
-            let days = [DailyEntry(date: dailyDateString(now), usage: 5.0)]
-            let result = formatInsights(usage, sessionFetchCount: 1, sessionStart: now, dailyDays: days)
-            check(result.contains("Week:"), "contains weekly chart")
+            let result = formatInsights(usage)
+            check(!result.contains("Today:"), "no heatmap in forecast")
+            check(!result.contains("Week:"), "no weekly chart in forecast")
+            check(!result.contains("Session:"), "no session info in forecast")
         }
     }
 }
@@ -2671,6 +2654,15 @@ func runParseContextWindowTests() {
             assertEqual(result!.contextTokens, 3000)
             assertEqual(result!.contextMax, 200000)
         }
+        test("infers 1M context when tokens exceed 200K and no context_window") {
+            let json = Data("""
+            {"type":"assistant","message":{"model":"claude-opus-4-6","usage":{"input_tokens":100000,"output_tokens":500,"cache_creation_input_tokens":50000,"cache_read_input_tokens":202000}}}
+            """.utf8)
+            let result = parseContextWindow(from: json)
+            assertNotNil(result)
+            assertEqual(result!.contextTokens, 352000)
+            assertEqual(result!.contextMax, 1_000_000)
+        }
     }
 }
 
@@ -2678,11 +2670,20 @@ func runParseContextWindowTests() {
 
 func runModelMaxContextTokensTests() {
     suite("modelMaxContextTokens") {
-        test("returns 200K for any model") {
+        test("returns 200K for standard context") {
             assertEqual(modelMaxContextTokens("claude-opus-4-6"), 200_000)
             assertEqual(modelMaxContextTokens("claude-sonnet-4-6"), 200_000)
             assertEqual(modelMaxContextTokens("claude-haiku-4-5"), 200_000)
             assertEqual(modelMaxContextTokens("unknown-model"), 200_000)
+        }
+        test("returns 200K when observed tokens within 200K") {
+            assertEqual(modelMaxContextTokens("claude-opus-4-6", observedTokens: 150_000), 200_000)
+            assertEqual(modelMaxContextTokens("claude-opus-4-6", observedTokens: 200_000), 200_000)
+        }
+        test("returns 1M when observed tokens exceed 200K") {
+            assertEqual(modelMaxContextTokens("claude-opus-4-6", observedTokens: 200_001), 1_000_000)
+            assertEqual(modelMaxContextTokens("claude-opus-4-6", observedTokens: 352_000), 1_000_000)
+            assertEqual(modelMaxContextTokens("claude-opus-4-6", observedTokens: 999_999), 1_000_000)
         }
     }
 }
@@ -2731,6 +2732,19 @@ func runTrackedSessionTests() {
             _ = session.processNewData(line)
             assertEqual(session.lastContextTokens, 8000)
             assertEqual(session.contextWindowMax, 200000)
+        }
+        test("processNewData never downgrades contextWindowMax") {
+            var session = TrackedSession(path: "/tmp/test.jsonl")
+            let line1 = Data("""
+            {"type":"assistant","message":{"usage":{"input_tokens":100000,"output_tokens":500,"cache_creation_input_tokens":50000,"cache_read_input_tokens":200000,"context_window":1000000}}}
+            """.utf8)
+            _ = session.processNewData(line1)
+            assertEqual(session.contextWindowMax, 1_000_000)
+            let line2 = Data("""
+            {"type":"assistant","message":{"usage":{"input_tokens":5000,"output_tokens":500,"cache_creation_input_tokens":1000,"cache_read_input_tokens":2000,"context_window":200000}}}
+            """.utf8)
+            _ = session.processNewData(line2)
+            assertEqual(session.contextWindowMax, 1_000_000, "should not downgrade from 1M to 200K")
         }
         test("processNewData returns false for empty data") {
             var session = TrackedSession(path: "/tmp/test.jsonl")
