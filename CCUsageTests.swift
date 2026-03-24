@@ -239,6 +239,68 @@ func runParseExpiresAtTests() {
     }
 }
 
+func runParseKeychainAccountTests() {
+    suite("parseKeychainAccount") {
+        test("typical output with account") {
+            let output = """
+            keychain: "/Users/testuser/Library/Keychains/login.keychain-db"
+            version: 512
+            class: "genp"
+            attributes:
+                0x00000007 <blob>="Claude Code-credentials"
+                0x00000008 <blob>=<NULL>
+                "acct"<blob>="testuser"
+                "cdat"<timedate>=0x32303236303332343133343834345A00  "20260324134844Z\\000"
+                "svce"<blob>="Claude Code-credentials"
+            """
+            assertEqual(parseKeychainAccount(from: output), "testuser")
+        }
+
+        test("account with dots") {
+            let output = """
+                "acct"<blob>="john.doe"
+                "svce"<blob>="Claude Code-credentials"
+            """
+            assertEqual(parseKeychainAccount(from: output), "john.doe")
+        }
+
+        test("account with hyphens and underscores") {
+            let output = """
+                "acct"<blob>="my-user_name"
+            """
+            assertEqual(parseKeychainAccount(from: output), "my-user_name")
+        }
+
+        test("null account returns nil") {
+            let output = """
+                "acct"<blob>=<NULL>
+                "svce"<blob>="Claude Code-credentials"
+            """
+            assertNil(parseKeychainAccount(from: output), "NULL account")
+        }
+
+        test("missing account line returns nil") {
+            let output = """
+            keychain: "/Users/testuser/Library/Keychains/login.keychain-db"
+            version: 512
+            class: "genp"
+            """
+            assertNil(parseKeychainAccount(from: output), "no acct line")
+        }
+
+        test("empty output returns nil") {
+            assertNil(parseKeychainAccount(from: ""), "empty string")
+        }
+
+        test("empty account name") {
+            let output = """
+                "acct"<blob>=""
+            """
+            assertEqual(parseKeychainAccount(from: output), "")
+        }
+    }
+}
+
 // MARK: - Usage Parsing Tests
 
 func runParseUsageTests() {
@@ -2813,6 +2875,7 @@ func runAllTests() {
     runParseTokenTests()
     runParseRefreshTokenTests()
     runParseExpiresAtTests()
+    runParseKeychainAccountTests()
     runParseUsageTests()
     runFormatValueTests()
     runIndicatorTests()
