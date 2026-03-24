@@ -218,6 +218,17 @@ func parseExpiresAt(from jsonData: Data) -> Date? {
     return Date(timeIntervalSince1970: ms / 1000.0)
 }
 
+/// Parse the account name from `security find-generic-password` output.
+func parseKeychainAccount(from output: String) -> String? {
+    for line in output.components(separatedBy: "\n") {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        if trimmed.hasPrefix("\"acct\"<blob>=\"") {
+            return String(trimmed.dropFirst("\"acct\"<blob>=\"".count).dropLast(1))
+        }
+    }
+    return nil
+}
+
 private let iso8601Formatter: ISO8601DateFormatter = {
     let f = ISO8601DateFormatter()
     f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -1878,6 +1889,26 @@ class StatusBarController: NSObject {
         }
     }
 
+    /// Discover the account name associated with the keychain entry (needed for delete/add).
+    private func readKeychainAccount() -> String? {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        proc.arguments = ["find-generic-password", "-s", keychainService]
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = FileHandle.nullDevice
+        do {
+            try proc.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            proc.waitUntilExit()
+            guard proc.terminationStatus == 0,
+                  let output = String(data: data, encoding: .utf8) else { return nil }
+            return parseKeychainAccount(from: output)
+        } catch {
+            return nil
+        }
+    }
+
     private func readRefreshToken() -> String? {
         guard let data = readKeychainData() else { return nil }
         return parseRefreshToken(from: data)
@@ -1886,10 +1917,13 @@ class StatusBarController: NSObject {
     /// Write updated credentials back to the keychain.
     private func writeKeychainData(_ data: Data) -> Bool {
         guard let jsonStr = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) else { return false }
+        let account = readKeychainAccount()
         // Delete existing entry, then add new one
         let del = Process()
         del.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-        del.arguments = ["delete-generic-password", "-s", keychainService]
+        var delArgs = ["delete-generic-password", "-s", keychainService]
+        if let account { delArgs += ["-a", account] }
+        del.arguments = delArgs
         del.standardOutput = FileHandle.nullDevice
         del.standardError = FileHandle.nullDevice
         try? del.run()
@@ -1897,7 +1931,10 @@ class StatusBarController: NSObject {
 
         let add = Process()
         add.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-        add.arguments = ["add-generic-password", "-s", keychainService, "-w", jsonStr]
+        var addArgs = ["add-generic-password", "-s", keychainService]
+        if let account { addArgs += ["-a", account] }
+        addArgs += ["-w", jsonStr]
+        add.arguments = addArgs
         add.standardOutput = FileHandle.nullDevice
         add.standardError = FileHandle.nullDevice
         do {
