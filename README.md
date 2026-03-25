@@ -2,11 +2,11 @@
 
 [![macOS 13+](https://img.shields.io/badge/macOS-13%2B-blue?logo=apple&logoColor=white)](https://www.apple.com/macos/)
 [![Swift](https://img.shields.io/badge/Swift-5.9-F05138?logo=swift&logoColor=white)](https://swift.org)
-[![Tests](https://img.shields.io/badge/tests-440%20passing-brightgreen)](https://github.com/viktor-svirsky/ccusage)
+[![Tests](https://img.shields.io/badge/tests-608%20passing-brightgreen)](https://github.com/viktor-svirsky/ccusage)
 [![GitHub release](https://img.shields.io/github/v/release/viktor-svirsky/ccusage)](https://github.com/viktor-svirsky/ccusage/releases/latest)
 [![Homebrew](https://img.shields.io/badge/Homebrew-tap-FBB040?logo=homebrew&logoColor=white)](https://github.com/viktor-svirsky/homebrew-ccusage)
 
-macOS menu bar app that shows Claude Code usage limits (5-hour and 7-day windows) at a glance — with pace-aware colors, model breakdown, depletion forecasts, and budget pacing.
+macOS menu bar app that shows Claude Code usage limits (5-hour and 7-day windows) at a glance — with pace-aware colors, model breakdown, live agent tracking, depletion forecasts, and budget pacing.
 
 <p align="center">
   <img src=".github/screenshots/menubar.png" alt="Menu bar" width="600">
@@ -18,7 +18,7 @@ macOS menu bar app that shows Claude Code usage limits (5-hour and 7-day windows
 
 ### Menu Bar
 
-`32/34` — compact 5-hour / 7-day utilization percentages. Each number is color-coded:
+`51/61●` — compact 5-hour / 7-day utilization percentages with active session indicator (`●`). Each number is color-coded:
 
 | Color | Meaning |
 |-------|---------|
@@ -49,6 +49,13 @@ The dropdown menu shows all usage details organized into sections:
 - Extra usage status (if enabled on your plan)
 - Hidden when no model data is available
 
+#### Sessions
+- Live tracking of all active Claude Code sessions across projects
+- Each session shows: project name, model (e.g. Opus 4.6), total tokens, context window usage (e.g. `71K/200K ctx`)
+- Active task name with duration (e.g. `✓ Design full Sentry coverage plan  4m23s`)
+- Shell command count per session
+- Hidden when no active sessions
+
 #### Activity
 - **Weekly chart** (`▁ ▃ ▇ ▅ ▄ ▂ ▁`) — per-day usage over the last 7 days, persisted to disk and synced across devices via iCloud Drive
 - Day labels below (`T F S S M T W`)
@@ -75,7 +82,7 @@ The dropdown menu shows all usage details organized into sections:
 - Adaptive rate-limit handling with exponential backoff (respects Retry-After, auto-refreshes OAuth token on 429)
 - Session-scoped usage history (last 60 data points, ~2 hours)
 - Persistent daily usage tracking with iCloud Drive sync across devices
-- Auto-update from GitHub Releases with one-click install
+- Auto-update from GitHub Releases — downloads and installs automatically
 - Registers as login item automatically
 
 ## Requirements
@@ -104,7 +111,7 @@ make install
 ## Build & Test
 
 ```bash
-make test    # run 440 unit tests
+make test    # run 608 unit tests
 make build   # compile .app bundle
 ```
 

@@ -2315,8 +2315,8 @@ class StatusBarController: NSObject {
                 if let info = parseReleaseInfo(from: data, currentVersion: currentVersion) {
                     if let downloadURL = info.downloadURL {
                         self.updateItem.title = "Update available: \(info.tagName)"
-                        self.updateItem.action = #selector(self.installUpdate)
                         self.updateItem.representedObject = downloadURL
+                        self.installUpdate()
                     } else {
                         self.updateItem.title = "Update \(info.tagName) available on GitHub"
                         self.updateItem.action = nil
