@@ -10,7 +10,7 @@ CCUsage is a macOS menu bar app (macOS 13+) that displays Claude Code usage limi
 
 ```bash
 make build    # Compile .app bundle (includes icon generation)
-make test     # Run all unit tests (~590 tests)
+make test     # Run all unit tests (~608 tests)
 make install  # Build + copy to /Applications + launch
 make clean    # Remove build artifacts
 ```
@@ -19,7 +19,7 @@ Tests compile with `-DTESTING` flag, which gates out AppKit/system-dependent cod
 
 ## Architecture
 
-**Single-file app** — everything is in `main.swift` (~2215 lines), organized by `// MARK: -` sections:
+**Single-file app** — everything is in `main.swift` (~2455 lines), organized by `// MARK: -` sections:
 
 | Section | Lines | Purpose |
 |---------|-------|---------|
@@ -32,10 +32,11 @@ Tests compile with `-DTESTING` flag, which gates out AppKit/system-dependent cod
 | Daily Usage Tracking | ~469-575 | Persistent per-day usage deltas, weekly chart, iCloud merge logic |
 | Agent Tracking | ~576-835 | JSONL parsing for agents, session tokens, model, bash uses, context window; `SessionTokens`, `AgentStats`, `TrackedSession`, formatting |
 | Agent Session Tracker | ~836-1375 | `AgentTracker` class — polls `~/.claude/projects/` for ALL live sessions, tracks tokens/model/context/shell per session |
-| Version Comparison | ~1377-1405 | Semver comparison for auto-update |
-| Fetch Schedule | ~1415-1439 | Rate limit handling with exponential backoff |
-| Status Bar Controller | ~1441-2198 | `StatusBarController` — all AppKit UI, API calls, OAuth, auto-update, daily store persistence, iCloud sync |
-| Main | ~2200-2215 | Entry point — `#if TESTING` runs tests, else starts the app |
+| Version Comparison | ~1533-1561 | Semver comparison for auto-update |
+| Sentry Error Reporting | ~1563-1600 | Lightweight HTTP-based error reporting to Sentry (no SDK), gated behind `#if !TESTING` |
+| Fetch Schedule | ~1610-1634 | Rate limit handling with exponential backoff |
+| Status Bar Controller | ~1636-2435 | `StatusBarController` — all AppKit UI, API calls, OAuth, auto-update, daily store persistence, iCloud sync |
+| Main | ~2437-2453 | Entry point — `#if TESTING` runs tests, else starts the app |
 
 **Data flow**: Keychain (OAuth token) → Anthropic usage API → parse JSON → update `UsageData` → format menu items. Agent tracking polls JSONL files independently on a 3-second timer, extracting agent events, per-turn token usage (`message.usage`), model identification, and cache hit rates. Daily usage deltas are persisted to `~/.ccusage-daily.json` and synced via iCloud Drive (`~/Library/Mobile Documents/com~apple~CloudDocs/.ccusage/<device-id>.json`).
 
@@ -55,6 +56,7 @@ All pure logic functions are tested. `StatusBarController` methods that depend o
 - **Rate limiting**: `FetchSchedule` struct handles exponential backoff on 429s, respects `Retry-After` headers. Backoff caps at `maxBackoffInterval` (300s). The 429 fallback (when no `Retry-After` header) also uses `maxBackoffInterval`, not `defaultFetchInterval`.
 - **Auto-update**: Checks GitHub Releases API, validates download URLs against allowlist, replaces app bundle with rollback on failure.
 - **Agent tracking**: `AgentTracker` scans `~/.claude/projects/` for ALL `.jsonl` session files, tracking multiple sessions simultaneously via `TrackedSession` structs. Each session independently tracks tokens, model, context window usage, shell request count, and sub-agents. Sessions are read incrementally (file offset per session). The menu shows all active sessions with per-session stats.
+- **Sentry error reporting**: Lightweight HTTP-based error reporting via Sentry's `/store/` API (no SDK). Reports API failures, OAuth errors, and update failures. Gated behind `#if !TESTING`. Fire-and-forget — never blocks UI.
 - **Daily usage tracking**: `DailyUsageData` stores per-day utilization deltas. Each device writes its own file to iCloud Drive; `loadMergedDailyDays()` reads all device files and merges them via `mergeDailyEntries()`. Local file stores `lastUtilization` for delta tracking; iCloud files store only the `days` array.
 
 ## Version
