@@ -82,7 +82,7 @@ The dropdown menu shows all usage details organized into sections:
 - Adaptive rate-limit handling with exponential backoff (respects Retry-After, auto-refreshes OAuth token on 429)
 - Session-scoped usage history (last 60 data points, ~2 hours)
 - Persistent daily usage tracking with iCloud Drive sync across devices
-- Auto-update from GitHub Releases — downloads and installs automatically
+- Auto-update from GitHub Releases — downloads and installs automatically when a `.zip` asset is available
 - Registers as login item automatically
 
 ## Requirements
