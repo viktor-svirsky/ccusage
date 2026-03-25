@@ -2295,6 +2295,8 @@ class StatusBarController: NSObject {
     // MARK: - Auto-Update
 
     private var isCheckingForUpdates = false
+    private var autoInstallFailedVersion: String?
+    private var pendingUpdateVersion: String?
 
     @objc func checkForUpdates() {
         guard !isUpdating, !isCheckingForUpdates else { return }
@@ -2314,9 +2316,15 @@ class StatusBarController: NSObject {
                 }
                 if let info = parseReleaseInfo(from: data, currentVersion: currentVersion) {
                     if let downloadURL = info.downloadURL {
-                        self.updateItem.title = "Update available: \(info.tagName)"
-                        self.updateItem.action = #selector(self.installUpdate)
+                        self.pendingUpdateVersion = info.tagName
                         self.updateItem.representedObject = downloadURL
+                        self.updateItem.title = "Update available: \(info.tagName)"
+                        if self.autoInstallFailedVersion == info.tagName {
+                            self.updateItem.action = #selector(self.installUpdateManually)
+                        } else {
+                            self.updateItem.action = nil
+                            self.installUpdate()
+                        }
                     } else {
                         self.updateItem.title = "Update \(info.tagName) available on GitHub"
                         self.updateItem.action = nil
@@ -2329,7 +2337,12 @@ class StatusBarController: NSObject {
         }.resume()
     }
 
-    @objc func installUpdate() {
+    @objc func installUpdateManually() {
+        autoInstallFailedVersion = nil
+        installUpdate()
+    }
+
+    func installUpdate() {
         guard let downloadURLString = updateItem.representedObject as? String,
               isValidDownloadURL(downloadURLString),
               let downloadURL = URL(string: downloadURLString) else {
@@ -2348,6 +2361,7 @@ class StatusBarController: NSObject {
                 #endif
                 DispatchQueue.main.async {
                     self?.isUpdating = false
+                    self?.autoInstallFailedVersion = self?.pendingUpdateVersion
                     self?.updateItem.title = "Download failed"
                     self?.updateItem.action = #selector(self?.checkForUpdates)
                 }
@@ -2420,6 +2434,7 @@ class StatusBarController: NSObject {
                 try? fm.removeItem(at: tempDir)
                 DispatchQueue.main.async {
                     self?.isUpdating = false
+                    self?.autoInstallFailedVersion = self?.pendingUpdateVersion
                     self?.updateItem.title = "Update failed"
                     self?.updateItem.action = #selector(self?.checkForUpdates)
                 }
