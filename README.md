@@ -18,7 +18,7 @@ macOS menu bar app that shows Claude Code usage limits (5-hour and 7-day windows
 
 ### Menu Bar
 
-`51/61●` — compact 5-hour / 7-day utilization percentages with active session indicator (`●`). Each number is color-coded:
+`51/61⚡2` — compact 5-hour / 7-day utilization percentages with active session indicator (`⚡N`). Each number is color-coded:
 
 | Color | Meaning |
 |-------|---------|
