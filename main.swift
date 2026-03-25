@@ -1560,6 +1560,44 @@ func isNewerVersion(_ remote: String, than local: String) -> Bool {
     return false
 }
 
+// MARK: - Sentry Error Reporting
+
+#if !TESTING
+private let sentryKey = "e775413587228219897ba908e29d5901"
+private let sentryProjectId = "4511105650720769"
+private let sentryHost = "o4510977201995776.ingest.us.sentry.io"
+
+private func sentryCapture(type: String, message: String, context: [String: String] = [:]) {
+    guard let url = URL(string: "https://\(sentryHost)/api/\(sentryProjectId)/store/?sentry_version=7&sentry_key=\(sentryKey)") else { return }
+    var request = URLRequest(url: url)
+    request.httpMethod = "POST"
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    request.setValue("ccusage-swift/\(currentVersion)", forHTTPHeaderField: "User-Agent")
+
+    let eventId = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+    let timestamp = iso8601Formatter.string(from: Date())
+    let osVersion = ProcessInfo.processInfo.operatingSystemVersionString
+
+    var event: [String: Any] = [
+        "event_id": eventId,
+        "timestamp": timestamp,
+        "level": "error",
+        "platform": "cocoa",
+        "logger": "ccusage",
+        "release": "ccusage@\(currentVersion)",
+        "environment": currentVersion.contains("dev") ? "development" : "production",
+        "tags": ["os.version": osVersion, "app.version": currentVersion],
+        "exception": ["values": [["type": type, "value": message]]]
+    ]
+    if !context.isEmpty {
+        event["extra"] = context
+    }
+
+    request.httpBody = try? JSONSerialization.data(withJSONObject: event)
+    session.dataTask(with: request) { _, _, _ in }.resume()
+}
+#endif
+
 // MARK: - URLSession (no caching)
 
 private let session: URLSession = {
@@ -1935,6 +1973,10 @@ class StatusBarController: NSObject {
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let newAccessToken = json["access_token"] as? String,
                   !newAccessToken.isEmpty else {
+                #if !TESTING
+                let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+                sentryCapture(type: "OAuthRefreshError", message: "Token refresh failed (HTTP \(statusCode))")
+                #endif
                 completion(nil)
                 return
             }
@@ -1979,8 +2021,11 @@ class StatusBarController: NSObject {
                 guard let self else { return }
                 self.isFetching = false
 
-                if error != nil {
+                if let error {
                     self.setError("Connection failed")
+                    #if !TESTING
+                    sentryCapture(type: "APIConnectionError", message: error.localizedDescription)
+                    #endif
                     return
                 }
 
@@ -2024,12 +2069,18 @@ class StatusBarController: NSObject {
                         self.handleRateLimit(raw: raw)
                     } else {
                         self.setError("Server error")
+                        #if !TESTING
+                        sentryCapture(type: "APIServerError", message: "HTTP \(http.statusCode)", context: ["url": usageAPIURL])
+                        #endif
                     }
                     return
                 }
 
                 guard let data, let usage = parseUsage(from: data) else {
                     self.setError("Unexpected response")
+                    #if !TESTING
+                    sentryCapture(type: "APIParseError", message: "Failed to parse usage response")
+                    #endif
                     return
                 }
                 self.updateDisplay(usage)
@@ -2292,6 +2343,9 @@ class StatusBarController: NSObject {
 
         let task = URLSession.shared.downloadTask(with: downloadURL) { [weak self] tempURL, response, error in
             guard let tempURL, error == nil else {
+                #if !TESTING
+                sentryCapture(type: "UpdateDownloadError", message: error?.localizedDescription ?? "Download failed")
+                #endif
                 DispatchQueue.main.async {
                     self?.isUpdating = false
                     self?.updateItem.title = "Download failed"
@@ -2360,6 +2414,9 @@ class StatusBarController: NSObject {
                     NSApplication.shared.terminate(nil)
                 }
             } catch {
+                #if !TESTING
+                sentryCapture(type: "UpdateInstallError", message: error.localizedDescription)
+                #endif
                 try? fm.removeItem(at: tempDir)
                 DispatchQueue.main.async {
                     self?.isUpdating = false
