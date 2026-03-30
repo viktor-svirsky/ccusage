@@ -1941,6 +1941,8 @@ class StatusBarController: NSObject {
     private let sessionsItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private var agentTracker = AgentTracker()
     private var agentTimer: Timer?
+    private var tokenCostTracker = TokenCostTracker()
+    private let tokenCostsItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
 
     override init() {
         super.init()
@@ -1973,6 +1975,9 @@ class StatusBarController: NSObject {
         activityItem.isEnabled = false
         activityItem.isHidden = true
         menu.addItem(activityItem)
+        tokenCostsItem.isEnabled = false
+        tokenCostsItem.isHidden = true
+        menu.addItem(tokenCostsItem)
         insightsItem.isEnabled = false
         menu.addItem(insightsItem)
         menu.addItem(.separator())
@@ -2045,6 +2050,7 @@ class StatusBarController: NSObject {
         _ = agentTracker.poll()
         updateAgentsUI()
         updateStatusBarAgentIndicator()
+        updateTokenCostsUI()
     }
 
     private func updateAgentsUI() {
@@ -2059,6 +2065,24 @@ class StatusBarController: NSObject {
         sessionsItem.title = formatMultiSessionSection(active)
         #else
         sessionsItem.attributedTitle = formatAttributedMultiSessionSection(active)
+        #endif
+    }
+
+    private func updateTokenCostsUI() {
+        tokenCostTracker.poll()
+        let today = tokenCostTracker.todayCost
+        let week = tokenCostTracker.weekCost
+        let month = tokenCostTracker.monthCost
+
+        guard week.requests > 0 else {
+            tokenCostsItem.isHidden = true
+            return
+        }
+        tokenCostsItem.isHidden = false
+        #if TESTING
+        tokenCostsItem.title = formatTokenCosts(today: today, week: week, month: month)
+        #else
+        tokenCostsItem.attributedTitle = formatAttributedTokenCosts(today: today, week: week, month: month)
         #endif
     }
 
