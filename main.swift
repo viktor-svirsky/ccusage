@@ -1031,6 +1031,74 @@ class TokenCostTracker {
     }
 }
 
+func formatCost(_ cost: Double) -> String {
+    if cost >= 1000 {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.minimumFractionDigits = 2
+        formatter.maximumFractionDigits = 2
+        return "$" + (formatter.string(from: NSNumber(value: cost)) ?? String(format: "%.2f", cost))
+    }
+    return String(format: "$%.2f", cost)
+}
+
+func formatTokenCosts(today: TokenCostEntry, week: TokenCostEntry, month: TokenCostEntry) -> String {
+    var lines = ["Token Costs (est.)"]
+    guard week.requests > 0 else {
+        lines.append("  No usage data yet")
+        return lines.joined(separator: "\n")
+    }
+
+    func row(_ label: String, _ entry: TokenCostEntry, showCache: Bool = false) -> String {
+        var parts = ["\(formatCost(entry.totalCost))  \(formatTokenCount(entry.requests)) req"]
+        if showCache, let rate = entry.cacheHitRate {
+            parts.append(String(format: "%.0f%% cache", rate * 100))
+        }
+        return "  \(label)  \(parts.joined(separator: " \u{00B7} "))"
+    }
+
+    if today.requests > 0 {
+        lines.append(row("Today", today, showCache: true))
+    }
+    lines.append(row("7-day", week))
+    lines.append(row("30-day", month))
+    return lines.joined(separator: "\n")
+}
+
+#if !TESTING
+func formatAttributedTokenCosts(today: TokenCostEntry, week: TokenCostEntry, month: TokenCostEntry) -> NSAttributedString {
+    let result = NSMutableAttributedString()
+    let font = NSFont.systemFont(ofSize: 13)
+    let smallFont = NSFont.systemFont(ofSize: 11)
+    let monoFont = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+    let boldFont = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .bold)
+
+    result.append(NSAttributedString(string: "Token Costs (est.)", attributes: [.font: font]))
+
+    guard week.requests > 0 else {
+        result.append(NSAttributedString(string: "\n  No usage data yet", attributes: [.font: smallFont, .foregroundColor: NSColor.tertiaryLabelColor]))
+        return result
+    }
+
+    func row(_ label: String, _ entry: TokenCostEntry, showCache: Bool = false) {
+        result.append(NSAttributedString(string: "\n  \(label)  ", attributes: [.font: smallFont, .foregroundColor: NSColor.secondaryLabelColor]))
+        result.append(NSAttributedString(string: formatCost(entry.totalCost), attributes: [.font: boldFont, .foregroundColor: NSColor.labelColor]))
+        result.append(NSAttributedString(string: "  \(formatTokenCount(entry.requests)) req", attributes: [.font: monoFont, .foregroundColor: NSColor.tertiaryLabelColor]))
+        if showCache, let rate = entry.cacheHitRate {
+            result.append(NSAttributedString(string: String(format: " \u{00B7} %.0f%% cache", rate * 100), attributes: [.font: monoFont, .foregroundColor: NSColor.tertiaryLabelColor]))
+        }
+    }
+
+    if today.requests > 0 {
+        row("Today ", today, showCache: true)
+    }
+    row("7-day ", week)
+    row("30-day", month)
+
+    return result
+}
+#endif
+
 func modelDisplayName(_ model: String) -> String {
     let parts = model.lowercased().split(separator: "-")
     let families = ["opus", "sonnet", "haiku"]

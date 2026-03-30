@@ -3023,6 +3023,59 @@ func runTokenCostTests() {
             check(tracker.monthCost.totalCost > 0, "month cost should be > 0")
         }
     }
+
+    suite("formatCost") {
+        test("formats small cost") {
+            assertEqual(formatCost(0.50), "$0.50")
+        }
+
+        test("formats medium cost") {
+            assertEqual(formatCost(125.30), "$125.30")
+        }
+
+        test("formats large cost") {
+            assertEqual(formatCost(1234.56), "$1,234.56")
+        }
+
+        test("formats zero") {
+            assertEqual(formatCost(0), "$0.00")
+        }
+    }
+
+    suite("formatTokenCosts") {
+        test("all zeros shows no data") {
+            let today = TokenCostEntry()
+            let week = TokenCostEntry()
+            let month = TokenCostEntry()
+            let result = formatTokenCosts(today: today, week: week, month: month)
+            assertEqual(result, "Token Costs (est.)\n  No usage data yet")
+        }
+
+        test("formats with data") {
+            var today = TokenCostEntry()
+            today.add(model: "claude-opus-4-6", input: 1000, output: 500, cacheWrite: 0, cacheRead: 4000)
+            var week = TokenCostEntry()
+            week.add(model: "claude-opus-4-6", input: 10000, output: 5000, cacheWrite: 0, cacheRead: 40000)
+            var month = TokenCostEntry()
+            month.add(model: "claude-opus-4-6", input: 100000, output: 50000, cacheWrite: 0, cacheRead: 400000)
+
+            let result = formatTokenCosts(today: today, week: week, month: month)
+            check(result.contains("Token Costs (est.)"), "should have header")
+            check(result.contains("Today"), "should have today")
+            check(result.contains("7-day"), "should have 7-day")
+            check(result.contains("30-day"), "should have 30-day")
+            check(result.contains("$"), "should have cost")
+        }
+
+        test("shows cache rate for today") {
+            var today = TokenCostEntry()
+            today.add(model: "claude-opus-4-6", input: 1000, output: 500, cacheWrite: 0, cacheRead: 9000)
+            let week = today
+            let month = today
+            let result = formatTokenCosts(today: today, week: week, month: month)
+            check(result.contains("cache"), "should show cache rate for today")
+        }
+    }
 }
 
 // MARK: - Test Runner
