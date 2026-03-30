@@ -2883,6 +2883,85 @@ func runFormatMultiSessionSectionTests() {
     }
 }
 
+func runTokenCostTests() {
+    suite("TokenCostEntry") {
+        test("initial state") {
+            let entry = TokenCostEntry()
+            assertEqual(entry.inputTokens, 0)
+            assertEqual(entry.outputTokens, 0)
+            assertEqual(entry.cacheWriteTokens, 0)
+            assertEqual(entry.cacheReadTokens, 0)
+            assertEqual(entry.requests, 0)
+            check(abs(entry.totalCost - 0.0) < 0.001, "initial cost should be 0")
+        }
+
+        test("add opus usage calculates cost") {
+            var entry = TokenCostEntry()
+            entry.add(model: "claude-opus-4-6", input: 1_000_000, output: 100_000, cacheWrite: 500_000, cacheRead: 10_000_000)
+            assertEqual(entry.inputTokens, 1_000_000)
+            assertEqual(entry.outputTokens, 100_000)
+            assertEqual(entry.cacheWriteTokens, 500_000)
+            assertEqual(entry.cacheReadTokens, 10_000_000)
+            assertEqual(entry.requests, 1)
+            // Cost: (1M * $15 + 100K * $75 + 500K * $18.75 + 10M * $1.50) / 1M
+            // = $15 + $7.50 + $9.375 + $15 = $46.875
+            let expected = 46.875
+            check(abs(entry.totalCost - expected) < 0.01, "opus cost: expected \(expected), got \(entry.totalCost)")
+        }
+
+        test("add sonnet usage calculates cost") {
+            var entry = TokenCostEntry()
+            entry.add(model: "claude-sonnet-4-6", input: 1_000_000, output: 100_000, cacheWrite: 0, cacheRead: 5_000_000)
+            // Cost: (1M * $3 + 100K * $15 + 5M * $0.30) / 1M
+            // = $3 + $1.50 + $1.50 = $6.00
+            let expected = 6.0
+            check(abs(entry.totalCost - expected) < 0.01, "sonnet cost: expected \(expected), got \(entry.totalCost)")
+        }
+
+        test("add haiku usage calculates cost") {
+            var entry = TokenCostEntry()
+            entry.add(model: "claude-haiku-4-5-20251001", input: 1_000_000, output: 100_000, cacheWrite: 0, cacheRead: 5_000_000)
+            // Cost: (1M * $0.80 + 100K * $4.0 + 5M * $0.08) / 1M
+            // = $0.80 + $0.40 + $0.40 = $1.60
+            let expected = 1.60
+            check(abs(entry.totalCost - expected) < 0.01, "haiku cost: expected \(expected), got \(entry.totalCost)")
+        }
+
+        test("accumulates across models") {
+            var entry = TokenCostEntry()
+            entry.add(model: "claude-opus-4-6", input: 1000, output: 500, cacheWrite: 0, cacheRead: 0)
+            entry.add(model: "claude-sonnet-4-6", input: 2000, output: 1000, cacheWrite: 0, cacheRead: 0)
+            assertEqual(entry.inputTokens, 3000)
+            assertEqual(entry.outputTokens, 1500)
+            assertEqual(entry.requests, 2)
+            // Opus: (1000*15 + 500*75)/1M = 0.015 + 0.0375 = 0.0525
+            // Sonnet: (2000*3 + 1000*15)/1M = 0.006 + 0.015 = 0.021
+            let expected = 0.0525 + 0.021
+            check(abs(entry.totalCost - expected) < 0.001, "accumulated cost: expected \(expected), got \(entry.totalCost)")
+        }
+
+        test("unknown model uses opus pricing") {
+            var entry = TokenCostEntry()
+            entry.add(model: "unknown-model", input: 1_000_000, output: 0, cacheWrite: 0, cacheRead: 0)
+            let expected = 15.0  // Opus input rate
+            check(abs(entry.totalCost - expected) < 0.01, "unknown model cost: expected \(expected), got \(entry.totalCost)")
+        }
+
+        test("cache hit rate") {
+            var entry = TokenCostEntry()
+            entry.add(model: "claude-opus-4-6", input: 1000, output: 500, cacheWrite: 0, cacheRead: 4000)
+            let rate = entry.cacheHitRate!
+            check(abs(rate - 0.8) < 0.001, "cache rate: expected 0.8, got \(rate)")
+        }
+
+        test("cache hit rate nil when no cache reads") {
+            var entry = TokenCostEntry()
+            entry.add(model: "claude-opus-4-6", input: 1000, output: 500, cacheWrite: 0, cacheRead: 0)
+            assertNil(entry.cacheHitRate)
+        }
+    }
+}
+
 // MARK: - Test Runner
 
 func runAllTests() {
@@ -2926,6 +3005,7 @@ func runAllTests() {
     runModelMaxContextTokensTests()
     runTrackedSessionTests()
     runFormatMultiSessionSectionTests()
+    runTokenCostTests()
 
     print("\n=== Results: \(passedTests)/\(totalTests) passed ===")
     if !failedTests.isEmpty {

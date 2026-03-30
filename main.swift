@@ -832,6 +832,59 @@ func modelMaxContextTokens(_ model: String, observedTokens: Int = 0) -> Int {
     return 200_000
 }
 
+// MARK: - Token Cost Tracking
+
+struct ModelPricing {
+    let inputPerMTok: Double
+    let outputPerMTok: Double
+    let cacheWritePerMTok: Double
+    let cacheReadPerMTok: Double
+}
+
+let modelPricingTable: [String: ModelPricing] = [
+    "opus": ModelPricing(inputPerMTok: 15.0, outputPerMTok: 75.0, cacheWritePerMTok: 18.75, cacheReadPerMTok: 1.50),
+    "sonnet": ModelPricing(inputPerMTok: 3.0, outputPerMTok: 15.0, cacheWritePerMTok: 3.75, cacheReadPerMTok: 0.30),
+    "haiku": ModelPricing(inputPerMTok: 0.80, outputPerMTok: 4.0, cacheWritePerMTok: 1.0, cacheReadPerMTok: 0.08),
+]
+
+func pricingForModel(_ model: String) -> ModelPricing {
+    let lower = model.lowercased()
+    for (family, pricing) in modelPricingTable {
+        if lower.contains(family) { return pricing }
+    }
+    return modelPricingTable["opus"]!  // default to most expensive
+}
+
+struct TokenCostEntry {
+    var inputTokens: Int = 0
+    var outputTokens: Int = 0
+    var cacheWriteTokens: Int = 0
+    var cacheReadTokens: Int = 0
+    var requests: Int = 0
+    var totalCost: Double = 0
+
+    var totalInputTokens: Int { inputTokens + cacheWriteTokens + cacheReadTokens }
+
+    var cacheHitRate: Double? {
+        let total = Double(totalInputTokens)
+        guard total > 0, cacheReadTokens > 0 else { return nil }
+        return Double(cacheReadTokens) / total
+    }
+
+    mutating func add(model: String, input: Int, output: Int, cacheWrite: Int, cacheRead: Int) {
+        inputTokens += input
+        outputTokens += output
+        cacheWriteTokens += cacheWrite
+        cacheReadTokens += cacheRead
+        requests += 1
+        let p = pricingForModel(model)
+        totalCost += Double(input) / 1_000_000 * p.inputPerMTok
+            + Double(output) / 1_000_000 * p.outputPerMTok
+            + Double(cacheWrite) / 1_000_000 * p.cacheWritePerMTok
+            + Double(cacheRead) / 1_000_000 * p.cacheReadPerMTok
+    }
+}
+
 func modelDisplayName(_ model: String) -> String {
     let parts = model.lowercased().split(separator: "-")
     let families = ["opus", "sonnet", "haiku"]
