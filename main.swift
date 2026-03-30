@@ -885,6 +885,152 @@ struct TokenCostEntry {
     }
 }
 
+class TokenCostTracker {
+    private var dailyCosts: [String: TokenCostEntry] = [:]  // "YYYY-MM-DD" -> entry
+    private var fileOffsets: [String: UInt64] = [:]
+    private let claudeDir: String
+    private var lastFullScan: Date = .distantPast
+    private let scanInterval: TimeInterval = 60
+
+    init(claudeDir: String? = nil) {
+        self.claudeDir = claudeDir ?? (NSHomeDirectory() + "/.claude/projects")
+    }
+
+    func costForDate(_ date: String) -> TokenCostEntry? {
+        dailyCosts[date]
+    }
+
+    var todayCost: TokenCostEntry {
+        let today = dateString(from: Date())
+        return dailyCosts[today] ?? TokenCostEntry()
+    }
+
+    var weekCost: TokenCostEntry {
+        aggregateCost(days: 7)
+    }
+
+    var monthCost: TokenCostEntry {
+        aggregateCost(days: 30)
+    }
+
+    private func aggregateCost(days: Int) -> TokenCostEntry {
+        var result = TokenCostEntry()
+        let cal = Calendar.current
+        for i in 0..<days {
+            guard let date = cal.date(byAdding: .day, value: -i, to: Date()) else { continue }
+            let key = dateString(from: date)
+            if let entry = dailyCosts[key] {
+                result.inputTokens += entry.inputTokens
+                result.outputTokens += entry.outputTokens
+                result.cacheWriteTokens += entry.cacheWriteTokens
+                result.cacheReadTokens += entry.cacheReadTokens
+                result.requests += entry.requests
+                result.totalCost += entry.totalCost
+            }
+        }
+        return result
+    }
+
+    private func dateString(from date: Date) -> String {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        f.timeZone = TimeZone(identifier: "UTC")
+        return f.string(from: date)
+    }
+
+    /// Process raw JSONL data (for testing)
+    func processData(_ data: Data) {
+        let lines = data.split(separator: UInt8(ascii: "\n"))
+        for line in lines {
+            processLine(Data(line))
+        }
+    }
+
+    private func processLine(_ lineData: Data) {
+        guard let json = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
+              let type = json["type"] as? String, type == "assistant",
+              let timestamp = json["timestamp"] as? String,
+              timestamp.count >= 10 else { return }
+        let message = json["message"] as? [String: Any]
+        guard let usage = (message?["usage"] as? [String: Any]) ?? (json["usage"] as? [String: Any]) else { return }
+        let input = usage["input_tokens"] as? Int ?? 0
+        let output = usage["output_tokens"] as? Int ?? 0
+        let cacheWrite = usage["cache_creation_input_tokens"] as? Int ?? 0
+        let cacheRead = usage["cache_read_input_tokens"] as? Int ?? 0
+        guard input > 0 || output > 0 || cacheWrite > 0 || cacheRead > 0 else { return }
+        let model = (message?["model"] as? String) ?? (json["model"] as? String) ?? "unknown"
+        let dateKey = String(timestamp.prefix(10))
+        dailyCosts[dateKey, default: TokenCostEntry()].add(model: model, input: input, output: output, cacheWrite: cacheWrite, cacheRead: cacheRead)
+    }
+
+    /// Poll all JSONL files for new data. Throttled to full scan every 60s.
+    @discardableResult
+    func poll() -> Bool {
+        let now = Date()
+        guard now.timeIntervalSince(lastFullScan) >= scanInterval else { return false }
+        lastFullScan = now
+
+        let fm = FileManager.default
+        let cutoff = Calendar.current.date(byAdding: .day, value: -30, to: now)!
+        guard let projectDirs = try? fm.contentsOfDirectory(atPath: claudeDir) else { return false }
+
+        var changed = false
+        for dir in projectDirs {
+            let projectPath = (claudeDir as NSString).appendingPathComponent(dir)
+            guard let files = try? fm.contentsOfDirectory(atPath: projectPath) else { continue }
+            for file in files where file.hasSuffix(".jsonl") {
+                let path = (projectPath as NSString).appendingPathComponent(file)
+                guard let attrs = try? fm.attributesOfItem(atPath: path),
+                      let modified = attrs[.modificationDate] as? Date,
+                      modified > cutoff,
+                      let fileSize = attrs[.size] as? UInt64 else { continue }
+
+                let currentOffset = fileOffsets[path] ?? 0
+                guard fileSize > currentOffset else { continue }
+
+                guard let handle = FileHandle(forReadingAtPath: path) else { continue }
+                defer { handle.closeFile() }
+                handle.seek(toFileOffset: currentOffset)
+                let newData = handle.readDataToEndOfFile()
+                fileOffsets[path] = currentOffset + UInt64(newData.count)
+
+                let lines = newData.split(separator: UInt8(ascii: "\n"))
+                for line in lines {
+                    processLine(Data(line))
+                }
+                changed = true
+            }
+            // Also scan subagent directories
+            let subagentsPath = (projectPath as NSString).appendingPathComponent("subagents")
+            if let subFiles = try? fm.contentsOfDirectory(atPath: subagentsPath) {
+                for file in subFiles where file.hasSuffix(".jsonl") {
+                    let path = (subagentsPath as NSString).appendingPathComponent(file)
+                    guard let attrs = try? fm.attributesOfItem(atPath: path),
+                          let modified = attrs[.modificationDate] as? Date,
+                          modified > cutoff,
+                          let fileSize = attrs[.size] as? UInt64 else { continue }
+
+                    let currentOffset = fileOffsets[path] ?? 0
+                    guard fileSize > currentOffset else { continue }
+
+                    guard let handle = FileHandle(forReadingAtPath: path) else { continue }
+                    defer { handle.closeFile() }
+                    handle.seek(toFileOffset: currentOffset)
+                    let newData = handle.readDataToEndOfFile()
+                    fileOffsets[path] = currentOffset + UInt64(newData.count)
+
+                    let lines = newData.split(separator: UInt8(ascii: "\n"))
+                    for line in lines {
+                        processLine(Data(line))
+                    }
+                    changed = true
+                }
+            }
+        }
+        return changed
+    }
+}
+
 func modelDisplayName(_ model: String) -> String {
     let parts = model.lowercased().split(separator: "-")
     let families = ["opus", "sonnet", "haiku"]

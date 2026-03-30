@@ -2960,6 +2960,69 @@ func runTokenCostTests() {
             assertNil(entry.cacheHitRate)
         }
     }
+
+    suite("TokenCostTracker") {
+        test("processes JSONL data and aggregates by date") {
+            let tracker = TokenCostTracker(claudeDir: "/nonexistent")
+            let line1 = Data("""
+            {"type":"assistant","timestamp":"2026-03-30T10:00:00.000Z","message":{"model":"claude-opus-4-6","usage":{"input_tokens":1000,"output_tokens":500,"cache_creation_input_tokens":200,"cache_read_input_tokens":3000}}}
+            """.utf8)
+            let line2 = Data("""
+            {"type":"assistant","timestamp":"2026-03-30T14:00:00.000Z","message":{"model":"claude-sonnet-4-6","usage":{"input_tokens":2000,"output_tokens":1000,"cache_creation_input_tokens":0,"cache_read_input_tokens":5000}}}
+            """.utf8)
+            let line3 = Data("""
+            {"type":"assistant","timestamp":"2026-03-29T09:00:00.000Z","message":{"model":"claude-opus-4-6","usage":{"input_tokens":500,"output_tokens":200,"cache_creation_input_tokens":0,"cache_read_input_tokens":1000}}}
+            """.utf8)
+            var combined = line1
+            combined.append(Data("\n".utf8))
+            combined.append(line2)
+            combined.append(Data("\n".utf8))
+            combined.append(line3)
+
+            tracker.processData(combined)
+
+            let today = tracker.costForDate("2026-03-30")
+            assertNotNil(today, "should have today entry")
+            assertEqual(today!.requests, 2)
+            assertEqual(today!.inputTokens, 3000)
+            assertEqual(today!.outputTokens, 1500)
+
+            let yesterday = tracker.costForDate("2026-03-29")
+            assertNotNil(yesterday, "should have yesterday entry")
+            assertEqual(yesterday!.requests, 1)
+            assertEqual(yesterday!.inputTokens, 500)
+        }
+
+        test("skips non-assistant lines") {
+            let tracker = TokenCostTracker(claudeDir: "/nonexistent")
+            let line = Data("""
+            {"type":"user","timestamp":"2026-03-30T10:00:00.000Z","message":{"role":"user","content":[]}}
+            """.utf8)
+            tracker.processData(line)
+            assertNil(tracker.costForDate("2026-03-30"))
+        }
+
+        test("skips lines without usage") {
+            let tracker = TokenCostTracker(claudeDir: "/nonexistent")
+            let line = Data("""
+            {"type":"assistant","timestamp":"2026-03-30T10:00:00.000Z","message":{"model":"claude-opus-4-6","content":[]}}
+            """.utf8)
+            tracker.processData(line)
+            assertNil(tracker.costForDate("2026-03-30"))
+        }
+
+        test("todayCost and weekCost and monthCost") {
+            let tracker = TokenCostTracker(claudeDir: "/nonexistent")
+            let today = ISO8601DateFormatter().string(from: Date())
+            let line = Data("""
+            {"type":"assistant","timestamp":"\(today)","message":{"model":"claude-opus-4-6","usage":{"input_tokens":1000000,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}
+            """.utf8)
+            tracker.processData(line)
+            check(tracker.todayCost.totalCost > 0, "today cost should be > 0")
+            check(tracker.weekCost.totalCost > 0, "week cost should be > 0")
+            check(tracker.monthCost.totalCost > 0, "month cost should be > 0")
+        }
+    }
 }
 
 // MARK: - Test Runner
