@@ -2883,6 +2883,201 @@ func runFormatMultiSessionSectionTests() {
     }
 }
 
+func runTokenCostTests() {
+    suite("TokenCostEntry") {
+        test("initial state") {
+            let entry = TokenCostEntry()
+            assertEqual(entry.inputTokens, 0)
+            assertEqual(entry.outputTokens, 0)
+            assertEqual(entry.cacheWriteTokens, 0)
+            assertEqual(entry.cacheReadTokens, 0)
+            assertEqual(entry.requests, 0)
+            check(abs(entry.totalCost - 0.0) < 0.001, "initial cost should be 0")
+        }
+
+        test("add opus usage calculates cost") {
+            var entry = TokenCostEntry()
+            entry.add(model: "claude-opus-4-6", input: 1_000_000, output: 100_000, cacheWrite: 500_000, cacheRead: 10_000_000)
+            assertEqual(entry.inputTokens, 1_000_000)
+            assertEqual(entry.outputTokens, 100_000)
+            assertEqual(entry.cacheWriteTokens, 500_000)
+            assertEqual(entry.cacheReadTokens, 10_000_000)
+            assertEqual(entry.requests, 1)
+            // Cost: (1M * $15 + 100K * $75 + 500K * $18.75 + 10M * $1.50) / 1M
+            // = $15 + $7.50 + $9.375 + $15 = $46.875
+            let expected = 46.875
+            check(abs(entry.totalCost - expected) < 0.01, "opus cost: expected \(expected), got \(entry.totalCost)")
+        }
+
+        test("add sonnet usage calculates cost") {
+            var entry = TokenCostEntry()
+            entry.add(model: "claude-sonnet-4-6", input: 1_000_000, output: 100_000, cacheWrite: 0, cacheRead: 5_000_000)
+            // Cost: (1M * $3 + 100K * $15 + 5M * $0.30) / 1M
+            // = $3 + $1.50 + $1.50 = $6.00
+            let expected = 6.0
+            check(abs(entry.totalCost - expected) < 0.01, "sonnet cost: expected \(expected), got \(entry.totalCost)")
+        }
+
+        test("add haiku usage calculates cost") {
+            var entry = TokenCostEntry()
+            entry.add(model: "claude-haiku-4-5-20251001", input: 1_000_000, output: 100_000, cacheWrite: 0, cacheRead: 5_000_000)
+            // Cost: (1M * $0.80 + 100K * $4.0 + 5M * $0.08) / 1M
+            // = $0.80 + $0.40 + $0.40 = $1.60
+            let expected = 1.60
+            check(abs(entry.totalCost - expected) < 0.01, "haiku cost: expected \(expected), got \(entry.totalCost)")
+        }
+
+        test("accumulates across models") {
+            var entry = TokenCostEntry()
+            entry.add(model: "claude-opus-4-6", input: 1000, output: 500, cacheWrite: 0, cacheRead: 0)
+            entry.add(model: "claude-sonnet-4-6", input: 2000, output: 1000, cacheWrite: 0, cacheRead: 0)
+            assertEqual(entry.inputTokens, 3000)
+            assertEqual(entry.outputTokens, 1500)
+            assertEqual(entry.requests, 2)
+            // Opus: (1000*15 + 500*75)/1M = 0.015 + 0.0375 = 0.0525
+            // Sonnet: (2000*3 + 1000*15)/1M = 0.006 + 0.015 = 0.021
+            let expected = 0.0525 + 0.021
+            check(abs(entry.totalCost - expected) < 0.001, "accumulated cost: expected \(expected), got \(entry.totalCost)")
+        }
+
+        test("unknown model uses opus pricing") {
+            var entry = TokenCostEntry()
+            entry.add(model: "unknown-model", input: 1_000_000, output: 0, cacheWrite: 0, cacheRead: 0)
+            let expected = 15.0  // Opus input rate
+            check(abs(entry.totalCost - expected) < 0.01, "unknown model cost: expected \(expected), got \(entry.totalCost)")
+        }
+
+        test("cache hit rate") {
+            var entry = TokenCostEntry()
+            entry.add(model: "claude-opus-4-6", input: 1000, output: 500, cacheWrite: 0, cacheRead: 4000)
+            let rate = entry.cacheHitRate!
+            check(abs(rate - 0.8) < 0.001, "cache rate: expected 0.8, got \(rate)")
+        }
+
+        test("cache hit rate nil when no cache reads") {
+            var entry = TokenCostEntry()
+            entry.add(model: "claude-opus-4-6", input: 1000, output: 500, cacheWrite: 0, cacheRead: 0)
+            assertNil(entry.cacheHitRate)
+        }
+    }
+
+    suite("TokenCostTracker") {
+        test("processes JSONL data and aggregates by date") {
+            let tracker = TokenCostTracker(claudeDir: "/nonexistent")
+            let line1 = Data("""
+            {"type":"assistant","timestamp":"2026-03-30T10:00:00.000Z","message":{"model":"claude-opus-4-6","usage":{"input_tokens":1000,"output_tokens":500,"cache_creation_input_tokens":200,"cache_read_input_tokens":3000}}}
+            """.utf8)
+            let line2 = Data("""
+            {"type":"assistant","timestamp":"2026-03-30T14:00:00.000Z","message":{"model":"claude-sonnet-4-6","usage":{"input_tokens":2000,"output_tokens":1000,"cache_creation_input_tokens":0,"cache_read_input_tokens":5000}}}
+            """.utf8)
+            let line3 = Data("""
+            {"type":"assistant","timestamp":"2026-03-29T09:00:00.000Z","message":{"model":"claude-opus-4-6","usage":{"input_tokens":500,"output_tokens":200,"cache_creation_input_tokens":0,"cache_read_input_tokens":1000}}}
+            """.utf8)
+            var combined = line1
+            combined.append(Data("\n".utf8))
+            combined.append(line2)
+            combined.append(Data("\n".utf8))
+            combined.append(line3)
+
+            tracker.processData(combined)
+
+            let today = tracker.costForDate("2026-03-30")
+            assertNotNil(today, "should have today entry")
+            assertEqual(today!.requests, 2)
+            assertEqual(today!.inputTokens, 3000)
+            assertEqual(today!.outputTokens, 1500)
+
+            let yesterday = tracker.costForDate("2026-03-29")
+            assertNotNil(yesterday, "should have yesterday entry")
+            assertEqual(yesterday!.requests, 1)
+            assertEqual(yesterday!.inputTokens, 500)
+        }
+
+        test("skips non-assistant lines") {
+            let tracker = TokenCostTracker(claudeDir: "/nonexistent")
+            let line = Data("""
+            {"type":"user","timestamp":"2026-03-30T10:00:00.000Z","message":{"role":"user","content":[]}}
+            """.utf8)
+            tracker.processData(line)
+            assertNil(tracker.costForDate("2026-03-30"))
+        }
+
+        test("skips lines without usage") {
+            let tracker = TokenCostTracker(claudeDir: "/nonexistent")
+            let line = Data("""
+            {"type":"assistant","timestamp":"2026-03-30T10:00:00.000Z","message":{"model":"claude-opus-4-6","content":[]}}
+            """.utf8)
+            tracker.processData(line)
+            assertNil(tracker.costForDate("2026-03-30"))
+        }
+
+        test("todayCost and weekCost and monthCost") {
+            let tracker = TokenCostTracker(claudeDir: "/nonexistent")
+            let today = ISO8601DateFormatter().string(from: Date())
+            let line = Data("""
+            {"type":"assistant","timestamp":"\(today)","message":{"model":"claude-opus-4-6","usage":{"input_tokens":1000000,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}
+            """.utf8)
+            tracker.processData(line)
+            check(tracker.todayCost.totalCost > 0, "today cost should be > 0")
+            check(tracker.weekCost.totalCost > 0, "week cost should be > 0")
+            check(tracker.monthCost.totalCost > 0, "month cost should be > 0")
+        }
+    }
+
+    suite("formatCost") {
+        test("formats small cost") {
+            assertEqual(formatCost(0.50), "$0.50")
+        }
+
+        test("formats medium cost") {
+            assertEqual(formatCost(125.30), "$125.30")
+        }
+
+        test("formats large cost") {
+            assertEqual(formatCost(1234.56), "$1,234.56")
+        }
+
+        test("formats zero") {
+            assertEqual(formatCost(0), "$0.00")
+        }
+    }
+
+    suite("formatTokenCosts") {
+        test("all zeros shows no data") {
+            let today = TokenCostEntry()
+            let week = TokenCostEntry()
+            let month = TokenCostEntry()
+            let result = formatTokenCosts(today: today, week: week, month: month)
+            assertEqual(result, "Token Costs (est.)\n  No usage data yet")
+        }
+
+        test("formats with data") {
+            var today = TokenCostEntry()
+            today.add(model: "claude-opus-4-6", input: 1000, output: 500, cacheWrite: 0, cacheRead: 4000)
+            var week = TokenCostEntry()
+            week.add(model: "claude-opus-4-6", input: 10000, output: 5000, cacheWrite: 0, cacheRead: 40000)
+            var month = TokenCostEntry()
+            month.add(model: "claude-opus-4-6", input: 100000, output: 50000, cacheWrite: 0, cacheRead: 400000)
+
+            let result = formatTokenCosts(today: today, week: week, month: month)
+            check(result.contains("Token Costs (est.)"), "should have header")
+            check(result.contains("Today"), "should have today")
+            check(result.contains("7-day"), "should have 7-day")
+            check(result.contains("30-day"), "should have 30-day")
+            check(result.contains("$"), "should have cost")
+        }
+
+        test("shows cache rate for today") {
+            var today = TokenCostEntry()
+            today.add(model: "claude-opus-4-6", input: 1000, output: 500, cacheWrite: 0, cacheRead: 9000)
+            let week = today
+            let month = today
+            let result = formatTokenCosts(today: today, week: week, month: month)
+            check(result.contains("cache"), "should show cache rate for today")
+        }
+    }
+}
+
 // MARK: - Test Runner
 
 func runAllTests() {
@@ -2926,6 +3121,7 @@ func runAllTests() {
     runModelMaxContextTokensTests()
     runTrackedSessionTests()
     runFormatMultiSessionSectionTests()
+    runTokenCostTests()
 
     print("\n=== Results: \(passedTests)/\(totalTests) passed ===")
     if !failedTests.isEmpty {

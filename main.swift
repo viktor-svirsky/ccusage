@@ -832,6 +832,273 @@ func modelMaxContextTokens(_ model: String, observedTokens: Int = 0) -> Int {
     return 200_000
 }
 
+// MARK: - Token Cost Tracking
+
+struct ModelPricing {
+    let inputPerMTok: Double
+    let outputPerMTok: Double
+    let cacheWritePerMTok: Double
+    let cacheReadPerMTok: Double
+}
+
+let modelPricingTable: [String: ModelPricing] = [
+    "opus": ModelPricing(inputPerMTok: 15.0, outputPerMTok: 75.0, cacheWritePerMTok: 18.75, cacheReadPerMTok: 1.50),
+    "sonnet": ModelPricing(inputPerMTok: 3.0, outputPerMTok: 15.0, cacheWritePerMTok: 3.75, cacheReadPerMTok: 0.30),
+    "haiku": ModelPricing(inputPerMTok: 0.80, outputPerMTok: 4.0, cacheWritePerMTok: 1.0, cacheReadPerMTok: 0.08),
+]
+
+func pricingForModel(_ model: String) -> ModelPricing {
+    let lower = model.lowercased()
+    for (family, pricing) in modelPricingTable {
+        if lower.contains(family) { return pricing }
+    }
+    return modelPricingTable["opus"]!  // default to most expensive
+}
+
+struct TokenCostEntry {
+    var inputTokens: Int = 0
+    var outputTokens: Int = 0
+    var cacheWriteTokens: Int = 0
+    var cacheReadTokens: Int = 0
+    var requests: Int = 0
+    var totalCost: Double = 0
+
+    var totalInputTokens: Int { inputTokens + cacheWriteTokens + cacheReadTokens }
+
+    var cacheHitRate: Double? {
+        let total = Double(totalInputTokens)
+        guard total > 0, cacheReadTokens > 0 else { return nil }
+        return Double(cacheReadTokens) / total
+    }
+
+    mutating func add(model: String, input: Int, output: Int, cacheWrite: Int, cacheRead: Int) {
+        inputTokens += input
+        outputTokens += output
+        cacheWriteTokens += cacheWrite
+        cacheReadTokens += cacheRead
+        requests += 1
+        let p = pricingForModel(model)
+        totalCost += Double(input) / 1_000_000 * p.inputPerMTok
+            + Double(output) / 1_000_000 * p.outputPerMTok
+            + Double(cacheWrite) / 1_000_000 * p.cacheWritePerMTok
+            + Double(cacheRead) / 1_000_000 * p.cacheReadPerMTok
+    }
+}
+
+class TokenCostTracker {
+    private var dailyCosts: [String: TokenCostEntry] = [:]  // "YYYY-MM-DD" -> entry
+    private var fileOffsets: [String: UInt64] = [:]
+    private let claudeDir: String
+    private var lastFullScan: Date = .distantPast
+    private let scanInterval: TimeInterval = 60
+
+    init(claudeDir: String? = nil) {
+        self.claudeDir = claudeDir ?? (NSHomeDirectory() + "/.claude/projects")
+    }
+
+    func costForDate(_ date: String) -> TokenCostEntry? {
+        dailyCosts[date]
+    }
+
+    var todayCost: TokenCostEntry {
+        let today = dateString(from: Date())
+        return dailyCosts[today] ?? TokenCostEntry()
+    }
+
+    var weekCost: TokenCostEntry {
+        aggregateCost(days: 7)
+    }
+
+    var monthCost: TokenCostEntry {
+        aggregateCost(days: 30)
+    }
+
+    private func aggregateCost(days: Int) -> TokenCostEntry {
+        var result = TokenCostEntry()
+        let cal = Calendar.current
+        for i in 0..<days {
+            guard let date = cal.date(byAdding: .day, value: -i, to: Date()) else { continue }
+            let key = dateString(from: date)
+            if let entry = dailyCosts[key] {
+                result.inputTokens += entry.inputTokens
+                result.outputTokens += entry.outputTokens
+                result.cacheWriteTokens += entry.cacheWriteTokens
+                result.cacheReadTokens += entry.cacheReadTokens
+                result.requests += entry.requests
+                result.totalCost += entry.totalCost
+            }
+        }
+        return result
+    }
+
+    private func dateString(from date: Date) -> String {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        f.timeZone = TimeZone(identifier: "UTC")
+        return f.string(from: date)
+    }
+
+    /// Process raw JSONL data (for testing)
+    func processData(_ data: Data) {
+        let lines = data.split(separator: UInt8(ascii: "\n"))
+        for line in lines {
+            processLine(Data(line))
+        }
+    }
+
+    private func processLine(_ lineData: Data) {
+        guard let json = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
+              let type = json["type"] as? String, type == "assistant",
+              let timestamp = json["timestamp"] as? String,
+              timestamp.count >= 10 else { return }
+        let message = json["message"] as? [String: Any]
+        guard let usage = (message?["usage"] as? [String: Any]) ?? (json["usage"] as? [String: Any]) else { return }
+        let input = usage["input_tokens"] as? Int ?? 0
+        let output = usage["output_tokens"] as? Int ?? 0
+        let cacheWrite = usage["cache_creation_input_tokens"] as? Int ?? 0
+        let cacheRead = usage["cache_read_input_tokens"] as? Int ?? 0
+        guard input > 0 || output > 0 || cacheWrite > 0 || cacheRead > 0 else { return }
+        let model = (message?["model"] as? String) ?? (json["model"] as? String) ?? "unknown"
+        let dateKey = String(timestamp.prefix(10))
+        dailyCosts[dateKey, default: TokenCostEntry()].add(model: model, input: input, output: output, cacheWrite: cacheWrite, cacheRead: cacheRead)
+    }
+
+    /// Poll all JSONL files for new data. Throttled to full scan every 60s.
+    @discardableResult
+    func poll() -> Bool {
+        let now = Date()
+        guard now.timeIntervalSince(lastFullScan) >= scanInterval else { return false }
+        lastFullScan = now
+
+        let fm = FileManager.default
+        let cutoff = Calendar.current.date(byAdding: .day, value: -30, to: now)!
+        guard let projectDirs = try? fm.contentsOfDirectory(atPath: claudeDir) else { return false }
+
+        var changed = false
+        for dir in projectDirs {
+            let projectPath = (claudeDir as NSString).appendingPathComponent(dir)
+            guard let files = try? fm.contentsOfDirectory(atPath: projectPath) else { continue }
+            for file in files where file.hasSuffix(".jsonl") {
+                let path = (projectPath as NSString).appendingPathComponent(file)
+                guard let attrs = try? fm.attributesOfItem(atPath: path),
+                      let modified = attrs[.modificationDate] as? Date,
+                      modified > cutoff,
+                      let fileSize = attrs[.size] as? UInt64 else { continue }
+
+                let currentOffset = fileOffsets[path] ?? 0
+                guard fileSize > currentOffset else { continue }
+
+                guard let handle = FileHandle(forReadingAtPath: path) else { continue }
+                defer { handle.closeFile() }
+                handle.seek(toFileOffset: currentOffset)
+                let newData = handle.readDataToEndOfFile()
+                fileOffsets[path] = currentOffset + UInt64(newData.count)
+
+                let lines = newData.split(separator: UInt8(ascii: "\n"))
+                for line in lines {
+                    processLine(Data(line))
+                }
+                changed = true
+            }
+            // Also scan subagent directories
+            let subagentsPath = (projectPath as NSString).appendingPathComponent("subagents")
+            if let subFiles = try? fm.contentsOfDirectory(atPath: subagentsPath) {
+                for file in subFiles where file.hasSuffix(".jsonl") {
+                    let path = (subagentsPath as NSString).appendingPathComponent(file)
+                    guard let attrs = try? fm.attributesOfItem(atPath: path),
+                          let modified = attrs[.modificationDate] as? Date,
+                          modified > cutoff,
+                          let fileSize = attrs[.size] as? UInt64 else { continue }
+
+                    let currentOffset = fileOffsets[path] ?? 0
+                    guard fileSize > currentOffset else { continue }
+
+                    guard let handle = FileHandle(forReadingAtPath: path) else { continue }
+                    defer { handle.closeFile() }
+                    handle.seek(toFileOffset: currentOffset)
+                    let newData = handle.readDataToEndOfFile()
+                    fileOffsets[path] = currentOffset + UInt64(newData.count)
+
+                    let lines = newData.split(separator: UInt8(ascii: "\n"))
+                    for line in lines {
+                        processLine(Data(line))
+                    }
+                    changed = true
+                }
+            }
+        }
+        return changed
+    }
+}
+
+func formatCost(_ cost: Double) -> String {
+    if cost >= 1000 {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.minimumFractionDigits = 2
+        formatter.maximumFractionDigits = 2
+        return "$" + (formatter.string(from: NSNumber(value: cost)) ?? String(format: "%.2f", cost))
+    }
+    return String(format: "$%.2f", cost)
+}
+
+func formatTokenCosts(today: TokenCostEntry, week: TokenCostEntry, month: TokenCostEntry) -> String {
+    var lines = ["Token Costs (est.)"]
+    guard week.requests > 0 else {
+        lines.append("  No usage data yet")
+        return lines.joined(separator: "\n")
+    }
+
+    func row(_ label: String, _ entry: TokenCostEntry, showCache: Bool = false) -> String {
+        var parts = ["\(formatCost(entry.totalCost))  \(formatTokenCount(entry.requests)) req"]
+        if showCache, let rate = entry.cacheHitRate {
+            parts.append(String(format: "%.0f%% cache", rate * 100))
+        }
+        return "  \(label)  \(parts.joined(separator: " \u{00B7} "))"
+    }
+
+    if today.requests > 0 {
+        lines.append(row("Today", today, showCache: true))
+    }
+    lines.append(row("7-day", week))
+    lines.append(row("30-day", month))
+    return lines.joined(separator: "\n")
+}
+
+#if !TESTING
+func formatAttributedTokenCosts(today: TokenCostEntry, week: TokenCostEntry, month: TokenCostEntry) -> NSAttributedString {
+    let result = NSMutableAttributedString()
+    let font = NSFont.systemFont(ofSize: 13)
+    let smallFont = NSFont.systemFont(ofSize: 11)
+    let monoFont = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+    let boldFont = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .bold)
+
+    result.append(NSAttributedString(string: "Token Costs (est.)", attributes: [.font: font]))
+
+    guard week.requests > 0 else {
+        result.append(NSAttributedString(string: "\n  No usage data yet", attributes: [.font: smallFont, .foregroundColor: NSColor.tertiaryLabelColor]))
+        return result
+    }
+
+    func row(_ label: String, _ entry: TokenCostEntry, showCache: Bool = false) {
+        result.append(NSAttributedString(string: "\n  \(label)  ", attributes: [.font: smallFont, .foregroundColor: NSColor.secondaryLabelColor]))
+        result.append(NSAttributedString(string: formatCost(entry.totalCost), attributes: [.font: boldFont, .foregroundColor: NSColor.labelColor]))
+        result.append(NSAttributedString(string: "  \(formatTokenCount(entry.requests)) req", attributes: [.font: monoFont, .foregroundColor: NSColor.tertiaryLabelColor]))
+        if showCache, let rate = entry.cacheHitRate {
+            result.append(NSAttributedString(string: String(format: " \u{00B7} %.0f%% cache", rate * 100), attributes: [.font: monoFont, .foregroundColor: NSColor.tertiaryLabelColor]))
+        }
+    }
+
+    if today.requests > 0 {
+        row("Today ", today, showCache: true)
+    }
+    row("7-day ", week)
+    row("30-day", month)
+
+    return result
+}
+#endif
+
 func modelDisplayName(_ model: String) -> String {
     let parts = model.lowercased().split(separator: "-")
     let families = ["opus", "sonnet", "haiku"]
@@ -1674,6 +1941,8 @@ class StatusBarController: NSObject {
     private let sessionsItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private var agentTracker = AgentTracker()
     private var agentTimer: Timer?
+    private var tokenCostTracker = TokenCostTracker()
+    private let tokenCostsItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
 
     override init() {
         super.init()
@@ -1706,6 +1975,9 @@ class StatusBarController: NSObject {
         activityItem.isEnabled = false
         activityItem.isHidden = true
         menu.addItem(activityItem)
+        tokenCostsItem.isEnabled = false
+        tokenCostsItem.isHidden = true
+        menu.addItem(tokenCostsItem)
         insightsItem.isEnabled = false
         menu.addItem(insightsItem)
         menu.addItem(.separator())
@@ -1778,6 +2050,7 @@ class StatusBarController: NSObject {
         _ = agentTracker.poll()
         updateAgentsUI()
         updateStatusBarAgentIndicator()
+        updateTokenCostsUI()
     }
 
     private func updateAgentsUI() {
@@ -1792,6 +2065,24 @@ class StatusBarController: NSObject {
         sessionsItem.title = formatMultiSessionSection(active)
         #else
         sessionsItem.attributedTitle = formatAttributedMultiSessionSection(active)
+        #endif
+    }
+
+    private func updateTokenCostsUI() {
+        tokenCostTracker.poll()
+        let today = tokenCostTracker.todayCost
+        let week = tokenCostTracker.weekCost
+        let month = tokenCostTracker.monthCost
+
+        guard week.requests > 0 else {
+            tokenCostsItem.isHidden = true
+            return
+        }
+        tokenCostsItem.isHidden = false
+        #if TESTING
+        tokenCostsItem.title = formatTokenCosts(today: today, week: week, month: month)
+        #else
+        tokenCostsItem.attributedTitle = formatAttributedTokenCosts(today: today, week: week, month: month)
         #endif
     }
 
