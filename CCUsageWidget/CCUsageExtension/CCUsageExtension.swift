@@ -88,7 +88,7 @@ struct CCUsageProvider: TimelineProvider {
     func getTimeline(in context: Context, completion: @escaping (Timeline<CCUsageEntry>) -> Void) {
         fetchData { data in
             let entry = CCUsageEntry(date: Date(), data: data)
-            let next = Calendar.current.date(byAdding: .minute, value: 15, to: Date())!
+            let next = Calendar.current.date(byAdding: .minute, value: 5, to: Date())!
             completion(Timeline(entries: [entry], policy: .after(next)))
         }
     }
