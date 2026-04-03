@@ -128,7 +128,10 @@ struct ContentView: View {
         let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let url = URL(string: trimmed),
               url.scheme == "https",
-              trimmed.contains("/widget/") else {
+              url.host?.hasSuffix(".workers.dev") == true,
+              let key = url.path.split(separator: "/").last,
+              key.count == 64,
+              key.allSatisfy({ $0.isHexDigit }) else {
             statusMessage = "Error: Invalid widget URL"
             return
         }

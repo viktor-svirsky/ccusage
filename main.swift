@@ -18,7 +18,7 @@ private let maxRetryInterval = 86400  // 1 day
 private let minRetryInterval = 60     // 1 minute
 let defaultFetchInterval: TimeInterval = 120  // 2 minutes
 private let maxBackoffInterval: TimeInterval = 300  // 5 minutes
-let widgetWorkerURL = "https://ccusage-widget.viktor-svirsky.workers.dev"
+let widgetWorkerURL = "https://ccusage-widget.g-spot.workers.dev"
 
 let deviceId: String = {
     let name = Host.current().localizedName ?? "unknown"
@@ -76,6 +76,11 @@ struct WidgetData: Codable {
     let fiveHourResetsAt: TimeInterval?
     let sevenDayResetsAt: TimeInterval?
     let updatedAt: TimeInterval
+}
+
+private struct WidgetPushBody: Encodable {
+    let refreshTokenHash: String
+    let data: WidgetData
 }
 
 // MARK: - Usage Zones & Notifications
@@ -1974,6 +1979,7 @@ class StatusBarController: NSObject {
     private var dailyStore = DailyUsageData()
     private let dailyStorePath = NSHomeDirectory() + "/.ccusage-daily.json"
     private var widgetKey: String?  // SHA-256 of refresh token, computed on first push
+    private var qrWindow: NSWindow?
     private let lastRefreshItem = NSMenuItem(title: "Last refresh: never", action: nil, keyEquivalent: "")
     private var sessionStartDate = Date()
     private var sessionFetchCount = 0
@@ -2003,6 +2009,7 @@ class StatusBarController: NSObject {
         statusItem.button?.title = "CC ..."
 
         let menu = NSMenu()
+        menu.autoenablesItems = false
         detailFiveHour.isEnabled = false
         detailSevenDay.isEnabled = false
         lastRefreshItem.isEnabled = false
@@ -2193,11 +2200,8 @@ class StatusBarController: NSObject {
               let url = URL(string: "\(widgetWorkerURL)/widget") else { return }
         let key = sha256hex(refreshToken)
         widgetKey = key
-        let widget = buildWidgetData(usage)
-        guard let widgetJSON = try? JSONEncoder().encode(widget),
-              let widgetDict = try? JSONSerialization.jsonObject(with: widgetJSON) else { return }
-        let body: [String: Any] = ["refreshTokenHash": key, "data": widgetDict]
-        guard let bodyData = try? JSONSerialization.data(withJSONObject: body) else { return }
+        let body = WidgetPushBody(refreshTokenHash: key, data: buildWidgetData(usage))
+        guard let bodyData = try? JSONEncoder().encode(body) else { return }
         var request = URLRequest(url: url)
         request.httpMethod = "PUT"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -2212,6 +2216,12 @@ class StatusBarController: NSObject {
     }
 
     @objc func showWidgetQRCode() {
+        // Eagerly compute widgetKey if not yet set
+        if widgetKey == nil,
+           let credData = readCredentialData(),
+           let refreshToken = parseRefreshToken(from: credData) {
+            widgetKey = sha256hex(refreshToken)
+        }
         guard let urlString = widgetURL() else {
             let alert = NSAlert()
             alert.messageText = "Not ready yet"
@@ -2236,6 +2246,7 @@ class StatusBarController: NSObject {
             backing: .buffered, defer: false
         )
         window.title = "Share to iPhone"
+        window.level = .floating
         window.center()
         let view = NSView(frame: NSRect(x: 0, y: 0, width: 340, height: 400))
         let imageView = NSImageView(frame: NSRect(x: 50, y: 80, width: 240, height: 240))
@@ -2257,8 +2268,7 @@ class StatusBarController: NSObject {
         window.contentView = view
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        // Keep a strong reference so the window stays alive
-        objc_setAssociatedObject(self, "qrWindow", window, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        qrWindow = window
     }
 
     // MARK: - Keychain
@@ -2736,17 +2746,21 @@ class StatusBarController: NSObject {
                         self.updateItem.title = "Update available: \(info.tagName)"
                         if self.autoInstallFailedVersion == info.tagName {
                             self.updateItem.action = #selector(self.installUpdateManually)
+                            self.updateItem.isEnabled = true
                         } else {
                             self.updateItem.action = nil
+                            self.updateItem.isEnabled = false
                             self.installUpdate()
                         }
                     } else {
                         self.updateItem.title = "Update \(info.tagName) available on GitHub"
                         self.updateItem.action = nil
+                        self.updateItem.isEnabled = false
                     }
                 } else {
                     self.updateItem.title = "Up to date"
                     self.updateItem.action = #selector(self.checkForUpdates)
+                    self.updateItem.isEnabled = true
                 }
             }
         }.resume()
@@ -2768,6 +2782,7 @@ class StatusBarController: NSObject {
         isUpdating = true
         updateItem.title = "Downloading update\u{2026}"
         updateItem.action = nil
+        updateItem.isEnabled = false
 
         let task = URLSession.shared.downloadTask(with: downloadURL) { [weak self] tempURL, response, error in
             guard let tempURL, error == nil else {
@@ -2779,6 +2794,7 @@ class StatusBarController: NSObject {
                     self?.autoInstallFailedVersion = self?.pendingUpdateVersion
                     self?.updateItem.title = "Download failed"
                     self?.updateItem.action = #selector(self?.checkForUpdates)
+                    self?.updateItem.isEnabled = true
                 }
                 return
             }
@@ -2852,6 +2868,7 @@ class StatusBarController: NSObject {
                     self?.autoInstallFailedVersion = self?.pendingUpdateVersion
                     self?.updateItem.title = "Update failed"
                     self?.updateItem.action = #selector(self?.checkForUpdates)
+                    self?.updateItem.isEnabled = true
                 }
             }
         }

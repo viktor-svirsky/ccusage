@@ -76,8 +76,13 @@ struct CCUsageProvider: TimelineProvider {
     }
 
     func getSnapshot(in context: Context, completion: @escaping (CCUsageEntry) -> Void) {
-        let data = context.isPreview ? .placeholder : nil
-        completion(CCUsageEntry(date: Date(), data: data))
+        if context.isPreview {
+            completion(CCUsageEntry(date: Date(), data: .placeholder))
+            return
+        }
+        fetchData { data in
+            completion(CCUsageEntry(date: Date(), data: data ?? .placeholder))
+        }
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<CCUsageEntry>) -> Void) {

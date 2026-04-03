@@ -10,7 +10,7 @@ CCUsage is a macOS menu bar app (macOS 13+) that displays Claude Code usage limi
 
 ```bash
 make build    # Compile .app bundle (includes icon generation)
-make test     # Run all unit tests (~608 tests)
+make test     # Run all unit tests (~738 tests)
 make install  # Build + copy to /Applications + launch
 make clean    # Remove build artifacts
 ```
@@ -19,7 +19,7 @@ Tests compile with `-DTESTING` flag, which gates out AppKit/system-dependent cod
 
 ## Architecture
 
-**Single-file app** — everything is in `main.swift` (~2455 lines), organized by `// MARK: -` sections:
+**Single-file app** — everything is in `main.swift` (~2900 lines), organized by `// MARK: -` sections:
 
 | Section | Lines | Purpose |
 |---------|-------|---------|
@@ -42,7 +42,7 @@ Tests compile with `-DTESTING` flag, which gates out AppKit/system-dependent cod
 
 ## Testing
 
-`CCUsageTests.swift` (~2150 lines) uses a custom minimal test framework (no XCTest). Key functions:
+`CCUsageTests.swift` (~3270 lines) uses a custom minimal test framework (no XCTest). Key functions:
 - `check()`, `assertEqual()`, `assertNil()`, `assertNotNil()` — assertion helpers
 - `test()` / `suite()` — grouping (no setup/teardown)
 - `runAllTests()` — calls all `run*Tests()` functions, exits with code 0/1
