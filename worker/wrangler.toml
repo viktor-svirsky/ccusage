@@ -1,0 +1,7 @@
+name = "ccusage-widget"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+
+[[kv_namespaces]]
+binding = "CCUSAGE_WIDGET"
+id = "88af5675fc9d486a8641105978d4eb88"
