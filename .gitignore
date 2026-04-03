@@ -3,3 +3,5 @@ CCUsage.iconset/
 CCUsage.icns
 build-icon
 .DS_Store
+.serena/
+node_modules/

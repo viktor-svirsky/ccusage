@@ -239,6 +239,69 @@ func runParseExpiresAtTests() {
     }
 }
 
+func runParseOAuthAccountEmailTests() {
+    suite("parseOAuthAccountEmail") {
+        test("valid oauth account email") {
+            let json = """
+            {"oauthAccount":{"emailAddress":"user@example.com","displayName":"User"}}
+            """.data(using: .utf8)!
+            assertEqual(parseOAuthAccountEmail(from: json), "user@example.com")
+        }
+
+        test("missing oauthAccount") {
+            let json = """
+            {"someOtherKey":{"emailAddress":"user@example.com"}}
+            """.data(using: .utf8)!
+            assertNil(parseOAuthAccountEmail(from: json), "missing oauthAccount")
+        }
+
+        test("missing emailAddress") {
+            let json = """
+            {"oauthAccount":{"displayName":"User"}}
+            """.data(using: .utf8)!
+            assertNil(parseOAuthAccountEmail(from: json), "missing emailAddress")
+        }
+
+        test("empty emailAddress") {
+            let json = """
+            {"oauthAccount":{"emailAddress":""}}
+            """.data(using: .utf8)!
+            assertNil(parseOAuthAccountEmail(from: json), "empty emailAddress")
+        }
+
+        test("invalid JSON") {
+            let data = "not json".data(using: .utf8)!
+            assertNil(parseOAuthAccountEmail(from: data), "invalid JSON")
+        }
+    }
+}
+
+func runMissingCredentialsDetailsTests() {
+    suite("missingCredentialsDetails") {
+        test("metadata only shows reauth hint") {
+            let json = """
+            {"oauthAccount":{"emailAddress":"remote@example.com","displayName":"Remote User"}}
+            """.data(using: .utf8)!
+            let details = _missingCredentialsDetails(from: json)
+            assertEqual(details.0, "Claude account found for remote@example.com")
+            assertEqual(details.1, "OAuth token missing. Run `claude auth login`")
+        }
+
+        test("missing config falls back to generic message") {
+            let details = _missingCredentialsDetails(from: nil)
+            assertEqual(details.0, "No credentials found")
+            assertEqual(details.1, "Ensure Claude Code is signed in")
+        }
+
+        test("invalid config falls back to generic message") {
+            let data = "not json".data(using: .utf8)!
+            let details = _missingCredentialsDetails(from: data)
+            assertEqual(details.0, "No credentials found")
+            assertEqual(details.1, "Ensure Claude Code is signed in")
+        }
+    }
+}
+
 func runParseKeychainAccountTests() {
     suite("parseKeychainAccount") {
         test("typical output with account") {
@@ -3078,12 +3141,78 @@ func runTokenCostTests() {
     }
 }
 
+// MARK: - SHA-256 Tests
+
+func runSHA256Tests() {
+    suite("sha256hex") {
+        test("known vector") {
+            // SHA-256 of empty string
+            assertEqual(sha256hex(""), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+        }
+
+        test("hello world") {
+            assertEqual(sha256hex("hello"), "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824")
+        }
+
+        test("deterministic") {
+            let a = sha256hex("test-token")
+            let b = sha256hex("test-token")
+            assertEqual(a, b)
+        }
+
+        test("different inputs differ") {
+            let a = sha256hex("token-a")
+            let b = sha256hex("token-b")
+            check(a != b, "different inputs should produce different hashes")
+        }
+
+        test("returns 64 hex chars") {
+            let result = sha256hex("anything")
+            assertEqual(result.count, 64)
+            for c in result {
+                check("0123456789abcdef".contains(c), "hex char: \(c)")
+            }
+        }
+    }
+}
+
+// MARK: - Build Widget Data Tests
+
+func runBuildWidgetDataTests() {
+    suite("buildWidgetData") {
+        test("maps usage fields") {
+            let usage = UsageData(
+                fiveHour: UsageWindow(utilization: 45.2, remaining: nil, resetsAt: Date(timeIntervalSince1970: 1700000000)),
+                sevenDay: UsageWindow(utilization: 32.1, remaining: nil, resetsAt: Date(timeIntervalSince1970: 1700100000))
+            )
+            let widget = buildWidgetData(usage)
+            assertEqual(widget.fiveHourUtilization, 45.2)
+            assertEqual(widget.sevenDayUtilization, 32.1)
+            assertEqual(widget.fiveHourResetsAt, 1700000000)
+            assertEqual(widget.sevenDayResetsAt, 1700100000)
+            check(widget.updatedAt > 0, "updatedAt should be set")
+        }
+
+        test("encodes to JSON") {
+            let usage = UsageData(
+                fiveHour: UsageWindow(utilization: 10, remaining: nil, resetsAt: nil),
+                sevenDay: UsageWindow(utilization: 20, remaining: nil, resetsAt: nil)
+            )
+            let widget = buildWidgetData(usage)
+            let data = try? JSONEncoder().encode(widget)
+            check(data != nil, "should encode to JSON")
+        }
+    }
+}
+
 // MARK: - Test Runner
 
 func runAllTests() {
     runParseTokenTests()
     runParseRefreshTokenTests()
     runParseExpiresAtTests()
+    runParseOAuthAccountEmailTests()
+    runMissingCredentialsDetailsTests()
     runParseKeychainAccountTests()
     runParseUsageTests()
     runFormatValueTests()
@@ -3122,6 +3251,8 @@ func runAllTests() {
     runTrackedSessionTests()
     runFormatMultiSessionSectionTests()
     runTokenCostTests()
+    runSHA256Tests()
+    runBuildWidgetDataTests()
 
     print("\n=== Results: \(passedTests)/\(totalTests) passed ===")
     if !failedTests.isEmpty {

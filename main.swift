@@ -1,4 +1,5 @@
 import Cocoa
+import CommonCrypto
 import ServiceManagement
 import UserNotifications
 
@@ -17,7 +18,7 @@ private let maxRetryInterval = 86400  // 1 day
 private let minRetryInterval = 60     // 1 minute
 let defaultFetchInterval: TimeInterval = 120  // 2 minutes
 private let maxBackoffInterval: TimeInterval = 300  // 5 minutes
-private let iCloudSubfolder = ".ccusage"
+let widgetWorkerURL = "https://ccusage-widget.g-spot.workers.dev"
 
 let deviceId: String = {
     let name = Host.current().localizedName ?? "unknown"
@@ -65,6 +66,21 @@ struct UsageData: Equatable {
         self.models = models
         self.extraUsage = extraUsage
     }
+}
+
+struct WidgetData: Codable {
+    let fiveHourUtilization: Double
+    let sevenDayUtilization: Double
+    let fiveHourPace: Double?
+    let sevenDayPace: Double?
+    let fiveHourResetsAt: TimeInterval?
+    let sevenDayResetsAt: TimeInterval?
+    let updatedAt: TimeInterval
+}
+
+private struct WidgetPushBody: Encodable {
+    let refreshTokenHash: String
+    let data: WidgetData
 }
 
 // MARK: - Usage Zones & Notifications
@@ -180,6 +196,13 @@ func determineNotifications(
 
 // MARK: - Pure Logic (testable)
 
+func sha256hex(_ input: String) -> String {
+    let data = Data(input.utf8)
+    var hash = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
+    _ = data.withUnsafeBytes { CC_SHA256($0.baseAddress, CC_LONG(data.count), &hash) }
+    return hash.map { String(format: "%02x", $0) }.joined()
+}
+
 private func parseOAuthDict(from jsonData: Data) -> [String: Any]? {
     guard let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
           let oauth = json["claudeAiOauth"] as? [String: Any] else {
@@ -216,6 +239,24 @@ func parseExpiresAt(from jsonData: Data) -> Date? {
         return nil
     }
     return Date(timeIntervalSince1970: ms / 1000.0)
+}
+
+func parseOAuthAccountEmail(from jsonData: Data) -> String? {
+    guard let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+          let oauthAccount = json["oauthAccount"] as? [String: Any],
+          let email = oauthAccount["emailAddress"] as? String,
+          !email.isEmpty else {
+        return nil
+    }
+    return email
+}
+
+func _missingCredentialsDetails(from claudeConfigData: Data?) -> (String, String) {
+    guard let claudeConfigData,
+          let email = parseOAuthAccountEmail(from: claudeConfigData) else {
+        return ("No credentials found", "Ensure Claude Code is signed in")
+    }
+    return ("Claude account found for \(email)", "OAuth token missing. Run `claude auth login`")
 }
 
 /// Parse the account name from `security find-generic-password` output.
@@ -1899,6 +1940,22 @@ struct FetchSchedule {
     }
 }
 
+// MARK: - Widget Data
+
+func buildWidgetData(_ usage: UsageData) -> WidgetData {
+    let h5Pace = calculatePace(utilization: usage.fiveHour.utilization, resetsAt: usage.fiveHour.resetsAt, windowDuration: 5 * 3600)
+    let d7Pace = calculatePace(utilization: usage.sevenDay.utilization, resetsAt: usage.sevenDay.resetsAt, windowDuration: 7 * 86400)
+    return WidgetData(
+        fiveHourUtilization: usage.fiveHour.utilization,
+        sevenDayUtilization: usage.sevenDay.utilization,
+        fiveHourPace: h5Pace,
+        sevenDayPace: d7Pace,
+        fiveHourResetsAt: usage.fiveHour.resetsAt?.timeIntervalSince1970,
+        sevenDayResetsAt: usage.sevenDay.resetsAt?.timeIntervalSince1970,
+        updatedAt: Date().timeIntervalSince1970
+    )
+}
+
 // MARK: - Status Bar Controller
 
 class StatusBarController: NSObject {
@@ -1921,15 +1978,8 @@ class StatusBarController: NSObject {
     private let insightsItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private var dailyStore = DailyUsageData()
     private let dailyStorePath = NSHomeDirectory() + "/.ccusage-daily.json"
-    private let iCloudFolder: String? = {
-        let iCloudDrive = NSHomeDirectory() + "/Library/Mobile Documents/com~apple~CloudDocs"
-        guard FileManager.default.fileExists(atPath: iCloudDrive) else { return nil }
-        let folder = (iCloudDrive as NSString).appendingPathComponent(iCloudSubfolder)
-        if !FileManager.default.fileExists(atPath: folder) {
-            try? FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
-        }
-        return folder
-    }()
+    private var widgetKey: String?  // SHA-256 of refresh token, computed on first push
+    private var qrWindow: NSWindow?
     private let lastRefreshItem = NSMenuItem(title: "Last refresh: never", action: nil, keyEquivalent: "")
     private var sessionStartDate = Date()
     private var sessionFetchCount = 0
@@ -1959,6 +2009,7 @@ class StatusBarController: NSObject {
         statusItem.button?.title = "CC ..."
 
         let menu = NSMenu()
+        menu.autoenablesItems = false
         detailFiveHour.isEnabled = false
         detailSevenDay.isEnabled = false
         lastRefreshItem.isEnabled = false
@@ -1984,6 +2035,7 @@ class StatusBarController: NSObject {
         menu.addItem(lastRefreshItem)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Refresh Now", action: #selector(refresh), keyEquivalent: "r"))
+        menu.addItem(NSMenuItem(title: "Share to iPhone\u{2026}", action: #selector(showWidgetQRCode), keyEquivalent: "i"))
         menu.addItem(.separator())
         versionItem.isEnabled = false
         updateItem.action = #selector(checkForUpdates)
@@ -2134,37 +2186,95 @@ class StatusBarController: NSObject {
         // Snapshot session state into the store before saving
         dailyStore.historyEntries = history.entries
         dailyStore.usageIncreases = usageIncreases
-        // Save full data locally (includes lastUtilization for delta tracking)
         if let data = try? JSONEncoder().encode(dailyStore) {
             FileManager.default.createFile(atPath: dailyStorePath, contents: data)
         }
-        // Save days to iCloud (device-specific file for cross-device merging)
-        guard let folder = iCloudFolder else { return }
-        let cloudPath = (folder as NSString).appendingPathComponent("\(deviceId).json")
-        if let data = try? JSONEncoder().encode(dailyStore.days) {
-            FileManager.default.createFile(atPath: cloudPath, contents: data)
-        }
     }
 
-    private func loadMergedDailyDays() -> [DailyEntry] {
-        guard let folder = iCloudFolder else { return dailyStore.days }
-        let fm = FileManager.default
-        guard let files = try? fm.contentsOfDirectory(atPath: folder) else { return dailyStore.days }
-        var deviceEntries: [[DailyEntry]] = []
-        for file in files where file.hasSuffix(".json") {
-            let path = (folder as NSString).appendingPathComponent(file)
-            guard let data = fm.contents(atPath: path),
-                  let days = try? JSONDecoder().decode([DailyEntry].self, from: data) else { continue }
-            deviceEntries.append(days)
+    // MARK: - Widget Sync
+
+    private func pushWidgetData(_ usage: UsageData) {
+        guard let credData = readCredentialData(),
+              let token = parseToken(from: credData),
+              let refreshToken = parseRefreshToken(from: credData),
+              let url = URL(string: "\(widgetWorkerURL)/widget") else { return }
+        let key = sha256hex(refreshToken)
+        widgetKey = key
+        let body = WidgetPushBody(refreshTokenHash: key, data: buildWidgetData(usage))
+        guard let bodyData = try? JSONEncoder().encode(body) else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "PUT"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = bodyData
+        session.dataTask(with: request) { _, _, _ in }.resume()
+    }
+
+    private func widgetURL() -> String? {
+        guard let key = widgetKey else { return nil }
+        return "\(widgetWorkerURL)/widget/\(key)"
+    }
+
+    @objc func showWidgetQRCode() {
+        // Eagerly compute widgetKey if not yet set
+        if widgetKey == nil,
+           let credData = readCredentialData(),
+           let refreshToken = parseRefreshToken(from: credData) {
+            widgetKey = sha256hex(refreshToken)
         }
-        guard !deviceEntries.isEmpty else { return dailyStore.days }
-        return mergeDailyEntries(deviceEntries)
+        guard let urlString = widgetURL() else {
+            let alert = NSAlert()
+            alert.messageText = "Not ready yet"
+            alert.informativeText = "Waiting for the first successful data refresh. Try again in a moment."
+            alert.alertStyle = .informational
+            alert.runModal()
+            return
+        }
+        guard let filter = CIFilter(name: "CIQRCodeGenerator") else { return }
+        filter.setValue(Data(urlString.utf8), forKey: "inputMessage")
+        filter.setValue("M", forKey: "inputCorrectionLevel")
+        guard let ciImage = filter.outputImage else { return }
+        let scale = CGAffineTransform(scaleX: 8, y: 8)
+        let scaledImage = ciImage.transformed(by: scale)
+        let rep = NSCIImageRep(ciImage: scaledImage)
+        let nsImage = NSImage(size: rep.size)
+        nsImage.addRepresentation(rep)
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 340, height: 400),
+            styleMask: [.titled, .closable],
+            backing: .buffered, defer: false
+        )
+        window.title = "Share to iPhone"
+        window.level = .floating
+        window.center()
+        let view = NSView(frame: NSRect(x: 0, y: 0, width: 340, height: 400))
+        let imageView = NSImageView(frame: NSRect(x: 50, y: 80, width: 240, height: 240))
+        imageView.image = nsImage
+        imageView.imageScaling = .scaleProportionallyUpOrDown
+        view.addSubview(imageView)
+        let label = NSTextField(labelWithString: "Scan with CCUsage on iPhone")
+        label.frame = NSRect(x: 20, y: 340, width: 300, height: 30)
+        label.alignment = .center
+        label.font = NSFont.systemFont(ofSize: 14, weight: .medium)
+        view.addSubview(label)
+        let urlLabel = NSTextField(labelWithString: urlString)
+        urlLabel.frame = NSRect(x: 20, y: 30, width: 300, height: 40)
+        urlLabel.alignment = .center
+        urlLabel.font = NSFont.monospacedSystemFont(ofSize: 8, weight: .regular)
+        urlLabel.lineBreakMode = .byCharWrapping
+        urlLabel.maximumNumberOfLines = 3
+        view.addSubview(urlLabel)
+        window.contentView = view
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        qrWindow = window
     }
 
     // MARK: - Keychain
 
-    /// Read raw credential data via the system `security` CLI to avoid per-binary Keychain ACL prompts.
-    private func readKeychainData() -> Data? {
+    /// Read OAuth credentials from the Keychain (`security` CLI) or `~/.claude/.credentials.json`.
+    private func readCredentialData() -> Data? {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/security")
         proc.arguments = ["find-generic-password", "-s", keychainService, "-w"]
@@ -2175,11 +2285,21 @@ class StatusBarController: NSObject {
             try proc.run()
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             proc.waitUntilExit()
-            guard proc.terminationStatus == 0 else { return nil }
-            return data
-        } catch {
-            return nil
-        }
+            if proc.terminationStatus == 0 { return data }
+        } catch {}
+        // Fallback: read from Claude Code credentials file
+        let credPath = (NSHomeDirectory() as NSString).appendingPathComponent(".claude/.credentials.json")
+        return FileManager.default.contents(atPath: credPath)
+    }
+
+    private func readClaudeConfigData() -> Data? {
+        let path = (NSHomeDirectory() as NSString).appendingPathComponent(".claude.json")
+        return FileManager.default.contents(atPath: path)
+    }
+
+    private func missingCredentialsDetails() -> (String, String) {
+        let data = readClaudeConfigData()
+        return _missingCredentialsDetails(from: data)
     }
 
     /// Discover the account name associated with the keychain entry (needed for delete/add).
@@ -2203,7 +2323,7 @@ class StatusBarController: NSObject {
     }
 
     private func readRefreshToken() -> String? {
-        guard let data = readKeychainData() else { return nil }
+        guard let data = readCredentialData() else { return nil }
         return parseRefreshToken(from: data)
     }
 
@@ -2239,6 +2359,13 @@ class StatusBarController: NSObject {
         }
     }
 
+    /// Write updated credentials back to `~/.claude/.credentials.json`.
+    @discardableResult
+    private func writeCredentialsFile(_ data: Data) -> Bool {
+        let credPath = (NSHomeDirectory() as NSString).appendingPathComponent(".claude/.credentials.json")
+        return FileManager.default.createFile(atPath: credPath, contents: data)
+    }
+
     /// Refresh the OAuth token and update the keychain. Returns the new access token on success.
     private func refreshOAuthToken(completion: @escaping (String?) -> Void) {
         guard let refreshToken = readRefreshToken(),
@@ -2272,10 +2399,10 @@ class StatusBarController: NSObject {
                 return
             }
 
-            // Update keychain with new tokens
+            // Update keychain (or credentials file) with new tokens
             DispatchQueue.main.async {
-                guard let self, let keychainData = self.readKeychainData(),
-                      var creds = try? JSONSerialization.jsonObject(with: keychainData) as? [String: Any],
+                guard let self, let credentialData = self.readCredentialData(),
+                      var creds = try? JSONSerialization.jsonObject(with: credentialData) as? [String: Any],
                       var oauth = creds["claudeAiOauth"] as? [String: Any] else {
                     completion(newAccessToken)  // Still return token even if keychain update fails
                     return
@@ -2289,7 +2416,9 @@ class StatusBarController: NSObject {
                 }
                 creds["claudeAiOauth"] = oauth
                 if let updatedData = try? JSONSerialization.data(withJSONObject: creds) {
-                    _ = self.writeKeychainData(updatedData)
+                    if !self.writeKeychainData(updatedData) {
+                        self.writeCredentialsFile(updatedData)
+                    }
                 }
                 completion(newAccessToken)
             }
@@ -2421,6 +2550,9 @@ class StatusBarController: NSObject {
         history.record(usage)
         recordDailyUsage(&dailyStore, sevenDayUtilization: usage.sevenDay.utilization)
         saveDailyStore()
+        #if !TESTING
+        pushWidgetData(usage)
+        #endif
         lastRefreshDate = Date()
         startSecondsTimer()
         didRetryWithRefresh = false
@@ -2455,7 +2587,7 @@ class StatusBarController: NSObject {
         #if TESTING
         detailFiveHour.title = "\(usageIndicator(for: h5))  5-hour window: \(formatValue(h5))%\(formatResetTime(usage.fiveHour.resetsAt))"
         detailSevenDay.title = "\(usageIndicator(for: d7))  7-day window:  \(formatValue(d7))%\(formatResetTime(usage.sevenDay.resetsAt))"
-        let mergedDays = loadMergedDailyDays()
+        let mergedDays = dailyStore.days
         insightsItem.title = formatInsights(usage)
         if let models = usage.models {
             modelBreakdownItem.isHidden = false
@@ -2502,7 +2634,7 @@ class StatusBarController: NSObject {
         }
 
         // Activity (weekly chart + hourly heatmap)
-        let mergedDays = loadMergedDailyDays()
+        let mergedDays = dailyStore.days
         if let activityAttr = formatAttributedActivity(dailyDays: mergedDays, hourlyIncreases: usageIncreases) {
             activityItem.isHidden = false
             activityItem.attributedTitle = activityAttr
@@ -2546,24 +2678,26 @@ class StatusBarController: NSObject {
         guard !isFetching else { return }
         detailSevenDay.isHidden = false
 
-        guard let keychainData = readKeychainData() else {
+        guard let credentialData = readCredentialData() else {
             setError("No creds")
-            detailFiveHour.title = "Cannot read credentials from Keychain"
-            detailSevenDay.title = "Ensure Claude Code is signed in"
+            let details = missingCredentialsDetails()
+            detailFiveHour.title = details.0
+            detailSevenDay.title = details.1
             detailSevenDay.isHidden = false
             return
         }
 
-        guard let token = parseToken(from: keychainData) else {
+        guard let token = parseToken(from: credentialData) else {
             setError("No creds")
-            detailFiveHour.title = "Cannot read credentials from Keychain"
-            detailSevenDay.title = "Ensure Claude Code is signed in"
+            let details = missingCredentialsDetails()
+            detailFiveHour.title = details.0
+            detailSevenDay.title = details.1
             detailSevenDay.isHidden = false
             return
         }
 
         // Proactive refresh: if token expires within 5 minutes, refresh first
-        let expiresAt = parseExpiresAt(from: keychainData)
+        let expiresAt = parseExpiresAt(from: credentialData)
         if let expiresAt, expiresAt.timeIntervalSinceNow < 300 {
             isFetching = true
             lastRefreshItem.title = "Refreshing token..."
@@ -2612,17 +2746,21 @@ class StatusBarController: NSObject {
                         self.updateItem.title = "Update available: \(info.tagName)"
                         if self.autoInstallFailedVersion == info.tagName {
                             self.updateItem.action = #selector(self.installUpdateManually)
+                            self.updateItem.isEnabled = true
                         } else {
                             self.updateItem.action = nil
+                            self.updateItem.isEnabled = false
                             self.installUpdate()
                         }
                     } else {
                         self.updateItem.title = "Update \(info.tagName) available on GitHub"
                         self.updateItem.action = nil
+                        self.updateItem.isEnabled = false
                     }
                 } else {
                     self.updateItem.title = "Up to date"
                     self.updateItem.action = #selector(self.checkForUpdates)
+                    self.updateItem.isEnabled = true
                 }
             }
         }.resume()
@@ -2644,6 +2782,7 @@ class StatusBarController: NSObject {
         isUpdating = true
         updateItem.title = "Downloading update\u{2026}"
         updateItem.action = nil
+        updateItem.isEnabled = false
 
         let task = URLSession.shared.downloadTask(with: downloadURL) { [weak self] tempURL, response, error in
             guard let tempURL, error == nil else {
@@ -2655,6 +2794,7 @@ class StatusBarController: NSObject {
                     self?.autoInstallFailedVersion = self?.pendingUpdateVersion
                     self?.updateItem.title = "Download failed"
                     self?.updateItem.action = #selector(self?.checkForUpdates)
+                    self?.updateItem.isEnabled = true
                 }
                 return
             }
@@ -2728,6 +2868,7 @@ class StatusBarController: NSObject {
                     self?.autoInstallFailedVersion = self?.pendingUpdateVersion
                     self?.updateItem.title = "Update failed"
                     self?.updateItem.action = #selector(self?.checkForUpdates)
+                    self?.updateItem.isEnabled = true
                 }
             }
         }
