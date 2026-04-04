@@ -93,6 +93,10 @@ struct CCUsageProvider: TimelineProvider {
         }
     }
 
+    private static let cachedDataKey = "cachedWidgetData"
+    private static let cachedDataTimestampKey = "cachedWidgetDataTimestamp"
+    private static let cacheMaxAge: TimeInterval = 240 // 4 minutes
+
     private func fetchData(completion: @escaping (WidgetData?) -> Void) {
         guard let defaults = UserDefaults(suiteName: appGroupID),
               let urlString = defaults.string(forKey: widgetURLKey),
@@ -100,14 +104,34 @@ struct CCUsageProvider: TimelineProvider {
             completion(nil)
             return
         }
+
+        // Return cached data if fresh enough
+        let cachedTimestamp = defaults.double(forKey: Self.cachedDataTimestampKey)
+        if cachedTimestamp > 0,
+           Date().timeIntervalSince1970 - cachedTimestamp < Self.cacheMaxAge,
+           let cachedData = defaults.data(forKey: Self.cachedDataKey),
+           let cached = try? JSONDecoder().decode(WidgetData.self, from: cachedData) {
+            completion(cached)
+            return
+        }
+
         URLSession.shared.dataTask(with: url) { data, response, _ in
             guard let data,
                   let http = response as? HTTPURLResponse,
-                  http.statusCode == 200 else {
-                completion(nil)
+                  http.statusCode == 200,
+                  let decoded = try? JSONDecoder().decode(WidgetData.self, from: data) else {
+                // Fall back to stale cache on network failure
+                if let cachedData = defaults.data(forKey: Self.cachedDataKey),
+                   let cached = try? JSONDecoder().decode(WidgetData.self, from: cachedData) {
+                    completion(cached)
+                } else {
+                    completion(nil)
+                }
                 return
             }
-            completion(try? JSONDecoder().decode(WidgetData.self, from: data))
+            defaults.set(data, forKey: Self.cachedDataKey)
+            defaults.set(Date().timeIntervalSince1970, forKey: Self.cachedDataTimestampKey)
+            completion(decoded)
         }.resume()
     }
 }
