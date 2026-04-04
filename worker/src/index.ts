@@ -59,7 +59,7 @@ async function handlePut(request: Request, env: Env): Promise<Response> {
 		if (!orgId) {
 			return new Response('Invalid token', { status: 401 });
 		}
-		await env.CCUSAGE_WIDGET.put(authCacheKey, orgId, { expirationTtl: 300 });
+		await env.CCUSAGE_WIDGET.put(authCacheKey, orgId, { expirationTtl: 3600 });
 	}
 
 	const canonicalKey = await sha256hex(orgId);

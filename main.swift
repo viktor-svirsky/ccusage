@@ -76,6 +76,15 @@ struct WidgetData: Codable {
     let fiveHourResetsAt: TimeInterval?
     let sevenDayResetsAt: TimeInterval?
     let updatedAt: TimeInterval
+
+    func hasSameValues(as other: WidgetData) -> Bool {
+        fiveHourUtilization == other.fiveHourUtilization
+            && sevenDayUtilization == other.sevenDayUtilization
+            && fiveHourPace == other.fiveHourPace
+            && sevenDayPace == other.sevenDayPace
+            && fiveHourResetsAt == other.fiveHourResetsAt
+            && sevenDayResetsAt == other.sevenDayResetsAt
+    }
 }
 
 private struct WidgetPushBody: Encodable {
@@ -1978,6 +1987,7 @@ class StatusBarController: NSObject {
     private var dailyStore = DailyUsageData()
     private let dailyStorePath = NSHomeDirectory() + "/.ccusage-daily.json"
     private var widgetKey: String?  // Canonical key from Worker (SHA-256 of org ID)
+    private var lastPushedWidgetData: WidgetData?
     private var qrWindow: NSWindow?
     private let lastRefreshItem = NSMenuItem(title: "Last refresh: never", action: nil, keyEquivalent: "")
     private var sessionStartDate = Date()
@@ -2196,7 +2206,9 @@ class StatusBarController: NSObject {
         guard let credData = readCredentialData(),
               let token = parseToken(from: credData),
               let url = URL(string: "\(widgetWorkerURL)/widget") else { return }
-        let body = WidgetPushBody(data: buildWidgetData(usage))
+        let widgetData = buildWidgetData(usage)
+        if let last = lastPushedWidgetData, last.hasSameValues(as: widgetData) { return }
+        let body = WidgetPushBody(data: widgetData)
         guard let bodyData = try? JSONEncoder().encode(body) else { return }
         var request = URLRequest(url: url)
         request.httpMethod = "PUT"
@@ -2207,7 +2219,10 @@ class StatusBarController: NSObject {
             guard let data,
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let key = json["key"] as? String, !key.isEmpty else { return }
-            DispatchQueue.main.async { self?.widgetKey = key }
+            DispatchQueue.main.async {
+                self?.widgetKey = key
+                self?.lastPushedWidgetData = widgetData
+            }
         }.resume()
     }
 
