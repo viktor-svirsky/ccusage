@@ -79,7 +79,6 @@ struct WidgetData: Codable {
 }
 
 private struct WidgetPushBody: Encodable {
-    let refreshTokenHash: String
     let data: WidgetData
 }
 
@@ -1978,7 +1977,7 @@ class StatusBarController: NSObject {
     private let insightsItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private var dailyStore = DailyUsageData()
     private let dailyStorePath = NSHomeDirectory() + "/.ccusage-daily.json"
-    private var widgetKey: String?  // SHA-256 of refresh token, computed on first push
+    private var widgetKey: String?  // Canonical key from Worker (SHA-256 of org ID)
     private var qrWindow: NSWindow?
     private let lastRefreshItem = NSMenuItem(title: "Last refresh: never", action: nil, keyEquivalent: "")
     private var sessionStartDate = Date()
@@ -2196,18 +2195,20 @@ class StatusBarController: NSObject {
     private func pushWidgetData(_ usage: UsageData) {
         guard let credData = readCredentialData(),
               let token = parseToken(from: credData),
-              let refreshToken = parseRefreshToken(from: credData),
               let url = URL(string: "\(widgetWorkerURL)/widget") else { return }
-        let key = sha256hex(refreshToken)
-        widgetKey = key
-        let body = WidgetPushBody(refreshTokenHash: key, data: buildWidgetData(usage))
+        let body = WidgetPushBody(data: buildWidgetData(usage))
         guard let bodyData = try? JSONEncoder().encode(body) else { return }
         var request = URLRequest(url: url)
         request.httpMethod = "PUT"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = bodyData
-        session.dataTask(with: request) { _, _, _ in }.resume()
+        session.dataTask(with: request) { [weak self] data, _, _ in
+            guard let data,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let key = json["key"] as? String, !key.isEmpty else { return }
+            DispatchQueue.main.async { self?.widgetKey = key }
+        }.resume()
     }
 
     private func widgetURL() -> String? {
@@ -2216,12 +2217,6 @@ class StatusBarController: NSObject {
     }
 
     @objc func showWidgetQRCode() {
-        // Eagerly compute widgetKey if not yet set
-        if widgetKey == nil,
-           let credData = readCredentialData(),
-           let refreshToken = parseRefreshToken(from: credData) {
-            widgetKey = sha256hex(refreshToken)
-        }
         guard let urlString = widgetURL() else {
             let alert = NSAlert()
             alert.messageText = "Not ready yet"
