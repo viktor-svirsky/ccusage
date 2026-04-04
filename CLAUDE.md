@@ -58,7 +58,7 @@ All pure logic functions are tested. `StatusBarController` methods that depend o
 - **Agent tracking**: `AgentTracker` scans `~/.claude/projects/` for ALL `.jsonl` session files, tracking multiple sessions simultaneously via `TrackedSession` structs. Each session independently tracks tokens, model, context window usage, shell request count, and sub-agents. Sessions are read incrementally (file offset per session). The menu shows all active sessions with per-session stats.
 - **Sentry error reporting**: Lightweight HTTP-based error reporting via Sentry's `/store/` API (no SDK). Reports API failures, OAuth errors, and update failures. Gated behind `#if !TESTING`. Fire-and-forget — never blocks UI.
 - **Daily usage tracking**: `DailyUsageData` stores per-day utilization deltas in `~/.ccusage-daily.json`. Local file stores `lastUtilization` for delta tracking.
-- **Widget sync**: On each API refresh, `pushWidgetData()` PUTs `WidgetData` JSON to a Cloudflare Worker (`ccusage-widget`). The Worker validates the OAuth access token against Anthropic's API (cached for 5 min) and stores data in KV keyed by `sha256(refreshToken)`. The iOS widget fetches via unauthenticated GET using the key URL shared via QR code. Worker source is in `worker/`.
+- **Widget sync**: On each API refresh, `pushWidgetData()` PUTs `WidgetData` JSON to a Cloudflare Worker (`ccusage-widget`). The Worker validates the OAuth access token against Anthropic's API (cached for 5 min) and derives a canonical key from `sha256(anthropic-organization-id)`, ensuring all machines on the same account share the same widget key. The iOS widget fetches via unauthenticated GET using the key URL shared via QR code. Worker source is in `worker/`.
 
 ## Version
 
