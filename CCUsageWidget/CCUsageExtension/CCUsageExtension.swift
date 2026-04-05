@@ -88,14 +88,14 @@ struct CCUsageProvider: TimelineProvider {
     func getTimeline(in context: Context, completion: @escaping (Timeline<CCUsageEntry>) -> Void) {
         fetchData { data in
             let entry = CCUsageEntry(date: Date(), data: data)
-            let next = Calendar.current.date(byAdding: .minute, value: 5, to: Date())!
+            let next = Calendar.current.date(byAdding: .minute, value: 2, to: Date())!
             completion(Timeline(entries: [entry], policy: .after(next)))
         }
     }
 
     private static let cachedDataKey = "cachedWidgetData"
     private static let cachedDataTimestampKey = "cachedWidgetDataTimestamp"
-    private static let cacheMaxAge: TimeInterval = 240 // 4 minutes
+    private static let cacheMaxAge: TimeInterval = 90 // 1.5 minutes
 
     private func fetchData(completion: @escaping (WidgetData?) -> Void) {
         guard let defaults = UserDefaults(suiteName: appGroupID),

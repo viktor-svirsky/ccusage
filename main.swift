@@ -16,7 +16,7 @@ let updateRepoName = "ccusage"
 private let allowedDownloadHosts: Set<String> = ["github.com", "objects.githubusercontent.com"]
 private let maxRetryInterval = 86400  // 1 day
 private let minRetryInterval = 60     // 1 minute
-let defaultFetchInterval: TimeInterval = 120  // 2 minutes
+let defaultFetchInterval: TimeInterval = 60  // 1 minute
 private let maxBackoffInterval: TimeInterval = 300  // 5 minutes
 let widgetWorkerURL = "https://ccusage-widget.g-spot.workers.dev"
 
