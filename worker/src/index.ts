@@ -1,5 +1,5 @@
 interface Env {
-	CCUSAGE_WIDGET: KVNamespace;
+	DB: D1Database;
 }
 
 interface PutBody {
@@ -12,6 +12,18 @@ interface PutBody {
 		sevenDayResetsAt: number | null;
 		updatedAt: number;
 	};
+}
+
+function sameExceptUpdatedAt(a: string, b: string): boolean {
+	try {
+		const objA = JSON.parse(a);
+		const objB = JSON.parse(b);
+		const { updatedAt: _a, ...restA } = objA;
+		const { updatedAt: _b, ...restB } = objB;
+		return JSON.stringify(restA) === JSON.stringify(restB);
+	} catch {
+		return false;
+	}
 }
 
 async function sha256hex(input: string): Promise<string> {
@@ -51,29 +63,56 @@ async function handlePut(request: Request, env: Env): Promise<Response> {
 
 	// Check auth cache to avoid validating on every request
 	const tokenHash = await sha256hex(accessToken);
-	const authCacheKey = `auth:${tokenHash}`;
-	let orgId = await env.CCUSAGE_WIDGET.get(authCacheKey);
+	const now = Math.floor(Date.now() / 1000);
+	const cached = await env.DB.prepare(
+		'SELECT org_id FROM auth_cache WHERE token_hash = ? AND expires_at > ?'
+	).bind(tokenHash, now).first<{ org_id: string }>();
+
+	let orgId: string | null = cached?.org_id ?? null;
 
 	if (!orgId) {
 		orgId = await validateToken(accessToken);
 		if (!orgId) {
 			return new Response('Invalid token', { status: 401 });
 		}
-		await env.CCUSAGE_WIDGET.put(authCacheKey, orgId, { expirationTtl: 3600 });
+		await env.DB.prepare(
+			'INSERT OR REPLACE INTO auth_cache (token_hash, org_id, expires_at) VALUES (?, ?, ?)'
+		).bind(tokenHash, orgId, now + 3600).run();
 	}
 
 	const canonicalKey = await sha256hex(orgId);
-	await env.CCUSAGE_WIDGET.put(`widget:${canonicalKey}`, JSON.stringify(body.data), { expirationTtl: 3600 });
+	const newValue = JSON.stringify(body.data);
+
+	// Read-before-write: free tier has 5M reads/day but only 100K writes/day.
+	const existing = await env.DB.prepare(
+		'SELECT data FROM widget_data WHERE key = ? AND expires_at > ?'
+	).bind(canonicalKey, now).first<{ data: string }>();
+
+	if (!existing || !sameExceptUpdatedAt(existing.data, newValue)) {
+		await env.DB.prepare(
+			'INSERT OR REPLACE INTO widget_data (key, data, expires_at) VALUES (?, ?, ?)'
+		).bind(canonicalKey, newValue, now + 3600).run();
+	}
+
+	// Opportunistic cleanup of expired rows (~1% of requests)
+	if (Math.random() < 0.01) {
+		env.DB.prepare('DELETE FROM auth_cache WHERE expires_at < ?').bind(now).run();
+		env.DB.prepare('DELETE FROM widget_data WHERE expires_at < ?').bind(now).run();
+	}
 
 	return Response.json({ key: canonicalKey });
 }
 
 async function handleGet(key: string, env: Env): Promise<Response> {
-	const data = await env.CCUSAGE_WIDGET.get(`widget:${key}`);
-	if (!data) {
+	const now = Math.floor(Date.now() / 1000);
+	const row = await env.DB.prepare(
+		'SELECT data FROM widget_data WHERE key = ? AND expires_at > ?'
+	).bind(key, now).first<{ data: string }>();
+
+	if (!row) {
 		return new Response('Not found', { status: 404 });
 	}
-	return new Response(data, {
+	return new Response(row.data, {
 		headers: { 'Content-Type': 'application/json' },
 	});
 }

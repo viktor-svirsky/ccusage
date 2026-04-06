@@ -2,6 +2,7 @@ name = "ccusage-widget"
 main = "src/index.ts"
 compatibility_date = "2024-12-01"
 
-[[kv_namespaces]]
-binding = "CCUSAGE_WIDGET"
-id = "88af5675fc9d486a8641105978d4eb88"
+[[d1_databases]]
+binding = "DB"
+database_name = "ccusage-widget"
+database_id = "64635c6b-0878-433f-97b7-b1316f28b458"
