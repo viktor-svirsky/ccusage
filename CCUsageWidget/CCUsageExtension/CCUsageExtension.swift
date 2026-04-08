@@ -11,6 +11,11 @@ struct WidgetData: Codable {
     let fiveHourResetsAt: TimeInterval?
     let sevenDayResetsAt: TimeInterval?
     let updatedAt: TimeInterval
+    // v2 fields — optional for backward compatibility
+    let extraUsageEnabled: Bool?
+    let depletionSeconds: Double?
+    let todayCost: Double?
+    let activeSessionCount: Int?
 
     static let placeholder = WidgetData(
         fiveHourUtilization: 45,
@@ -19,7 +24,11 @@ struct WidgetData: Codable {
         sevenDayPace: 0.8,
         fiveHourResetsAt: Date().addingTimeInterval(14400).timeIntervalSince1970,
         sevenDayResetsAt: Date().addingTimeInterval(4 * 86400).timeIntervalSince1970,
-        updatedAt: Date().timeIntervalSince1970
+        updatedAt: Date().timeIntervalSince1970,
+        extraUsageEnabled: nil,
+        depletionSeconds: nil,
+        todayCost: nil,
+        activeSessionCount: nil
     )
 }
 
@@ -31,7 +40,7 @@ private let widgetURLKey = "widgetURL"
 // MARK: - Helpers
 
 private func usageColor(_ pct: Double, pace: Double?) -> Color {
-    let effective = (pace ?? 1.0) * pct
+    let effective = pace.map { max(pct, pct * $0) } ?? pct
     if effective >= 80 { return .red }
     if effective >= 50 { return Color(red: 1, green: 0.55, blue: 0) }
     return .green
@@ -253,6 +262,91 @@ private struct NoDataView: View {
     }
 }
 
+// MARK: - Lock Screen: Circular
+
+@available(iOSApplicationExtension 16.0, *)
+private struct AccessoryCircularView: View {
+    let data: WidgetData
+
+    private struct Ring: View {
+        let pct: Double
+        let lineWidth: CGFloat
+        let color: Color
+
+        var body: some View {
+            Circle()
+                .stroke(color.opacity(0.2), lineWidth: lineWidth)
+                .overlay(
+                    Circle()
+                        .trim(from: 0, to: min(pct / 100, 1))
+                        .stroke(color, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                )
+        }
+    }
+
+    var body: some View {
+        ZStack {
+            Ring(pct: data.sevenDayUtilization, lineWidth: 3, color: .white.opacity(0.4))
+            Ring(pct: data.fiveHourUtilization, lineWidth: 2.5, color: .white)
+                .padding(5)
+            VStack(spacing: 0) {
+                Text("\(Int(data.fiveHourUtilization.rounded()))")
+                    .font(.system(size: 14, weight: .bold, design: .rounded))
+                Text("\(Int(data.sevenDayUtilization.rounded()))")
+                    .font(.system(size: 10, weight: .medium, design: .rounded))
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+// MARK: - Lock Screen: Rectangular
+
+@available(iOSApplicationExtension 16.0, *)
+private struct AccessoryRectangularView: View {
+    let data: WidgetData
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text("Claude")
+                    .font(.system(size: 11, weight: .semibold))
+                Spacer()
+                Text("\(paceSymbol(data.fiveHourPace))\(paceSymbol(data.sevenDayPace))")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+            HStack(spacing: 8) {
+                HStack(spacing: 2) {
+                    Text("5h").font(.system(size: 10)).foregroundStyle(.secondary)
+                    Text("\(Int(data.fiveHourUtilization.rounded()))%")
+                        .font(.system(size: 12, weight: .bold, design: .rounded))
+                }
+                HStack(spacing: 2) {
+                    Text("7d").font(.system(size: 10)).foregroundStyle(.secondary)
+                    Text("\(Int(data.sevenDayUtilization.rounded()))%")
+                        .font(.system(size: 12, weight: .bold, design: .rounded))
+                }
+                Spacer()
+            }
+            ProgressView(value: min(data.fiveHourUtilization / 100, 1))
+                .scaleEffect(x: 1, y: 0.7, anchor: .center)
+        }
+    }
+}
+
+// MARK: - Lock Screen: Inline
+
+@available(iOSApplicationExtension 16.0, *)
+private struct AccessoryInlineView: View {
+    let data: WidgetData
+
+    var body: some View {
+        Text("\(Int(data.fiveHourUtilization.rounded()))\(paceSymbol(data.fiveHourPace))\(Int(data.sevenDayUtilization.rounded()))\(paceSymbol(data.sevenDayPace))")
+    }
+}
+
 // MARK: - Entry View
 
 struct CCUsageEntryView: View {
@@ -264,7 +358,18 @@ struct CCUsageEntryView: View {
             if let d = entry.data {
                 switch family {
                 case .systemSmall: SmallView(data: d)
-                default:           MediumView(data: d)
+                case .systemMedium: MediumView(data: d)
+                default:
+                    if #available(iOSApplicationExtension 16.0, *) {
+                        switch family {
+                        case .accessoryCircular: AccessoryCircularView(data: d)
+                        case .accessoryRectangular: AccessoryRectangularView(data: d)
+                        case .accessoryInline: AccessoryInlineView(data: d)
+                        default: SmallView(data: d)
+                        }
+                    } else {
+                        SmallView(data: d)
+                    }
                 }
             } else {
                 NoDataView()
@@ -286,6 +391,14 @@ struct CCUsageExtensionBundle: Widget {
         }
         .configurationDisplayName("Claude Usage")
         .description("Claude Code limits synced from your Mac.")
-        .supportedFamilies([.systemSmall, .systemMedium])
+        .supportedFamilies(supportedFamilies)
+    }
+
+    private var supportedFamilies: [WidgetFamily] {
+        var families: [WidgetFamily] = [.systemSmall, .systemMedium]
+        if #available(iOSApplicationExtension 16.0, *) {
+            families.append(contentsOf: [.accessoryCircular, .accessoryRectangular, .accessoryInline])
+        }
+        return families
     }
 }

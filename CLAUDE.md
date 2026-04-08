@@ -10,7 +10,7 @@ CCUsage is a macOS menu bar app (macOS 13+) that displays Claude Code usage limi
 
 ```bash
 make build    # Compile .app bundle (includes icon generation)
-make test     # Run all unit tests (~738 tests)
+make test     # Run all unit tests (~776 tests)
 make install  # Build + copy to /Applications + launch
 make clean    # Remove build artifacts
 ```
@@ -19,30 +19,34 @@ Tests compile with `-DTESTING` flag, which gates out AppKit/system-dependent cod
 
 ## Architecture
 
-**Single-file app** — everything is in `main.swift` (~2900 lines), organized by `// MARK: -` sections:
+**Single-file app** — everything is in `main.swift` (~3060 lines), organized by `// MARK: -` sections:
 
 | Section | Lines | Purpose |
 |---------|-------|---------|
-| Constants | ~5-34 | API URLs, OAuth client ID, retry intervals, device ID |
-| API Types | ~36-68 | `UsageData`, `UsageWindow`, `ModelBreakdown`, `ExtraUsage` structs |
-| Usage Zones & Notifications | ~70-179 | Zone enum (green/yellow/red/depleted), notification logic |
-| Pure Logic | ~181-302 | Token/usage JSON parsing, formatting functions (all testable) |
-| Usage History | ~304-354 | Session-scoped ring buffer (60 entries, ~2h), sparkline/trend generation |
-| Pacing | ~356-468 | Pace calculation, depletion estimates, budget advice, heatmaps |
-| Daily Usage Tracking | ~469-575 | Persistent per-day usage deltas, weekly chart |
-| Agent Tracking | ~576-835 | JSONL parsing for agents, session tokens, model, bash uses, context window; `SessionTokens`, `AgentStats`, `TrackedSession`, formatting |
-| Agent Session Tracker | ~836-1375 | `AgentTracker` class — polls `~/.claude/projects/` for ALL live sessions, tracks tokens/model/context/shell per session |
-| Version Comparison | ~1533-1561 | Semver comparison for auto-update |
-| Sentry Error Reporting | ~1563-1600 | Lightweight HTTP-based error reporting to Sentry (no SDK), gated behind `#if !TESTING` |
-| Fetch Schedule | ~1610-1634 | Rate limit handling with exponential backoff |
-| Status Bar Controller | ~1636-2435 | `StatusBarController` — all AppKit UI, API calls, OAuth, auto-update, daily store persistence, iCloud sync |
-| Main | ~2437-2453 | Entry point — `#if TESTING` runs tests, else starts the app |
+| Constants | ~7-37 | API URLs, OAuth client ID, retry intervals, device ID |
+| API Types | ~38-94 | `UsageData`, `UsageWindow`, `ModelBreakdown`, `ExtraUsage` structs |
+| Usage Zones & Notifications | ~95-205 | Zone enum (green/yellow/red/depleted), notification logic |
+| Pure Logic | ~206-403 | Token/usage JSON parsing, formatting functions (all testable) |
+| Usage History | ~404-455 | Session-scoped ring buffer (60 entries, ~2h), sparkline/trend generation |
+| Pacing | ~456-623 | Pace calculation, depletion estimates, forecast line, heatmaps |
+| Daily Usage Tracking | ~624-746 | Persistent per-day usage deltas, weekly chart |
+| Agent Tracking | ~747-976 | JSONL parsing for agents, session tokens, model, bash uses, context window; `SessionTokens`, `AgentStats`, `TrackedSession`, formatting |
+| Token Cost Tracking | ~977-1298 | `TokenCostEntry`, `TokenCostTracker` — per-request cost estimation; compact formatters |
+| Codex Tracking | ~1299-1446 | `CodexThread`, `CodexSummary`, `CodexTracker` — polls Codex SQLite DB for active sessions |
+| Unified Sessions | ~1447-1611 | `formatUnifiedSessions` — renders combined Claude + Codex sessions in a single section |
+| Agent Session Tracker | ~1612-2010 | `AgentTracker` class — polls `~/.claude/projects/` for ALL live sessions, tracks tokens/model/context/shell per session |
+| Version Comparison | ~2011-2040 | Semver comparison for auto-update |
+| Sentry Error Reporting | ~2041-2078 | Lightweight HTTP-based error reporting to Sentry (no SDK), gated behind `#if !TESTING` |
+| Fetch Schedule | ~2087-2128 | Rate limit handling with exponential backoff |
+| Widget Data | ~2113-2128 | `WidgetData` struct and `buildWidgetData()` for iOS widget sync |
+| Status Bar Controller | ~2129-3041 | `StatusBarController` — all AppKit UI, API calls, OAuth, auto-update, daily store persistence, iCloud sync. Dropdown has 3 sections: Usage (compact 5h + 7-day with inline forecast/activity), Sessions (unified Claude + Codex), Token Costs (compact single line) |
+| Main | ~3042-3057 | Entry point — `#if TESTING` runs tests, else starts the app |
 
 **Data flow**: Keychain or `~/.claude/.credentials.json` (OAuth token) → Anthropic usage API → parse JSON → update `UsageData` → format menu items → push `WidgetData` to Cloudflare Worker. Agent tracking polls JSONL files independently on a 3-second timer, extracting agent events, per-turn token usage (`message.usage`), model identification, and cache hit rates. Daily usage deltas are persisted to `~/.ccusage-daily.json`.
 
 ## Testing
 
-`CCUsageTests.swift` (~3270 lines) uses a custom minimal test framework (no XCTest). Key functions:
+`CCUsageTests.swift` (~3554 lines) uses a custom minimal test framework (no XCTest). Key functions:
 - `check()`, `assertEqual()`, `assertNil()`, `assertNotNil()` — assertion helpers
 - `test()` / `suite()` — grouping (no setup/teardown)
 - `runAllTests()` — calls all `run*Tests()` functions, exits with code 0/1

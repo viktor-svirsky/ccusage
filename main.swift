@@ -1,6 +1,7 @@
 import Cocoa
 import CommonCrypto
 import ServiceManagement
+import SQLite3
 import UserNotifications
 
 // MARK: - Constants
@@ -76,6 +77,11 @@ struct WidgetData: Codable {
     let fiveHourResetsAt: TimeInterval?
     let sevenDayResetsAt: TimeInterval?
     let updatedAt: TimeInterval
+    // v2 fields — nil-safe for older workers
+    let extraUsageEnabled: Bool?
+    let depletionSeconds: Double?  // seconds until 7d depletion, nil if safe
+    let todayCost: Double?
+    let activeSessionCount: Int?
 
     func hasSameValues(as other: WidgetData) -> Bool {
         fiveHourUtilization == other.fiveHourUtilization
@@ -84,6 +90,10 @@ struct WidgetData: Codable {
             && sevenDayPace == other.sevenDayPace
             && fiveHourResetsAt == other.fiveHourResetsAt
             && sevenDayResetsAt == other.sevenDayResetsAt
+            && extraUsageEnabled == other.extraUsageEnabled
+            && depletionSeconds == other.depletionSeconds
+            && todayCost == other.todayCost
+            && activeSessionCount == other.activeSessionCount
     }
 }
 
@@ -361,6 +371,45 @@ func formatResetTime(_ date: Date?, relativeTo now: Date = Date()) -> String {
     return " (resets in \(minutes)m)"
 }
 
+func compactResetTime(_ date: Date?, relativeTo now: Date = Date()) -> String? {
+    guard let date else { return nil }
+    let seconds = date.timeIntervalSince(now)
+    if seconds <= 0 { return nil }
+    let totalMinutes = Int(seconds) / 60
+    let hours = totalMinutes / 60
+    let minutes = totalMinutes % 60
+    if hours > 24 {
+        let days = hours / 24
+        let remainingHours = hours % 24
+        if remainingHours == 0 { return "\(days)d" }
+        return "\(days)d \(remainingHours)h"
+    }
+    if hours > 0 {
+        if minutes == 0 { return "\(hours)h" }
+        return "\(hours)h \(minutes)m"
+    }
+    return "\(minutes)m"
+}
+
+func formatCompactFiveHour(window: UsageWindow, sparkline: String?, extraUsage: ExtraUsage?, now: Date = Date()) -> String {
+    let pct = formatValue(window.utilization)
+    var parts: [String] = ["5h: \(pct)%"]
+    if let pace = calculatePace(utilization: window.utilization, resetsAt: window.resetsAt, windowDuration: 5 * 3600, now: now) {
+        parts.append(String(format: "%.1fx", pace))
+    }
+    if let resetStr = compactResetTime(window.resetsAt, relativeTo: now) {
+        parts.append("resets \(resetStr)")
+    }
+    if let extra = extraUsage, extra.isEnabled {
+        parts.append("Extra on")
+    }
+    var result = parts.joined(separator: " \u{00B7} ")
+    if let spark = sparkline, !spark.isEmpty {
+        result += " \(spark)"
+    }
+    return result
+}
+
 // MARK: - Usage History
 
 struct UsageHistory {
@@ -446,18 +495,6 @@ func depletionEstimate(utilization: Double, resetsAt: Date?, windowDuration: Tim
     return "Depletes in ~\(minutes)m"
 }
 
-func budgetAdvice(utilization: Double, resetsAt: Date?, windowDuration: TimeInterval, now: Date = Date()) -> String? {
-    guard let resetsAt else { return nil }
-    let remaining = resetsAt.timeIntervalSince(now)
-    guard remaining > 60 else { return nil }
-    let pctLeft = 100.0 - utilization
-    guard pctLeft > 0 else { return "Budget exhausted" }
-    let hoursLeft = remaining / 3600.0
-    guard hoursLeft >= 0.5 else { return "Budget: use sparingly" }
-    let perHour = pctLeft / hoursLeft
-    return String(format: "Budget: %.1f%%/hour to last the window", perHour)
-}
-
 func dailyBreakdown(utilization: Double, resetsAt: Date?, windowDuration: TimeInterval, now: Date = Date()) -> String? {
     guard let resetsAt else { return nil }
     let remaining = resetsAt.timeIntervalSince(now)
@@ -470,6 +507,37 @@ func dailyBreakdown(utilization: Double, resetsAt: Date?, windowDuration: TimeIn
     let pctLeft = 100.0 - utilization
     let sustainablePerDay = daysLeft > 0.01 ? pctLeft / daysLeft : 0
     return String(format: "Daily rate: %.1f%%/day  •  Safe: %.1f%%/day", perDay, sustainablePerDay)
+}
+
+func formatForecastLine(utilization: Double, resetsAt: Date?, windowDuration: TimeInterval, now: Date = Date()) -> String? {
+    guard let resetsAt else { return nil }
+    let remaining = resetsAt.timeIntervalSince(now)
+    guard remaining > 0, remaining < windowDuration else { return nil }
+    let elapsed = windowDuration - remaining
+    guard elapsed > 60, utilization > 0.1 else { return nil }
+    if utilization >= 100 { return "Depleted" }
+    let elapsedDays = elapsed / 86400.0
+    let ratePerDay = utilization / elapsedDays
+    let daysLeft = remaining / 86400.0
+    let pctLeft = 100.0 - utilization
+    let budgetPerDay = daysLeft > 0 ? pctLeft / daysLeft : 0
+    let rateStr = String(format: "%.1f%%/day of %.1f%%/day budget", ratePerDay, budgetPerDay)
+    let ratePerSec = utilization / elapsed
+    let secsToFull = (100.0 - utilization) / ratePerSec
+    if secsToFull > remaining { return "Safe \u{00B7} \(rateStr)" }
+    let hours = Int(secsToFull) / 3600
+    let minutes = (Int(secsToFull) % 3600) / 60
+    let timeStr: String
+    if hours > 24 {
+        let days = hours / 24
+        let remHours = hours % 24
+        timeStr = remHours == 0 ? "\(days)d" : "\(days)d \(remHours)h"
+    } else if hours > 0 {
+        timeStr = "\(hours)h \(minutes)m"
+    } else {
+        timeStr = "\(minutes)m"
+    }
+    return "Depletes in ~\(timeStr) \u{00B7} \(rateStr)"
 }
 
 func paceIndicator(pace: Double?) -> String {
@@ -523,9 +591,46 @@ func hourlyHeatmapLabel(now: Date = Date()) -> String {
 func formatStatusLine(_ usage: UsageData, history: UsageHistory = UsageHistory()) -> String {
     let h5 = usage.fiveHour.utilization
     let d7 = usage.sevenDay.utilization
+    let h5Pace = calculatePace(utilization: h5, resetsAt: usage.fiveHour.resetsAt, windowDuration: 5 * 3600)
     let d7Pace = calculatePace(utilization: d7, resetsAt: usage.sevenDay.resetsAt, windowDuration: 7 * 86400)
-    let indicator = paceIndicator(pace: d7Pace)
-    return "\(formatValue(h5))/\(formatValue(d7))\(indicator)"
+    let h5Indicator = paceIndicator(pace: h5Pace)
+    let d7Indicator = paceIndicator(pace: d7Pace)
+    let sep = h5Indicator.isEmpty ? " " : ""
+    return "\(formatValue(h5))\(h5Indicator)\(sep)\(formatValue(d7))\(d7Indicator)"
+}
+
+func formatDepletionTime(secsToFull: Double) -> String {
+    let hours = Int(secsToFull) / 3600
+    let minutes = (Int(secsToFull) % 3600) / 60
+    if hours > 24 {
+        let days = hours / 24
+        let remHours = hours % 24
+        return remHours == 0 ? "\(days)d" : "\(days)d \(remHours)h"
+    }
+    if hours > 0 { return "\(hours)h \(minutes)m" }
+    return "\(minutes)m"
+}
+
+func formatAdaptiveStatusLine(usage: UsageData, history: UsageHistory = UsageHistory(), now: Date = Date()) -> String {
+    let d7 = usage.sevenDay.utilization
+    if d7 >= 100 {
+        return "\u{2716} depleted"
+    }
+    let windowDuration: TimeInterval = 7 * 86400
+    if let resetsAt = usage.sevenDay.resetsAt {
+        let remaining = resetsAt.timeIntervalSince(now)
+        if remaining > 0, remaining < windowDuration {
+            let elapsed = windowDuration - remaining
+            if elapsed > 60, d7 > 0.1 {
+                let ratePerSec = d7 / elapsed
+                let secsToFull = (100.0 - d7) / ratePerSec
+                if secsToFull < remaining {
+                    return "\u{26A0} \(formatDepletionTime(secsToFull: secsToFull)) left"
+                }
+            }
+        }
+    }
+    return formatStatusLine(usage, history: history)
 }
 
 // MARK: - Daily Usage Tracking
@@ -760,6 +865,8 @@ func formatAgentDuration(_ agent: TrackedAgent, now: Date = Date()) -> String {
 }
 
 func formatTokenCount(_ tokens: Int) -> String {
+    if tokens >= 1_000_000_000 { return String(format: "%.1fB", Double(tokens) / 1_000_000_000.0) }
+    if tokens >= 100_000_000 { return "\(tokens / 1_000_000)M" }
     if tokens >= 1_000_000 { return String(format: "%.1fM", Double(tokens) / 1_000_000.0) }
     if tokens >= 1000 { return "\(tokens / 1000)K" }
     return "\(tokens)"
@@ -771,7 +878,9 @@ func projectNameFromSessionPath(_ path: String, homeDir: String = NSHomeDirector
     let homePrefix = homeDir.replacingOccurrences(of: "/", with: "-") + "-"
     guard dirName.hasPrefix(homePrefix) else { return nil }
     let afterHome = String(dirName.dropFirst(homePrefix.count))
-    guard let firstDash = afterHome.firstIndex(of: "-") else { return nil }
+    guard let firstDash = afterHome.firstIndex(of: "-") else {
+        return afterHome.isEmpty ? nil : afterHome
+    }
     let project = String(afterHome[afterHome.index(after: firstDash)...])
     return project.isEmpty ? nil : project
 }
@@ -913,6 +1022,7 @@ struct TokenCostEntry {
     var totalCost: Double = 0
 
     var totalInputTokens: Int { inputTokens + cacheWriteTokens + cacheReadTokens }
+    var totalTokens: Int { inputTokens + outputTokens + cacheWriteTokens + cacheReadTokens }
 
     var cacheHitRate: Double? {
         let total = Double(totalInputTokens)
@@ -935,11 +1045,17 @@ struct TokenCostEntry {
 }
 
 class TokenCostTracker {
-    private var dailyCosts: [String: TokenCostEntry] = [:]  // "YYYY-MM-DD" -> entry
+    private var dailyCosts: [String: TokenCostEntry] = [:]  // "YYYY-MM-DD" (local tz) -> entry
     private var fileOffsets: [String: UInt64] = [:]
     private let claudeDir: String
     private var lastFullScan: Date = .distantPast
     private let scanInterval: TimeInterval = 60
+    private let isoFormatterFrac: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+    private let isoFormatterPlain = ISO8601DateFormatter()
 
     init(claudeDir: String? = nil) {
         self.claudeDir = claudeDir ?? (NSHomeDirectory() + "/.claude/projects")
@@ -981,10 +1097,7 @@ class TokenCostTracker {
     }
 
     private func dateString(from date: Date) -> String {
-        let f = DateFormatter()
-        f.dateFormat = "yyyy-MM-dd"
-        f.timeZone = TimeZone(identifier: "UTC")
-        return f.string(from: date)
+        dailyDateFormatter.string(from: date)
     }
 
     /// Process raw JSONL data (for testing)
@@ -1008,7 +1121,12 @@ class TokenCostTracker {
         let cacheRead = usage["cache_read_input_tokens"] as? Int ?? 0
         guard input > 0 || output > 0 || cacheWrite > 0 || cacheRead > 0 else { return }
         let model = (message?["model"] as? String) ?? (json["model"] as? String) ?? "unknown"
-        let dateKey = String(timestamp.prefix(10))
+        let dateKey: String
+        if let date = isoFormatterFrac.date(from: timestamp) ?? isoFormatterPlain.date(from: timestamp) {
+            dateKey = dateString(from: date)
+        } else {
+            dateKey = String(timestamp.prefix(10))
+        }
         dailyCosts[dateKey, default: TokenCostEntry()].add(model: model, input: input, output: output, cacheWrite: cacheWrite, cacheRead: cacheRead)
     }
 
@@ -1091,61 +1209,85 @@ func formatCost(_ cost: Double) -> String {
     return String(format: "$%.2f", cost)
 }
 
-func formatTokenCosts(today: TokenCostEntry, week: TokenCostEntry, month: TokenCostEntry) -> String {
-    var lines = ["Token Costs (est.)"]
+func formatCompactCost(_ cost: Double) -> String {
+    if cost >= 1000 {
+        return String(format: "$%.1fK", cost / 1000)
+    }
+    return String(format: "$%.2f", cost)
+}
+
+func formatCompactTokenCosts(today: TokenCostEntry, week: TokenCostEntry, month: TokenCostEntry) -> String {
     guard week.requests > 0 else {
-        lines.append("  No usage data yet")
-        return lines.joined(separator: "\n")
+        return "Costs: No data yet"
     }
-
-    func row(_ label: String, _ entry: TokenCostEntry, showCache: Bool = false) -> String {
-        var parts = ["\(formatCost(entry.totalCost))  \(formatTokenCount(entry.requests)) req"]
-        if showCache, let rate = entry.cacheHitRate {
-            parts.append(String(format: "%.0f%% cache", rate * 100))
-        }
-        return "  \(label)  \(parts.joined(separator: " \u{00B7} "))"
-    }
-
+    var segments: [String] = []
     if today.requests > 0 {
-        lines.append(row("Today", today, showCache: true))
+        segments.append("Today \(formatTokenCount(today.totalTokens)) \(formatCompactCost(today.totalCost))")
     }
-    lines.append(row("7-day", week))
-    lines.append(row("30-day", month))
-    return lines.joined(separator: "\n")
+    segments.append("7d \(formatTokenCount(week.totalTokens)) \(formatCompactCost(week.totalCost))")
+    segments.append("30d \(formatTokenCount(month.totalTokens)) \(formatCompactCost(month.totalCost))")
+    if today.requests > 0, let rate = today.cacheHitRate {
+        segments.append("\(Int(rate * 100))% cache")
+    }
+    return "Costs: " + segments.joined(separator: " \u{00B7} ")
 }
 
 #if !TESTING
-func formatAttributedTokenCosts(today: TokenCostEntry, week: TokenCostEntry, month: TokenCostEntry) -> NSAttributedString {
+func formatAttributedCompactTokenCosts(today: TokenCostEntry, week: TokenCostEntry, month: TokenCostEntry) -> NSAttributedString {
     let result = NSMutableAttributedString()
-    let font = NSFont.systemFont(ofSize: 13)
-    let smallFont = NSFont.systemFont(ofSize: 11)
-    let monoFont = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+    let headerFont = NSFont.systemFont(ofSize: 13)
     let boldFont = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .bold)
+    let dimAttrs: [NSAttributedString.Key: Any] = [
+        .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular),
+        .foregroundColor: NSColor.secondaryLabelColor
+    ]
+    let boldAttrs: [NSAttributedString.Key: Any] = [
+        .font: boldFont,
+        .foregroundColor: NSColor.labelColor
+    ]
 
-    result.append(NSAttributedString(string: "Token Costs (est.)", attributes: [.font: font]))
+    result.append(NSAttributedString(string: "Costs:", attributes: [.font: headerFont, .foregroundColor: NSColor.secondaryLabelColor]))
 
     guard week.requests > 0 else {
-        result.append(NSAttributedString(string: "\n  No usage data yet", attributes: [.font: smallFont, .foregroundColor: NSColor.tertiaryLabelColor]))
+        result.append(NSAttributedString(string: " No data yet", attributes: dimAttrs))
         return result
     }
 
-    func row(_ label: String, _ entry: TokenCostEntry, showCache: Bool = false) {
-        result.append(NSAttributedString(string: "\n  \(label)  ", attributes: [.font: smallFont, .foregroundColor: NSColor.secondaryLabelColor]))
-        result.append(NSAttributedString(string: formatCost(entry.totalCost), attributes: [.font: boldFont, .foregroundColor: NSColor.labelColor]))
-        result.append(NSAttributedString(string: "  \(formatTokenCount(entry.requests)) req", attributes: [.font: monoFont, .foregroundColor: NSColor.tertiaryLabelColor]))
-        if showCache, let rate = entry.cacheHitRate {
-            result.append(NSAttributedString(string: String(format: " \u{00B7} %.0f%% cache", rate * 100), attributes: [.font: monoFont, .foregroundColor: NSColor.tertiaryLabelColor]))
+    result.append(NSAttributedString(string: " ", attributes: dimAttrs))
+
+    var isFirst = true
+    func appendSep() {
+        if !isFirst {
+            result.append(NSAttributedString(string: " \u{00B7} ", attributes: dimAttrs))
         }
+        isFirst = false
     }
 
     if today.requests > 0 {
-        row("Today ", today, showCache: true)
+        appendSep()
+        result.append(NSAttributedString(string: "Today ", attributes: dimAttrs))
+        result.append(NSAttributedString(string: "\(formatTokenCount(today.totalTokens)) ", attributes: dimAttrs))
+        result.append(NSAttributedString(string: formatCompactCost(today.totalCost), attributes: boldAttrs))
     }
-    row("7-day ", week)
-    row("30-day", month)
+
+    appendSep()
+    result.append(NSAttributedString(string: "7d ", attributes: dimAttrs))
+    result.append(NSAttributedString(string: "\(formatTokenCount(week.totalTokens)) ", attributes: dimAttrs))
+    result.append(NSAttributedString(string: formatCompactCost(week.totalCost), attributes: boldAttrs))
+
+    appendSep()
+    result.append(NSAttributedString(string: "30d ", attributes: dimAttrs))
+    result.append(NSAttributedString(string: "\(formatTokenCount(month.totalTokens)) ", attributes: dimAttrs))
+    result.append(NSAttributedString(string: formatCompactCost(month.totalCost), attributes: boldAttrs))
+
+    if today.requests > 0, let rate = today.cacheHitRate {
+        appendSep()
+        result.append(NSAttributedString(string: "\(Int(rate * 100))% cache", attributes: dimAttrs))
+    }
 
     return result
 }
+
 #endif
 
 func modelDisplayName(_ model: String) -> String {
@@ -1182,72 +1324,244 @@ func formatAgentStatsLine(_ stats: AgentStats) -> String {
     return "Session: \(stats.completedCount) agents \u{00B7} \(formatTokenCount(stats.totalTokens)) tok \u{00B7} avg \(avgSecs)s"
 }
 
-func formatAgentSection(_ agents: [TrackedAgent], projectName: String? = nil, stats: AgentStats = AgentStats(), isStale: Bool = false, sessionTokens: SessionTokens = SessionTokens(), currentModel: String? = nil, shellRequestCount: Int = 0, contextTokens: Int = 0, contextWindowMax: Int = 0, now: Date = Date()) -> String {
-    let sessionStatsLine = formatSessionStats(sessionTokens, model: currentModel)
-    if isStale {
-        var lines = ["Session \u{00B7} session idle"]
-        if !sessionStatsLine.isEmpty { lines.append("  \(sessionStatsLine)") }
-        let agentStatsLine = formatAgentStatsLine(stats)
-        if !agentStatsLine.isEmpty { lines.append("  \(agentStatsLine)") }
-        return lines.joined(separator: "\n")
-    }
-    guard !agents.isEmpty || sessionTokens.totalTokens > 0 else { return "" }
-    let running = agents.filter { $0.isRunning }.count
-    let done = agents.count - running
+// MARK: - Codex Tracking
 
-    var header = "Session"
-    if let name = projectName { header += " \u{00B7} \(name)" }
-    var parts: [String] = []
-    if running > 0 { parts.append("\(running) running") }
-    if done > 0 { parts.append("\(done) done") }
-    if !parts.isEmpty { header += " (\(parts.joined(separator: " \u{00B7} ")))" }
+struct CodexThread: Equatable {
+    let id: String
+    let title: String
+    let model: String?
+    let tokensUsed: Int
+    let createdAt: Date
+    let updatedAt: Date
+    let cwd: String
 
-    var lines = [header]
-    if !sessionStatsLine.isEmpty { lines.append("  \(sessionStatsLine)") }
-    var detailParts: [String] = []
-    if sessionTokens.totalTokens > 0 { detailParts.append("\(formatTokenCount(sessionTokens.totalTokens)) tokens") }
-    if contextWindowMax > 0 { detailParts.append("\(formatTokenCount(contextTokens))/\(formatTokenCount(contextWindowMax)) ctx") }
-    if shellRequestCount > 0 { detailParts.append("\(shellRequestCount) shell") }
-    if !detailParts.isEmpty { lines.append("  \(detailParts.joined(separator: " \u{00B7} "))") }
-    for agent in agents {
-        let status = agent.isRunning ? "\u{25CF}" : "\u{2713}"
-        let duration = formatAgentDuration(agent, now: now)
-        let tokens = agent.totalTokens.map { " \(formatTokenCount($0)) tok" } ?? ""
-        let state = agent.isRunning ? " running" : ""
-        lines.append("  \(status) \(agent.description)  \(duration)\(tokens)\(state)")
+    var projectName: String {
+        let name = (cwd as NSString).lastPathComponent
+        return name.isEmpty ? cwd : name
     }
-    let agentStatsLine = formatAgentStatsLine(stats)
-    if !agentStatsLine.isEmpty { lines.append("  \(agentStatsLine)") }
-    return lines.joined(separator: "\n")
+
+    func isActive(now: Date = Date(), threshold: TimeInterval = 300) -> Bool {
+        now.timeIntervalSince(updatedAt) < threshold
+    }
 }
 
-func formatMultiSessionSection(_ sessions: [TrackedSession], now: Date = Date()) -> String {
-    guard !sessions.isEmpty else { return "" }
-    let nonStale = sessions.filter { !$0.isStale }
-    let headerCount = nonStale.isEmpty ? sessions.count : nonStale.count
-    let headerLabel = nonStale.isEmpty ? "idle" : "active"
-    var lines = ["Sessions (\(headerCount) \(headerLabel))"]
-    for session in sessions {
-        var header = "  "
-        if let name = session.projectName { header += name } else { header += "unknown" }
-        if let model = session.currentModel { header += " \u{00B7} \(modelDisplayName(model))" }
-        if session.isStale { header += " \u{00B7} idle" }
-        lines.append(header)
-        var detailParts: [String] = []
-        if session.sessionTokens.totalTokens > 0 { detailParts.append("\(formatTokenCount(session.sessionTokens.totalTokens)) tokens") }
-        if session.contextWindowMax > 0 { detailParts.append("\(formatTokenCount(session.lastContextTokens))/\(formatTokenCount(session.contextWindowMax)) ctx") }
-        if session.shellRequestCount > 0 { detailParts.append("\(session.shellRequestCount) shell") }
-        if !detailParts.isEmpty { lines.append("    \(detailParts.joined(separator: " \u{00B7} "))") }
-        for agent in session.agents {
-            let status = agent.isRunning ? "\u{25CF}" : "\u{2713}"
-            let duration = formatAgentDuration(agent, now: now)
-            let tokens = agent.totalTokens.map { " \(formatTokenCount($0)) tok" } ?? ""
-            let state = agent.isRunning ? " running" : ""
-            lines.append("    \(status) \(agent.description)  \(duration)\(tokens)\(state)")
+struct CodexSummary: Equatable {
+    let todayTokens: Int
+    let todaySessions: Int
+    let activeSessions: [CodexThread]
+}
+
+func buildCodexSummary(from threads: [CodexThread], now: Date = Date()) -> CodexSummary? {
+    guard !threads.isEmpty else { return nil }
+    let todayStr = dailyDateString(now)
+
+    var todayTokens = 0
+    var todaySessions = 0
+    var active: [CodexThread] = []
+
+    for thread in threads {
+        let createdDayStr = dailyDateString(thread.createdAt)
+        if createdDayStr == todayStr {
+            todayTokens += thread.tokensUsed
+            todaySessions += 1
+        }
+        if thread.isActive(now: now) {
+            active.append(thread)
         }
     }
+
+    return CodexSummary(
+        todayTokens: todayTokens,
+        todaySessions: todaySessions,
+        activeSessions: active
+    )
+}
+
+class CodexTracker {
+    private let dbPath: String
+    private(set) var lastSummary: CodexSummary?
+
+    init(dbPath: String? = nil) {
+        self.dbPath = dbPath ?? (NSHomeDirectory() + "/.codex/state_5.sqlite")
+    }
+
+    @discardableResult
+    func poll() -> CodexSummary? {
+        guard FileManager.default.fileExists(atPath: dbPath) else {
+            lastSummary = nil
+            return nil
+        }
+
+        var db: OpaquePointer?
+        guard sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
+            lastSummary = nil
+            return nil
+        }
+        defer { sqlite3_close(db) }
+
+        let sql = """
+            SELECT id, title, model, tokens_used, created_at, updated_at, cwd
+            FROM threads
+            WHERE archived = 0
+            ORDER BY updated_at DESC
+            """
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            lastSummary = nil
+            return nil
+        }
+        defer { sqlite3_finalize(stmt) }
+
+        var threads: [CodexThread] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            guard let idPtr = sqlite3_column_text(stmt, 0),
+                  let titlePtr = sqlite3_column_text(stmt, 1),
+                  let cwdPtr = sqlite3_column_text(stmt, 6) else { continue }
+            let id = String(cString: idPtr)
+            let title = String(cString: titlePtr)
+            let model: String? = {
+                guard sqlite3_column_type(stmt, 2) != SQLITE_NULL,
+                      let ptr = sqlite3_column_text(stmt, 2) else { return nil }
+                return String(cString: ptr)
+            }()
+            let tokensUsed = Int(sqlite3_column_int64(stmt, 3))
+            let rawCreated = sqlite3_column_int64(stmt, 4)
+            let rawUpdated = sqlite3_column_int64(stmt, 5)
+            let createdAt = Date(timeIntervalSince1970: rawCreated > 32_503_680_000 ? Double(rawCreated) / 1000.0 : Double(rawCreated))
+            let updatedAt = Date(timeIntervalSince1970: rawUpdated > 32_503_680_000 ? Double(rawUpdated) / 1000.0 : Double(rawUpdated))
+            let cwd = String(cString: cwdPtr)
+
+            threads.append(CodexThread(
+                id: id, title: title, model: model,
+                tokensUsed: tokensUsed, createdAt: createdAt,
+                updatedAt: updatedAt, cwd: cwd
+            ))
+        }
+
+        let summary = buildCodexSummary(from: threads)
+        lastSummary = summary
+        return summary
+    }
+}
+
+
+// MARK: - Unified Sessions
+
+func formatSessionCost(tokens: SessionTokens, model: String?) -> String {
+    guard tokens.totalTokens > 0, let model, !model.isEmpty else { return "" }
+    let pricing = pricingForModel(model)
+    let cost = Double(tokens.inputTokens) / 1_000_000 * pricing.inputPerMTok
+        + Double(tokens.outputTokens) / 1_000_000 * pricing.outputPerMTok
+        + Double(tokens.cacheCreationTokens) / 1_000_000 * pricing.cacheWritePerMTok
+        + Double(tokens.cacheReadTokens) / 1_000_000 * pricing.cacheReadPerMTok
+    if cost >= 1.0 { return "~$\(Int(cost))" }
+    if cost >= 0.01 { return String(format: "~$%.2f", cost) }
+    return "~$0"
+}
+
+func formatUnifiedSessions(claudeSessions: [TrackedSession], codex: CodexSummary?, now: Date = Date()) -> String {
+    let codexHasContent = codex.map { !$0.activeSessions.isEmpty } ?? false
+    guard !claudeSessions.isEmpty || codexHasContent else { return "" }
+
+    var lines: [String] = []
+
+    // Claude sessions — each as a direct line
+    for session in claudeSessions {
+        var parts: [String] = []
+        parts.append(session.projectName ?? "unknown")
+        if let model = session.currentModel { parts.append(modelDisplayName(model)) }
+        if session.sessionTokens.totalTokens > 0 {
+            parts.append("\(formatTokenCount(session.sessionTokens.totalTokens)) tok")
+        }
+        let costStr = formatSessionCost(tokens: session.sessionTokens, model: session.currentModel)
+        if !costStr.isEmpty { parts.append(costStr) }
+        if session.contextWindowMax > 0 {
+            parts.append("\(formatTokenCount(session.lastContextTokens))/\(formatTokenCount(session.contextWindowMax)) ctx")
+        }
+        if session.isStale { parts.append("idle") }
+        lines.append(parts.joined(separator: " \u{00B7} "))
+
+        // Show most recent running agent with pencil prefix
+        if let runningAgent = session.agents.last(where: { $0.isRunning }) {
+            let duration = formatAgentDuration(runningAgent, now: now)
+            lines.append("  \u{270E} \(runningAgent.description)  \(duration)")
+        }
+    }
+
+    // Codex sessions — each as a direct line
+    if let codex = codex {
+        for thread in codex.activeSessions {
+            var parts: [String] = ["Codex"]
+            if let model = thread.model { parts.append(model) }
+            parts.append("\(formatTokenCount(thread.tokensUsed)) tok")
+            parts.append(thread.projectName)
+            lines.append(parts.joined(separator: " \u{00B7} "))
+        }
+    }
+
     return lines.joined(separator: "\n")
 }
+
+#if !TESTING
+func formatAttributedUnifiedSessions(claudeSessions: [TrackedSession], codex: CodexSummary?, now: Date = Date()) -> NSAttributedString {
+    let result = NSMutableAttributedString()
+    let smallFont = NSFont.systemFont(ofSize: 11)
+    let monoFont = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+    let blue = NSColor(red: 0.22, green: 0.74, blue: 0.97, alpha: 1.0)      // #38bdf8
+    let dim = NSColor.secondaryLabelColor
+    let darkDim = NSColor.tertiaryLabelColor
+
+    var isFirst = true
+
+    // Claude sessions — each as a direct line
+    for session in claudeSessions {
+        let name = session.projectName ?? "unknown"
+        if !isFirst { result.append(NSAttributedString(string: "\n", attributes: [.font: smallFont])) }
+        isFirst = false
+        result.append(NSAttributedString(string: name, attributes: [.font: smallFont]))
+        if let model = session.currentModel {
+            result.append(NSAttributedString(string: " \u{00B7} \(modelDisplayName(model))", attributes: [.font: smallFont, .foregroundColor: dim]))
+        }
+        if session.sessionTokens.totalTokens > 0 {
+            result.append(NSAttributedString(string: " \u{00B7} \(formatTokenCount(session.sessionTokens.totalTokens)) tok", attributes: [.font: monoFont, .foregroundColor: dim]))
+        }
+        let costStr = formatSessionCost(tokens: session.sessionTokens, model: session.currentModel)
+        if !costStr.isEmpty {
+            result.append(NSAttributedString(string: " \u{00B7} \(costStr)", attributes: [.font: smallFont]))
+        }
+        if session.contextWindowMax > 0 {
+            result.append(NSAttributedString(string: " \u{00B7} \(formatTokenCount(session.lastContextTokens))/\(formatTokenCount(session.contextWindowMax)) ctx", attributes: [.font: monoFont, .foregroundColor: darkDim]))
+        }
+        if session.isStale {
+            result.append(NSAttributedString(string: " \u{00B7} idle", attributes: [.font: smallFont, .foregroundColor: darkDim]))
+        }
+
+        // Show most recent running agent
+        if let runningAgent = session.agents.last(where: { $0.isRunning }) {
+            let duration = formatAgentDuration(runningAgent, now: now)
+            result.append(NSAttributedString(string: "\n  ", attributes: [.font: smallFont]))
+            result.append(NSAttributedString(string: "\u{270E} \(runningAgent.description)", attributes: [.font: smallFont, .foregroundColor: NSColor.systemOrange]))
+            result.append(NSAttributedString(string: "  \(duration)", attributes: [.font: monoFont, .foregroundColor: dim]))
+        }
+    }
+
+    // Codex sessions — each as a direct line
+    if let codex = codex {
+        for thread in codex.activeSessions {
+            if !isFirst { result.append(NSAttributedString(string: "\n", attributes: [.font: smallFont])) }
+            isFirst = false
+            result.append(NSAttributedString(string: "Codex", attributes: [.font: smallFont, .foregroundColor: blue]))
+            if let model = thread.model {
+                result.append(NSAttributedString(string: " \u{00B7} \(model)", attributes: [.font: smallFont, .foregroundColor: dim]))
+            }
+            result.append(NSAttributedString(string: " \u{00B7} \(formatTokenCount(thread.tokensUsed)) tok", attributes: [.font: monoFont, .foregroundColor: dim]))
+            result.append(NSAttributedString(string: " \u{00B7} \(thread.projectName)", attributes: [.font: smallFont, .foregroundColor: dim]))
+        }
+    }
+
+    return result
+}
+#endif
 
 // MARK: - Agent Session Tracker
 
@@ -1423,8 +1737,17 @@ class AgentTracker {
 
 #if !TESTING
 private let colorRed = NSColor(red: 0.9, green: 0.2, blue: 0.2, alpha: 1.0)
+private let colorOrange = NSColor(red: 0.9, green: 0.55, blue: 0.1, alpha: 1.0)
 private let colorYellow = NSColor(red: 0.85, green: 0.65, blue: 0.0, alpha: 1.0)
 private let colorGreen = NSColor(red: 0.2, green: 0.7, blue: 0.3, alpha: 1.0)
+private let colorBlue = NSColor(red: 0.25, green: 0.55, blue: 0.95, alpha: 1.0)
+
+func paceColor(_ pace: Double?) -> NSColor {
+    guard let pace else { return NSColor.secondaryLabelColor }
+    if pace > 1.2 { return colorRed }
+    if pace < 0.8 { return colorGreen }
+    return NSColor.secondaryLabelColor
+}
 
 func requestNotificationPermission() {
     UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
@@ -1464,284 +1787,157 @@ func usageColor(for pct: Double, pace: Double? = nil) -> NSColor {
 }
 
 func formatAttributedStatusLine(_ usage: UsageData, history: UsageHistory = UsageHistory()) -> NSAttributedString {
+    let h5 = usage.fiveHour.utilization
     let d7 = usage.sevenDay.utilization
+    let h5Pace = calculatePace(utilization: h5, resetsAt: usage.fiveHour.resetsAt, windowDuration: 5 * 3600)
     let d7Pace = calculatePace(utilization: d7, resetsAt: usage.sevenDay.resetsAt, windowDuration: 7 * 86400)
 
     let font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
-    let attrs: [NSAttributedString.Key: Any] = [.font: font]
 
     let result = NSMutableAttributedString()
-    result.append(NSAttributedString(string: "\(formatValue(usage.fiveHour.utilization))/\(formatValue(d7))", attributes: attrs))
-    let indicator = paceIndicator(pace: d7Pace)
-    if !indicator.isEmpty {
-        result.append(NSAttributedString(string: indicator, attributes: attrs))
+    let h5Color = usageColor(for: h5, pace: h5Pace)
+    result.append(NSAttributedString(string: "\(formatValue(h5))", attributes: [.font: font, .foregroundColor: h5Color]))
+    let h5Indicator = paceIndicator(pace: h5Pace)
+    if !h5Indicator.isEmpty {
+        result.append(NSAttributedString(string: h5Indicator, attributes: [.font: font, .foregroundColor: paceColor(h5Pace)]))
+    } else {
+        result.append(NSAttributedString(string: " ", attributes: [.font: font]))
+    }
+    let d7Color = usageColor(for: d7, pace: d7Pace)
+    result.append(NSAttributedString(string: "\(formatValue(d7))", attributes: [.font: font, .foregroundColor: d7Color]))
+    let d7Indicator = paceIndicator(pace: d7Pace)
+    if !d7Indicator.isEmpty {
+        result.append(NSAttributedString(string: d7Indicator, attributes: [.font: font, .foregroundColor: paceColor(d7Pace)]))
     }
     return result
 }
 
-func progressBar(percent: Double, width: Int = 20) -> (filled: String, empty: String) {
-    let filledCount = Int((percent / 100.0) * Double(width))
-    let emptyCount = width - filledCount
-    return (String(repeating: "●", count: filledCount), String(repeating: "○", count: emptyCount))
-}
+func formatAttributedAdaptiveStatusLine(_ usage: UsageData, history: UsageHistory = UsageHistory(), now: Date = Date()) -> NSAttributedString {
+    let d7 = usage.sevenDay.utilization
+    let font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
 
-func paceColor(_ pace: Double) -> NSColor {
-    if pace > 1.2 { return colorRed }
-    if pace < 0.8 { return colorGreen }
-    return NSColor.secondaryLabelColor
-}
-
-func formatAttributedMenuItem(label: String, window: UsageWindow, pace: Double? = nil, sparkline: String = "") -> NSAttributedString {
-    let pct = window.utilization
-    let remaining = window.remaining.map { formatValue($0) } ?? formatValue(100.0 - pct)
-    let resetStr = formatResetTime(window.resetsAt)
-    let color = usageColor(for: pct)
-
-    let font = NSFont.systemFont(ofSize: 13)
-    let boldFont = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .bold)
-    let barFont = NSFont.systemFont(ofSize: 9)
-
-    let result = NSMutableAttributedString()
-
-    // Line 1: label + bold colored percentage + free + reset
-    result.append(NSAttributedString(string: "\(label):  ", attributes: [.font: font]))
-    result.append(NSAttributedString(string: "\(formatValue(pct))%", attributes: [.font: boldFont, .foregroundColor: color]))
-    result.append(NSAttributedString(string: "  \u{2022} \(remaining)% free", attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]))
-    result.append(NSAttributedString(string: resetStr, attributes: [.font: font, .foregroundColor: NSColor.tertiaryLabelColor]))
-
-    // Line 2: dot progress bar + pace
-    let bar = progressBar(percent: pct)
-    result.append(NSAttributedString(string: "\n  ", attributes: [.font: barFont]))
-    result.append(NSAttributedString(string: bar.filled, attributes: [.font: barFont, .foregroundColor: color]))
-    result.append(NSAttributedString(string: bar.empty, attributes: [.font: barFont, .foregroundColor: NSColor.separatorColor]))
-    if let pace {
-        result.append(NSAttributedString(string: String(format: "  %.1fx", pace), attributes: [.font: font, .foregroundColor: paceColor(pace)]))
+    if d7 >= 100 {
+        let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: colorRed]
+        return NSAttributedString(string: "\u{2716} depleted", attributes: attrs)
     }
 
-    // Line 3: sparkline if available
-    if !sparkline.isEmpty {
+    let windowDuration: TimeInterval = 7 * 86400
+    if let resetsAt = usage.sevenDay.resetsAt {
+        let remaining = resetsAt.timeIntervalSince(now)
+        if remaining > 0, remaining < windowDuration {
+            let elapsed = windowDuration - remaining
+            if elapsed > 60, d7 > 0.1 {
+                let ratePerSec = d7 / elapsed
+                let secsToFull = (100.0 - d7) / ratePerSec
+                if secsToFull < remaining {
+                    let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.systemOrange]
+                    return NSAttributedString(string: "\u{26A0} \(formatDepletionTime(secsToFull: secsToFull)) left", attributes: attrs)
+                }
+            }
+        }
+    }
+
+    return formatAttributedStatusLine(usage, history: history)
+}
+
+func formatAttributedCompactFiveHour(window: UsageWindow, sparkline: String?, extraUsage: ExtraUsage?, now: Date = Date()) -> NSAttributedString {
+    let result = NSMutableAttributedString()
+    let font = NSFont.systemFont(ofSize: 13)
+    let boldFont = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .bold)
+    let dim = NSColor.secondaryLabelColor
+    let color = usageColor(for: window.utilization)
+
+    // "5h: " in dim
+    result.append(NSAttributedString(string: "5h: ", attributes: [.font: font, .foregroundColor: dim]))
+    // percentage bold + color-coded
+    result.append(NSAttributedString(string: "\(formatValue(window.utilization))%", attributes: [.font: boldFont, .foregroundColor: color]))
+
+    // pace
+    if let pace = calculatePace(utilization: window.utilization, resetsAt: window.resetsAt, windowDuration: 5 * 3600, now: now) {
+        result.append(NSAttributedString(string: String(format: " \u{00B7} %.1fx", pace), attributes: [.font: font, .foregroundColor: paceColor(pace)]))
+    }
+
+    // reset time
+    if let resetStr = compactResetTime(window.resetsAt, relativeTo: now) {
+        result.append(NSAttributedString(string: " \u{00B7} resets \(resetStr)", attributes: [.font: font, .foregroundColor: dim]))
+    }
+
+    // extra usage
+    if let extra = extraUsage, extra.isEnabled {
+        result.append(NSAttributedString(string: " \u{00B7} Extra on", attributes: [.font: font, .foregroundColor: colorBlue]))
+    }
+
+    // sparkline
+    if let spark = sparkline, !spark.isEmpty {
         let sparkFont = NSFont.monospacedSystemFont(ofSize: 9, weight: .regular)
-        result.append(NSAttributedString(string: "\n  \(sparkline)", attributes: [.font: sparkFont, .foregroundColor: NSColor.tertiaryLabelColor]))
+        result.append(NSAttributedString(string: " \(spark)", attributes: [.font: sparkFont, .foregroundColor: NSColor.tertiaryLabelColor]))
     }
 
     return result
 }
-#endif
 
-func formatModelBreakdown(_ models: ModelBreakdown, extraUsage: ExtraUsage? = nil) -> String {
-    var lines: [String] = ["Model Usage (7-day)"]
-    if let opus = models.opus {
-        lines.append("  Opus:   \(formatValue(opus.utilization))%\(formatResetTime(opus.resetsAt))")
-    }
-    if let sonnet = models.sonnet {
-        lines.append("  Sonnet: \(formatValue(sonnet.utilization))%\(formatResetTime(sonnet.resetsAt))")
-    }
-    if let oauth = models.oauthApps {
-        lines.append("  OAuth:  \(formatValue(oauth.utilization))%\(formatResetTime(oauth.resetsAt))")
-    }
-    if let cowork = models.cowork {
-        lines.append("  Cowork: \(formatValue(cowork.utilization))%\(formatResetTime(cowork.resetsAt))")
-    }
-    if let extra = extraUsage, extra.isEnabled {
-        let val = extra.utilization.map { formatValue($0) + "%" } ?? "enabled"
-        lines.append("  Extra:  \(val)")
-    }
-    return lines.joined(separator: "\n")
-}
-
-#if !TESTING
-func formatAttributedModelBreakdown(_ models: ModelBreakdown, extraUsage: ExtraUsage? = nil) -> NSAttributedString {
+func formatAttributedSevenDay(usage: UsageData, forecast: String?, dailyDays: [DailyEntry], hourlyIncreases: [Date], now: Date = Date()) -> NSAttributedString {
     let result = NSMutableAttributedString()
     let font = NSFont.systemFont(ofSize: 13)
-    let barFont = NSFont.systemFont(ofSize: 9)
     let boldFont = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .bold)
-
-    func modelRow(_ name: String, _ window: UsageWindow) {
-        let color = usageColor(for: window.utilization)
-        let bar = progressBar(percent: window.utilization, width: 8)
-        result.append(NSAttributedString(string: "\n  \(name) ", attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]))
-        result.append(NSAttributedString(string: bar.filled, attributes: [.font: barFont, .foregroundColor: color]))
-        result.append(NSAttributedString(string: bar.empty, attributes: [.font: barFont, .foregroundColor: NSColor.separatorColor]))
-        result.append(NSAttributedString(string: " \(formatValue(window.utilization))%", attributes: [.font: boldFont, .foregroundColor: color]))
-        result.append(NSAttributedString(string: formatResetTime(window.resetsAt), attributes: [.font: font, .foregroundColor: NSColor.tertiaryLabelColor]))
-    }
-
-    result.append(NSAttributedString(string: "Models (7-day)", attributes: [.font: font]))
-
-    if let opus = models.opus { modelRow("Opus  ", opus) }
-    if let sonnet = models.sonnet { modelRow("Sonnet", sonnet) }
-    if let oauth = models.oauthApps { modelRow("OAuth ", oauth) }
-    if let cowork = models.cowork { modelRow("Cowork", cowork) }
-    if let extra = extraUsage, extra.isEnabled {
-        let val = extra.utilization.map { formatValue($0) + "%" } ?? "on"
-        result.append(NSAttributedString(string: "\n  Extra  \(val)", attributes: [.font: font, .foregroundColor: NSColor.tertiaryLabelColor]))
-    }
-
-    return result
-}
-
-
-func formatAttributedActivity(dailyDays: [DailyEntry], hourlyIncreases: [Date], now: Date = Date()) -> NSAttributedString? {
-    let hasWeekly = weeklyChart(dailyDays, now: now) != nil
-    let hasHourly = hourlyHeatmap(hourlyIncreases) != nil
-    guard hasWeekly || hasHourly else { return nil }
-
-    let result = NSMutableAttributedString()
-    let font = NSFont.systemFont(ofSize: 13)
     let monoFont = NSFont.monospacedSystemFont(ofSize: 11, weight: .medium)
     let dimFont = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+    let dim = NSColor.secondaryLabelColor
+    let pct = usage.sevenDay.utilization
+    let color = usageColor(for: pct)
 
-    result.append(NSAttributedString(string: "Activity", attributes: [.font: font]))
+    // "7d: " in dim
+    result.append(NSAttributedString(string: "7d: ", attributes: [.font: font, .foregroundColor: dim]))
+    // percentage bold + color-coded
+    result.append(NSAttributedString(string: "\(formatValue(pct))%", attributes: [.font: boldFont, .foregroundColor: color]))
 
+    if let pace = calculatePace(utilization: pct, resetsAt: usage.sevenDay.resetsAt, windowDuration: 7 * 86400, now: now) {
+        result.append(NSAttributedString(string: String(format: " \u{00B7} %.1fx", pace), attributes: [.font: font, .foregroundColor: paceColor(pace)]))
+    }
+
+    if let resetStr = compactResetTime(usage.sevenDay.resetsAt, relativeTo: now) {
+        result.append(NSAttributedString(string: " \u{00B7} resets \(resetStr)", attributes: [.font: font, .foregroundColor: dim]))
+    }
+
+    // Inline forecast indicator
+    if let forecast {
+        let forecastColor: NSColor
+        let compactForecast: String
+        if forecast.hasPrefix("Safe") {
+            forecastColor = dim  // don't shout "safe" — only shout danger
+            compactForecast = "Safe"
+        } else if forecast.hasPrefix("Depletes") {
+            forecastColor = colorOrange
+            compactForecast = forecast.replacingOccurrences(of: " \u{00B7}.*$", with: "", options: .regularExpression)
+        } else {
+            forecastColor = colorRed
+            compactForecast = forecast
+        }
+        result.append(NSAttributedString(string: " \u{00B7} \(compactForecast)", attributes: [.font: font, .foregroundColor: forecastColor]))
+    }
+
+    // Weekly chart
     if let chart = weeklyChart(dailyDays, now: now) {
         let values = weeklyChartValues(dailyDays, now: now)
         let total = values.reduce(0, +)
         let totalStr = String(format: " %.0f%%", total)
         let aligned = alignedWeeklyColumns(chart: chart, values: values, dayLabel: weeklyChartLabel(now: now))
         result.append(NSAttributedString(string: "\n  Week  \(aligned.chart)", attributes: [.font: monoFont, .foregroundColor: NSColor.labelColor]))
-        result.append(NSAttributedString(string: totalStr, attributes: [.font: dimFont, .foregroundColor: NSColor.secondaryLabelColor]))
-        result.append(NSAttributedString(string: "\n        \(aligned.pcts)", attributes: [.font: dimFont, .foregroundColor: NSColor.secondaryLabelColor]))
+        result.append(NSAttributedString(string: totalStr, attributes: [.font: dimFont, .foregroundColor: dim]))
+        result.append(NSAttributedString(string: "\n        \(aligned.pcts)", attributes: [.font: dimFont, .foregroundColor: dim]))
         result.append(NSAttributedString(string: "\n        \(aligned.days)", attributes: [.font: dimFont, .foregroundColor: NSColor.tertiaryLabelColor]))
     }
 
+    // Heatmap
     if let heatmap = hourlyHeatmap(hourlyIncreases, now: now) {
         result.append(NSAttributedString(string: "\n  Today \(heatmap)", attributes: [.font: monoFont, .foregroundColor: NSColor.labelColor]))
-        result.append(NSAttributedString(string: "\n        \(hourlyHeatmapLabel(now: now))", attributes: [.font: dimFont, .foregroundColor: NSColor.secondaryLabelColor]))
-    }
-
-    return result
-}
-
-func formatAttributedAgentSection(_ agents: [TrackedAgent], projectName: String? = nil, stats: AgentStats = AgentStats(), isStale: Bool = false, sessionTokens: SessionTokens = SessionTokens(), currentModel: String? = nil, shellRequestCount: Int = 0, contextTokens: Int = 0, contextWindowMax: Int = 0, now: Date = Date()) -> NSAttributedString {
-    let result = NSMutableAttributedString()
-    let font = NSFont.systemFont(ofSize: 13)
-    let smallFont = NSFont.systemFont(ofSize: 11)
-    let monoFont = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-    let sessionStatsLine = formatSessionStats(sessionTokens, model: currentModel)
-
-    if isStale {
-        result.append(NSAttributedString(string: "Session", attributes: [.font: font]))
-        if let name = projectName {
-            result.append(NSAttributedString(string: " \u{00B7} \(name)", attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]))
-        }
-        result.append(NSAttributedString(string: "\n  Session idle", attributes: [.font: smallFont, .foregroundColor: NSColor.tertiaryLabelColor]))
-        if !sessionStatsLine.isEmpty {
-            result.append(NSAttributedString(string: "\n  \(sessionStatsLine)", attributes: [.font: monoFont, .foregroundColor: NSColor.secondaryLabelColor]))
-        }
-        let agentStatsLine = formatAgentStatsLine(stats)
-        if !agentStatsLine.isEmpty {
-            result.append(NSAttributedString(string: "\n  \(agentStatsLine)", attributes: [.font: monoFont, .foregroundColor: NSColor.tertiaryLabelColor]))
-        }
-        return result
-    }
-
-    let running = agents.filter { $0.isRunning }.count
-    let done = agents.count - running
-
-    result.append(NSAttributedString(string: "Session", attributes: [.font: font]))
-    if let name = projectName {
-        result.append(NSAttributedString(string: " \u{00B7} \(name)", attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]))
-    }
-
-    var headerParts: [String] = []
-    if running > 0 { headerParts.append("\(running) running") }
-    if done > 0 { headerParts.append("\(done) done") }
-    if !headerParts.isEmpty {
-        result.append(NSAttributedString(string: " (\(headerParts.joined(separator: " \u{00B7} ")))", attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]))
-    }
-
-    if !sessionStatsLine.isEmpty {
-        result.append(NSAttributedString(string: "\n  \(sessionStatsLine)", attributes: [.font: monoFont, .foregroundColor: NSColor.secondaryLabelColor]))
-    }
-
-    var detailParts: [String] = []
-    if sessionTokens.totalTokens > 0 { detailParts.append("\(formatTokenCount(sessionTokens.totalTokens)) tokens") }
-    if contextWindowMax > 0 { detailParts.append("\(formatTokenCount(contextTokens))/\(formatTokenCount(contextWindowMax)) ctx") }
-    if shellRequestCount > 0 { detailParts.append("\(shellRequestCount) shell") }
-    if !detailParts.isEmpty {
-        result.append(NSAttributedString(string: "\n  \(detailParts.joined(separator: " \u{00B7} "))", attributes: [.font: monoFont, .foregroundColor: NSColor.tertiaryLabelColor]))
-    }
-
-    for agent in agents {
-        let isRunning = agent.isRunning
-        let statusIcon = isRunning ? "\u{25CF}" : "\u{2713}"
-        let statusColor = isRunning ? NSColor.systemOrange : colorGreen
-
-        result.append(NSAttributedString(string: "\n  ", attributes: [.font: smallFont]))
-        result.append(NSAttributedString(string: statusIcon, attributes: [.font: smallFont, .foregroundColor: statusColor]))
-        result.append(NSAttributedString(string: " \(agent.description)", attributes: [.font: smallFont]))
-
-        let duration = formatAgentDuration(agent, now: now)
-        if !duration.isEmpty {
-            result.append(NSAttributedString(string: "  \(duration)", attributes: [.font: monoFont, .foregroundColor: NSColor.secondaryLabelColor]))
-        }
-
-        if let tokens = agent.totalTokens {
-            result.append(NSAttributedString(string: "  \(formatTokenCount(tokens)) tok", attributes: [.font: monoFont, .foregroundColor: NSColor.tertiaryLabelColor]))
-        }
-
-        if isRunning {
-            result.append(NSAttributedString(string: "  running", attributes: [.font: monoFont, .foregroundColor: NSColor.systemOrange]))
-        }
-    }
-
-    let agentStatsLine = formatAgentStatsLine(stats)
-    if !agentStatsLine.isEmpty {
-        result.append(NSAttributedString(string: "\n  \(agentStatsLine)", attributes: [.font: monoFont, .foregroundColor: NSColor.tertiaryLabelColor]))
-    }
-
-    return result
-}
-
-func formatAttributedMultiSessionSection(_ sessions: [TrackedSession], now: Date = Date()) -> NSAttributedString {
-    let result = NSMutableAttributedString()
-    let font = NSFont.systemFont(ofSize: 13)
-    let smallFont = NSFont.systemFont(ofSize: 11)
-    let monoFont = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-
-    let nonStale = sessions.filter { !$0.isStale }
-    let headerCount = nonStale.isEmpty ? sessions.count : nonStale.count
-    let headerLabel = nonStale.isEmpty ? "idle" : "active"
-    result.append(NSAttributedString(string: "Sessions (\(headerCount) \(headerLabel))", attributes: [.font: font]))
-
-    for session in sessions {
-        let name = session.projectName ?? "unknown"
-        result.append(NSAttributedString(string: "\n  \(name)", attributes: [.font: smallFont]))
-        if let model = session.currentModel {
-            result.append(NSAttributedString(string: " \u{00B7} \(modelDisplayName(model))", attributes: [.font: smallFont, .foregroundColor: NSColor.secondaryLabelColor]))
-        }
-        if session.isStale {
-            result.append(NSAttributedString(string: " \u{00B7} idle", attributes: [.font: smallFont, .foregroundColor: NSColor.tertiaryLabelColor]))
-        }
-
-        var detailParts: [String] = []
-        if session.sessionTokens.totalTokens > 0 { detailParts.append("\(formatTokenCount(session.sessionTokens.totalTokens)) tokens") }
-        if session.contextWindowMax > 0 { detailParts.append("\(formatTokenCount(session.lastContextTokens))/\(formatTokenCount(session.contextWindowMax)) ctx") }
-        if session.shellRequestCount > 0 { detailParts.append("\(session.shellRequestCount) shell") }
-        if !detailParts.isEmpty {
-            result.append(NSAttributedString(string: "\n    \(detailParts.joined(separator: " \u{00B7} "))", attributes: [.font: monoFont, .foregroundColor: NSColor.tertiaryLabelColor]))
-        }
-
-        for agent in session.agents {
-            let isRunning = agent.isRunning
-            let statusIcon = isRunning ? "\u{25CF}" : "\u{2713}"
-            let statusColor = isRunning ? NSColor.systemOrange : colorGreen
-            result.append(NSAttributedString(string: "\n    ", attributes: [.font: smallFont]))
-            result.append(NSAttributedString(string: statusIcon, attributes: [.font: smallFont, .foregroundColor: statusColor]))
-            result.append(NSAttributedString(string: " \(agent.description)", attributes: [.font: smallFont]))
-            let duration = formatAgentDuration(agent, now: now)
-            if !duration.isEmpty {
-                result.append(NSAttributedString(string: "  \(duration)", attributes: [.font: monoFont, .foregroundColor: NSColor.secondaryLabelColor]))
-            }
-            if isRunning {
-                result.append(NSAttributedString(string: "  running", attributes: [.font: monoFont, .foregroundColor: NSColor.systemOrange]))
-            }
-        }
+        result.append(NSAttributedString(string: "\n        \(hourlyHeatmapLabel(now: now))", attributes: [.font: dimFont, .foregroundColor: dim]))
     }
 
     return result
 }
 #endif
+
 
 func peakHoursSummary(_ increases: [Date]) -> String? {
     guard increases.count >= 3 else { return nil }
@@ -1754,66 +1950,6 @@ func peakHoursSummary(_ increases: [Date]) -> String? {
     let endHour = (peakHour + 1) % 24
     return String(format: "Peak usage: %02d:00–%02d:00", peakHour, endHour)
 }
-
-func formatInsights(_ usage: UsageData) -> String {
-    var lines: [String] = []
-    if let daily = dailyBreakdown(utilization: usage.sevenDay.utilization, resetsAt: usage.sevenDay.resetsAt, windowDuration: 7 * 86400) {
-        lines.append(daily)
-    }
-    if let depl5 = depletionEstimate(utilization: usage.fiveHour.utilization, resetsAt: usage.fiveHour.resetsAt, windowDuration: 5 * 3600) {
-        lines.append("5h: \(depl5)")
-    }
-    if let depl7 = depletionEstimate(utilization: usage.sevenDay.utilization, resetsAt: usage.sevenDay.resetsAt, windowDuration: 7 * 86400) {
-        lines.append("7d: \(depl7)")
-    }
-    if let advice = budgetAdvice(utilization: usage.sevenDay.utilization, resetsAt: usage.sevenDay.resetsAt, windowDuration: 7 * 86400) {
-        lines.append(advice)
-    }
-    return lines.joined(separator: "\n")
-}
-
-#if !TESTING
-func formatAttributedInsights(_ usage: UsageData) -> NSAttributedString {
-    let result = NSMutableAttributedString()
-    let font = NSFont.systemFont(ofSize: 13)
-    let smallFont = NSFont.systemFont(ofSize: 11)
-    let green = colorGreen
-    let warn = colorYellow
-    let dim = NSColor.secondaryLabelColor
-
-    result.append(NSAttributedString(string: "Forecast", attributes: [.font: font]))
-
-    // Depletion estimates — combine if both are the same
-    let depl5 = depletionEstimate(utilization: usage.fiveHour.utilization, resetsAt: usage.fiveHour.resetsAt, windowDuration: 5 * 3600)
-    let depl7 = depletionEstimate(utilization: usage.sevenDay.utilization, resetsAt: usage.sevenDay.resetsAt, windowDuration: 7 * 86400)
-
-    if let d5 = depl5, let d7 = depl7, d5 == d7 {
-        let color = d5.contains("Won't") ? green : warn
-        result.append(NSAttributedString(string: "\n  \(d5)", attributes: [.font: smallFont, .foregroundColor: color]))
-    } else {
-        if let d5 = depl5 {
-            let color = d5.contains("Won't") ? green : warn
-            result.append(NSAttributedString(string: "\n  5h: \(d5)", attributes: [.font: smallFont, .foregroundColor: color]))
-        }
-        if let d7 = depl7 {
-            let color = d7.contains("Won't") ? green : warn
-            result.append(NSAttributedString(string: "\n  7d: \(d7)", attributes: [.font: smallFont, .foregroundColor: color]))
-        }
-    }
-
-    // Daily rate
-    if let daily = dailyBreakdown(utilization: usage.sevenDay.utilization, resetsAt: usage.sevenDay.resetsAt, windowDuration: 7 * 86400) {
-        result.append(NSAttributedString(string: "\n  \(daily)", attributes: [.font: smallFont, .foregroundColor: dim]))
-    }
-
-    // Budget advice
-    if let advice = budgetAdvice(utilization: usage.sevenDay.utilization, resetsAt: usage.sevenDay.resetsAt, windowDuration: 7 * 86400) {
-        result.append(NSAttributedString(string: "\n  \(advice)", attributes: [.font: smallFont, .foregroundColor: green]))
-    }
-
-    return result
-}
-#endif
 
 struct UpdateInfo: Equatable {
     let tagName: String
@@ -1950,9 +2086,24 @@ struct FetchSchedule {
 
 // MARK: - Widget Data
 
-func buildWidgetData(_ usage: UsageData) -> WidgetData {
+func buildWidgetData(_ usage: UsageData, todayCost: Double = 0, activeSessionCount: Int = 0) -> WidgetData {
     let h5Pace = calculatePace(utilization: usage.fiveHour.utilization, resetsAt: usage.fiveHour.resetsAt, windowDuration: 5 * 3600)
     let d7Pace = calculatePace(utilization: usage.sevenDay.utilization, resetsAt: usage.sevenDay.resetsAt, windowDuration: 7 * 86400)
+    // Calculate depletion for 7d
+    var depletionSecs: Double? = nil
+    let d7 = usage.sevenDay.utilization
+    let windowDuration: TimeInterval = 7 * 86400
+    if let resetsAt = usage.sevenDay.resetsAt, d7 > 0.1, d7 < 100 {
+        let remaining = resetsAt.timeIntervalSinceNow
+        if remaining > 0, remaining < windowDuration {
+            let elapsed = windowDuration - remaining
+            if elapsed > 60 {
+                let ratePerSec = d7 / elapsed
+                let secsToFull = (100.0 - d7) / ratePerSec
+                if secsToFull < remaining { depletionSecs = secsToFull }
+            }
+        }
+    }
     return WidgetData(
         fiveHourUtilization: usage.fiveHour.utilization,
         sevenDayUtilization: usage.sevenDay.utilization,
@@ -1960,7 +2111,11 @@ func buildWidgetData(_ usage: UsageData) -> WidgetData {
         sevenDayPace: d7Pace,
         fiveHourResetsAt: usage.fiveHour.resetsAt?.timeIntervalSince1970,
         sevenDayResetsAt: usage.sevenDay.resetsAt?.timeIntervalSince1970,
-        updatedAt: Date().timeIntervalSince1970
+        updatedAt: Date().timeIntervalSince1970,
+        extraUsageEnabled: usage.extraUsage?.isEnabled,
+        depletionSeconds: depletionSecs,
+        todayCost: todayCost > 0 ? todayCost : nil,
+        activeSessionCount: activeSessionCount > 0 ? activeSessionCount : nil
     )
 }
 
@@ -1981,9 +2136,6 @@ class StatusBarController: NSObject {
 
     private let detailFiveHour = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let detailSevenDay = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-    private let modelBreakdownItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-    private let activityItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-    private let insightsItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private var dailyStore = DailyUsageData()
     private let dailyStorePath = NSHomeDirectory() + "/.ccusage-daily.json"
     private var widgetKey: String?  // Canonical key from Worker (SHA-256 of org ID)
@@ -2000,6 +2152,8 @@ class StatusBarController: NSObject {
     private let sessionsItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private var agentTracker = AgentTracker()
     private var agentTimer: Timer?
+    private var codexTracker = CodexTracker()
+    private var codexTimer: Timer?
     private var tokenCostTracker = TokenCostTracker()
     private let tokenCostsItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
 
@@ -2026,20 +2180,12 @@ class StatusBarController: NSObject {
         menu.addItem(detailFiveHour)
         menu.addItem(detailSevenDay)
         menu.addItem(.separator())
-        modelBreakdownItem.isEnabled = false
-        modelBreakdownItem.isHidden = true
-        menu.addItem(modelBreakdownItem)
         sessionsItem.isEnabled = false
         sessionsItem.isHidden = true
         menu.addItem(sessionsItem)
-        activityItem.isEnabled = false
-        activityItem.isHidden = true
-        menu.addItem(activityItem)
         tokenCostsItem.isEnabled = false
         tokenCostsItem.isHidden = true
         menu.addItem(tokenCostsItem)
-        insightsItem.isEnabled = false
-        menu.addItem(insightsItem)
         menu.addItem(.separator())
         menu.addItem(lastRefreshItem)
         menu.addItem(.separator())
@@ -2080,6 +2226,14 @@ class StatusBarController: NSObject {
         }
         RunLoop.current.add(agentTimer!, forMode: .common)
 
+        // Poll Codex SQLite every 10 seconds
+        codexTracker.poll()
+        codexTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
+            self?.codexTracker.poll()
+            self?.updateSessionsUI()
+        }
+        RunLoop.current.add(codexTimer!, forMode: .common)
+
         // Refresh immediately after waking from sleep
         NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification,
@@ -2095,6 +2249,7 @@ class StatusBarController: NSObject {
         secondsTimer?.invalidate()
         updateTimer?.invalidate()
         agentTimer?.invalidate()
+        codexTimer?.invalidate()
     }
 
     /// Called every 60s. Refreshes UI and triggers API fetch when due.
@@ -2109,23 +2264,25 @@ class StatusBarController: NSObject {
     private func refreshAgents() {
         agentTracker.pruneCompleted()
         _ = agentTracker.poll()
-        updateAgentsUI()
+        updateSessionsUI()
         updateStatusBarAgentIndicator()
         updateTokenCostsUI()
     }
 
-    private func updateAgentsUI() {
-        let active = agentTracker.activeSessions
+    private func updateSessionsUI() {
+        let claudeSessions = agentTracker.activeSessions
+        let codexSummary = codexTracker.lastSummary
 
-        guard !active.isEmpty else {
+        let codexHasContent = codexSummary.map { !$0.activeSessions.isEmpty } ?? false
+        guard !claudeSessions.isEmpty || codexHasContent else {
             sessionsItem.isHidden = true
             return
         }
         sessionsItem.isHidden = false
         #if TESTING
-        sessionsItem.title = formatMultiSessionSection(active)
+        sessionsItem.title = formatUnifiedSessions(claudeSessions: claudeSessions, codex: codexSummary)
         #else
-        sessionsItem.attributedTitle = formatAttributedMultiSessionSection(active)
+        sessionsItem.attributedTitle = formatAttributedUnifiedSessions(claudeSessions: claudeSessions, codex: codexSummary)
         #endif
     }
 
@@ -2141,9 +2298,9 @@ class StatusBarController: NSObject {
         }
         tokenCostsItem.isHidden = false
         #if TESTING
-        tokenCostsItem.title = formatTokenCosts(today: today, week: week, month: month)
+        tokenCostsItem.title = formatCompactTokenCosts(today: today, week: week, month: month)
         #else
-        tokenCostsItem.attributedTitle = formatAttributedTokenCosts(today: today, week: week, month: month)
+        tokenCostsItem.attributedTitle = formatAttributedCompactTokenCosts(today: today, week: week, month: month)
         #endif
     }
 
@@ -2151,11 +2308,11 @@ class StatusBarController: NSObject {
         guard let usage = lastUsage else { return }
         let runningCount = agentTracker.totalRunningCount
         #if TESTING
-        var title = formatStatusLine(usage, history: history)
+        var title = formatAdaptiveStatusLine(usage: usage, history: history)
         if runningCount > 0 { title += " \u{26A1}\(runningCount)" }
         statusItem.button?.title = title
         #else
-        let base = formatAttributedStatusLine(usage, history: history)
+        let base = formatAttributedAdaptiveStatusLine(usage, history: history)
         if runningCount > 0 {
             let result = NSMutableAttributedString(attributedString: base)
             let font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .bold)
@@ -2206,7 +2363,7 @@ class StatusBarController: NSObject {
         guard let credData = readCredentialData(),
               let token = parseToken(from: credData),
               let url = URL(string: "\(widgetWorkerURL)/widget") else { return }
-        let widgetData = buildWidgetData(usage)
+        let widgetData = buildWidgetData(usage, todayCost: tokenCostTracker.todayCost.totalCost, activeSessionCount: agentTracker.totalRunningCount)
         if let last = lastPushedWidgetData, last.hasSameValues(as: widgetData) { return }
         let body = WidgetPushBody(data: widgetData)
         guard let bodyData = try? JSONEncoder().encode(body) else { return }
@@ -2495,7 +2652,7 @@ class StatusBarController: NSObject {
                             return
                         }
                         self.didRetryWithRefresh = false
-                        let raw = http.value(forHTTPHeaderField: "retry-after").flatMap { Int($0) } ?? Int(defaultFetchInterval)
+                        let raw = http.value(forHTTPHeaderField: "retry-after").flatMap { Int($0) } ?? Int(maxBackoffInterval)
                         self.handleRateLimit(raw: raw)
                     } else {
                         self.setError("Server error")
@@ -2520,7 +2677,7 @@ class StatusBarController: NSObject {
 
     private func handleRateLimit(raw: Int) {
         let retryAfter = clampRetryAfter(raw)
-        schedule.onRateLimit(retryAfter: raw)
+        schedule.onRateLimit(retryAfter: retryAfter)
         let minutes = (retryAfter + 59) / 60
         if lastUsage == nil {
             setError("Rate limited")
@@ -2588,71 +2745,57 @@ class StatusBarController: NSObject {
             updateLastRefreshLabel()
             return
         }
-        let h5 = usage.fiveHour.utilization
         let d7 = usage.sevenDay.utilization
 
         // Status bar title is updated via updateStatusBarAgentIndicator which includes usage + agent count
         updateStatusBarAgentIndicator()
 
         #if TESTING
-        detailFiveHour.title = "\(usageIndicator(for: h5))  5-hour window: \(formatValue(h5))%\(formatResetTime(usage.fiveHour.resetsAt))"
-        detailSevenDay.title = "\(usageIndicator(for: d7))  7-day window:  \(formatValue(d7))%\(formatResetTime(usage.sevenDay.resetsAt))"
+        // Compact 5-hour line
+        detailFiveHour.title = formatCompactFiveHour(window: usage.fiveHour, sparkline: nil, extraUsage: usage.extraUsage)
+
+        // 7-day section
         let mergedDays = dailyStore.days
-        insightsItem.title = formatInsights(usage)
-        if let models = usage.models {
-            modelBreakdownItem.isHidden = false
-            modelBreakdownItem.title = formatModelBreakdown(models, extraUsage: usage.extraUsage)
-        } else {
-            modelBreakdownItem.isHidden = true
+        let d7Forecast = formatForecastLine(utilization: d7, resetsAt: usage.sevenDay.resetsAt, windowDuration: 7 * 86400)
+        let d7Pace = calculatePace(utilization: d7, resetsAt: usage.sevenDay.resetsAt, windowDuration: 7 * 86400)
+        var pctLine = "7d: \(formatValue(d7))%"
+        if let pace = d7Pace {
+            pctLine += String(format: " \u{00B7} %.1fx", pace)
         }
-        let hasWeeklyTest = weeklyChart(mergedDays) != nil
-        let hasHourlyTest = hourlyHeatmap(usageIncreases) != nil
-        if hasWeeklyTest || hasHourlyTest {
-            activityItem.isHidden = false
-            var activityLines: [String] = []
-            if let chart = weeklyChart(mergedDays) {
-                let values = weeklyChartValues(mergedDays)
-                let total = values.reduce(0, +)
-                let aligned = alignedWeeklyColumns(chart: chart, values: values, dayLabel: weeklyChartLabel())
-                activityLines.append(String(format: "Week: \(aligned.chart) %.0f%%", total))
-                activityLines.append("      \(aligned.pcts)")
-                activityLines.append("      \(aligned.days)")
-            }
-            if let heatmap = hourlyHeatmap(usageIncreases) {
-                activityLines.append("Today: \(heatmap)")
-                activityLines.append("       \(hourlyHeatmapLabel())")
-            }
-            activityItem.title = activityLines.joined(separator: "\n")
-        } else {
-            activityItem.isHidden = true
+        if let resetStr = compactResetTime(usage.sevenDay.resetsAt) {
+            pctLine += " \u{00B7} resets \(resetStr)"
         }
+        if let forecast = d7Forecast {
+            if forecast.hasPrefix("Safe") {
+                pctLine += " \u{00B7} Safe"
+            } else if forecast.hasPrefix("Depletes") {
+                pctLine += " \u{00B7} \(forecast.replacingOccurrences(of: " \u{00B7}.*$", with: "", options: .regularExpression))"
+            } else {
+                pctLine += " \u{00B7} \(forecast)"
+            }
+        }
+        var sevenDayLines: [String] = [pctLine]
+        if let chart = weeklyChart(mergedDays) {
+            let values = weeklyChartValues(mergedDays)
+            let total = values.reduce(0, +)
+            let aligned = alignedWeeklyColumns(chart: chart, values: values, dayLabel: weeklyChartLabel())
+            sevenDayLines.append(String(format: "  Week  \(aligned.chart) %.0f%%", total))
+            sevenDayLines.append("        \(aligned.pcts)")
+            sevenDayLines.append("        \(aligned.days)")
+        }
+        if let heatmap = hourlyHeatmap(usageIncreases) {
+            sevenDayLines.append("  Today \(heatmap)")
+            sevenDayLines.append("        \(hourlyHeatmapLabel())")
+        }
+        detailSevenDay.title = sevenDayLines.joined(separator: "\n")
         #else
-        // 5-hour window
-        let h5Pace = calculatePace(utilization: usage.fiveHour.utilization, resetsAt: usage.fiveHour.resetsAt, windowDuration: 5 * 3600)
-        detailFiveHour.attributedTitle = formatAttributedMenuItem(label: "5-hour window", window: usage.fiveHour, pace: h5Pace)
+        // Compact 5-hour window
+        detailFiveHour.attributedTitle = formatAttributedCompactFiveHour(window: usage.fiveHour, sparkline: nil, extraUsage: usage.extraUsage)
 
-        // 7-day window
-        let d7Pace = calculatePace(utilization: usage.sevenDay.utilization, resetsAt: usage.sevenDay.resetsAt, windowDuration: 7 * 86400)
-        detailSevenDay.attributedTitle = formatAttributedMenuItem(label: "7-day window", window: usage.sevenDay, pace: d7Pace)
-
-        // Model breakdown
-        if let models = usage.models {
-            modelBreakdownItem.isHidden = false
-            modelBreakdownItem.attributedTitle = formatAttributedModelBreakdown(models, extraUsage: usage.extraUsage)
-        } else {
-            modelBreakdownItem.isHidden = true
-        }
-
-        // Activity (weekly chart + hourly heatmap)
+        // 7-day section with forecast + activity inline
         let mergedDays = dailyStore.days
-        if let activityAttr = formatAttributedActivity(dailyDays: mergedDays, hourlyIncreases: usageIncreases) {
-            activityItem.isHidden = false
-            activityItem.attributedTitle = activityAttr
-        } else {
-            activityItem.isHidden = true
-        }
-
-        insightsItem.attributedTitle = formatAttributedInsights(usage)
+        let d7Forecast = formatForecastLine(utilization: d7, resetsAt: usage.sevenDay.resetsAt, windowDuration: 7 * 86400)
+        detailSevenDay.attributedTitle = formatAttributedSevenDay(usage: usage, forecast: d7Forecast, dailyDays: mergedDays, hourlyIncreases: usageIncreases)
         #endif
 
         updateLastRefreshLabel()
