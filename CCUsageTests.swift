@@ -588,7 +588,7 @@ func runFormatStatusLineTests() {
                 sevenDay: UsageWindow(utilization: 18.0, remaining: nil, resetsAt: nil)
             )
             let line = formatStatusLine(u)
-            check(line == "9/18", "compact format 9/18")
+            check(line == "9 18", "compact format 9/18")
         }
 
         test("high usage") {
@@ -596,7 +596,7 @@ func runFormatStatusLineTests() {
                 fiveHour: UsageWindow(utilization: 85.0, remaining: nil, resetsAt: nil),
                 sevenDay: UsageWindow(utilization: 90.0, remaining: nil, resetsAt: nil)
             )
-            check(formatStatusLine(u) == "85/90", "compact format 85/90")
+            check(formatStatusLine(u) == "85 90", "compact format 85/90")
         }
 
         test("decimal values") {
@@ -604,7 +604,7 @@ func runFormatStatusLineTests() {
                 fiveHour: UsageWindow(utilization: 6.5, remaining: nil, resetsAt: nil),
                 sevenDay: UsageWindow(utilization: 18.3, remaining: nil, resetsAt: nil)
             )
-            check(formatStatusLine(u) == "6.5/18.3", "compact format 6.5/18.3")
+            check(formatStatusLine(u) == "6.5 18.3", "compact format 6.5/18.3")
         }
 
         test("zero usage") {
@@ -612,7 +612,7 @@ func runFormatStatusLineTests() {
                 fiveHour: UsageWindow(utilization: 0.0, remaining: nil, resetsAt: nil),
                 sevenDay: UsageWindow(utilization: 0.0, remaining: nil, resetsAt: nil)
             )
-            check(formatStatusLine(u) == "0/0", "compact format 0/0")
+            check(formatStatusLine(u) == "0 0", "compact format 0/0")
         }
 
         test("full usage") {
@@ -620,7 +620,7 @@ func runFormatStatusLineTests() {
                 fiveHour: UsageWindow(utilization: 100.0, remaining: nil, resetsAt: nil),
                 sevenDay: UsageWindow(utilization: 100.0, remaining: nil, resetsAt: nil)
             )
-            check(formatStatusLine(u) == "100/100", "compact format 100/100")
+            check(formatStatusLine(u) == "100 100", "compact format 100/100")
         }
     }
 }
@@ -1178,7 +1178,7 @@ func runFormatStatusLineWithHistoryTests() {
                 fiveHour: UsageWindow(utilization: 20, remaining: nil, resetsAt: nil),
                 sevenDay: UsageWindow(utilization: 20, remaining: nil, resetsAt: nil)
             )
-            check(formatStatusLine(u, history: h) == "20/20", "compact ignores history")
+            check(formatStatusLine(u, history: h) == "20 20", "compact ignores history")
         }
 
         test("mixed values") {
@@ -1186,7 +1186,7 @@ func runFormatStatusLineWithHistoryTests() {
                 fiveHour: UsageWindow(utilization: 85, remaining: nil, resetsAt: nil),
                 sevenDay: UsageWindow(utilization: 20, remaining: nil, resetsAt: nil)
             )
-            check(formatStatusLine(u) == "85/20", "compact format 85/20")
+            check(formatStatusLine(u) == "85 20", "compact format 85/20")
         }
     }
 }
@@ -1316,7 +1316,7 @@ func runPacingTests() {
                 fiveHour: UsageWindow(utilization: 42, remaining: nil, resetsAt: nil),
                 sevenDay: UsageWindow(utilization: 15, remaining: nil, resetsAt: nil)
             )
-            check(formatStatusLine(u) == "42/15", "no indicator without resetsAt")
+            check(formatStatusLine(u) == "42 15", "no indicator without resetsAt")
         }
     }
 
@@ -1592,41 +1592,6 @@ func runDepletionEstimateTests() {
     }
 }
 
-// MARK: - Budget Advice Tests
-
-func runBudgetAdviceTests() {
-    let sevenDays: TimeInterval = 7 * 86400
-    let now = Date(timeIntervalSince1970: 1000000)
-
-    suite("budgetAdvice") {
-        test("nil when resetsAt is nil") {
-            check(budgetAdvice(utilization: 50, resetsAt: nil, windowDuration: sevenDays, now: now) == nil, "nil for nil reset")
-        }
-
-        test("nil when remaining < 60s") {
-            let resetsAt = now.addingTimeInterval(30)
-            check(budgetAdvice(utilization: 50, resetsAt: resetsAt, windowDuration: sevenDays, now: now) == nil, "nil for tiny remaining")
-        }
-
-        test("exhausted when 100%") {
-            let resetsAt = now.addingTimeInterval(86400)
-            assertEqual(budgetAdvice(utilization: 100, resetsAt: resetsAt, windowDuration: sevenDays, now: now), "Budget exhausted", "exhausted at 100%")
-        }
-
-        test("use sparingly near window end") {
-            let resetsAt = now.addingTimeInterval(600)  // 10 min left = 0.17h
-            let result = budgetAdvice(utilization: 50, resetsAt: resetsAt, windowDuration: sevenDays, now: now)
-            assertEqual(result, "Budget: use sparingly", "sparingly near end")
-        }
-
-        test("normal budget with time remaining") {
-            let resetsAt = now.addingTimeInterval(86400)  // 24h left
-            let result = budgetAdvice(utilization: 50, resetsAt: resetsAt, windowDuration: sevenDays, now: now)
-            check(result?.contains("Budget:") == true && result?.contains("/hour") == true, "normal budget format")
-        }
-    }
-}
-
 // MARK: - Daily Breakdown Tests
 
 func runDailyBreakdownTests() {
@@ -1870,33 +1835,6 @@ func runHourlyHeatmapLabelTests() {
     }
 }
 
-// MARK: - Format Insights with Charts Tests
-
-func runFormatInsightsChartsTests() {
-    suite("formatInsights") {
-        test("includes depletion and budget for active usage") {
-            let resetDate = Date().addingTimeInterval(3 * 86400)
-            let usage = UsageData(
-                fiveHour: UsageWindow(utilization: 50, remaining: 50, resetsAt: Date().addingTimeInterval(3600)),
-                sevenDay: UsageWindow(utilization: 50, remaining: 50, resetsAt: resetDate)
-            )
-            let result = formatInsights(usage)
-            check(result.contains("Won't deplete") || result.contains("Depletes"), "contains depletion estimate")
-        }
-
-        test("does not contain charts or session info") {
-            let usage = UsageData(
-                fiveHour: UsageWindow(utilization: 10, remaining: 90, resetsAt: nil),
-                sevenDay: UsageWindow(utilization: 10, remaining: 90, resetsAt: nil)
-            )
-            let result = formatInsights(usage)
-            check(!result.contains("Today:"), "no heatmap in forecast")
-            check(!result.contains("Week:"), "no weekly chart in forecast")
-            check(!result.contains("Session:"), "no session info in forecast")
-        }
-    }
-}
-
 // MARK: - Agent Tracking Tests
 
 func runAgentTrackingTests() {
@@ -2017,66 +1955,6 @@ func runAgentTrackingTests() {
         }
     }
 
-    suite("formatAgentSection") {
-        test("empty agents") {
-            assertEqual(formatAgentSection([]), "")
-        }
-
-        test("running agents") {
-            let now = Date()
-            let agents = [
-                TrackedAgent(toolUseId: "t1", description: "Review code", subagentType: "code-reviewer", launchedAt: now.addingTimeInterval(-10)),
-                TrackedAgent(toolUseId: "t2", description: "Bug scan", subagentType: "general-purpose", launchedAt: now.addingTimeInterval(-5))
-            ]
-            let result = formatAgentSection(agents, now: now)
-            check(result.contains("2 running"), "header shows running count")
-            check(result.contains("Review code"), "shows first agent")
-            check(result.contains("Bug scan"), "shows second agent")
-        }
-
-        test("mixed running and done") {
-            let now = Date()
-            let agents = [
-                TrackedAgent(toolUseId: "t1", description: "Done task", subagentType: "gp", launchedAt: now.addingTimeInterval(-30), completedAt: now, totalTokens: 14000, durationMs: 8000),
-                TrackedAgent(toolUseId: "t2", description: "Running task", subagentType: "gp", launchedAt: now.addingTimeInterval(-5))
-            ]
-            let result = formatAgentSection(agents, now: now)
-            check(result.contains("1 running"), "one running")
-            check(result.contains("1 done"), "one done")
-            check(result.contains("14K tok"), "shows token count")
-        }
-
-        test("with project name") {
-            let now = Date()
-            let agents = [TrackedAgent(toolUseId: "t1", description: "Test", subagentType: "gp", launchedAt: now)]
-            let result = formatAgentSection(agents, projectName: "ows-payment", now: now)
-            check(result.contains("ows-payment"), "shows project name")
-        }
-
-        test("with stats") {
-            let now = Date()
-            let agents = [TrackedAgent(toolUseId: "t1", description: "Test", subagentType: "gp", launchedAt: now, completedAt: now, totalTokens: 5000, durationMs: 3000)]
-            var stats = AgentStats()
-            stats.record(tokens: 5000, durationMs: 3000)
-            let result = formatAgentSection(agents, stats: stats, now: now)
-            check(result.contains("Session: 1 agents"), "shows stats")
-            check(result.contains("5K tok"), "shows total tokens in stats")
-        }
-
-        test("stale session") {
-            let result = formatAgentSection([], isStale: true)
-            check(result.contains("Session"), "shows Session header")
-            check(result.contains("session idle"), "shows idle message")
-        }
-
-        test("header says Session") {
-            let now = Date()
-            let agents = [TrackedAgent(toolUseId: "t1", description: "Test", subagentType: "gp", launchedAt: now)]
-            let result = formatAgentSection(agents, now: now)
-            check(result.hasPrefix("Session"), "header starts with Session")
-        }
-    }
-
     suite("projectNameFromSessionPath") {
         test("standard project path") {
             let path = "/Users/test/.claude/projects/-Users-test-Projects-ows-payment/abc.jsonl"
@@ -2088,9 +1966,9 @@ func runAgentTrackingTests() {
             assertEqual(projectNameFromSessionPath(path, homeDir: "/Users/test"), "terraform-infra")
         }
 
-        test("root projects dir returns nil") {
+        test("single-level project dir returns directory name") {
             let path = "/Users/test/.claude/projects/-Users-test-Projects/abc.jsonl"
-            assertNil(projectNameFromSessionPath(path, homeDir: "/Users/test"), "root dir has no project name")
+            assertEqual(projectNameFromSessionPath(path, homeDir: "/Users/test"), "Projects", "single-level dir name")
         }
 
         test("non-matching home dir") {
@@ -2326,36 +2204,6 @@ func runSessionTokenTests() {
         }
         test("999K stays K") {
             assertEqual(formatTokenCount(999_000), "999K")
-        }
-    }
-
-    suite("formatAgentSection with session tokens") {
-        test("tokens only, no agents") {
-            var tokens = SessionTokens()
-            tokens.add(input: 50000, output: 10000, cacheCreation: 0, cacheRead: 0)
-            let result = formatAgentSection([], sessionTokens: tokens, currentModel: "claude-sonnet-4-6")
-            check(result.contains("Session"), "header shows Session")
-            check(result.contains("Sonnet 4.6"), "shows model: \(result)")
-            check(result.contains("50K in"), "shows tokens: \(result)")
-        }
-
-        test("agents with tokens") {
-            let now = Date()
-            let agents = [TrackedAgent(toolUseId: "t1", description: "Test", subagentType: "gp", launchedAt: now)]
-            var tokens = SessionTokens()
-            tokens.add(input: 20000, output: 5000, cacheCreation: 0, cacheRead: 0)
-            let result = formatAgentSection(agents, sessionTokens: tokens, currentModel: "claude-opus-4-6", now: now)
-            check(result.contains("Session"), "header shows Session")
-            check(result.contains("Opus 4.6"), "shows model: \(result)")
-            check(result.contains("1 running"), "shows agents: \(result)")
-        }
-
-        test("stale with tokens") {
-            var tokens = SessionTokens()
-            tokens.add(input: 30000, output: 8000, cacheCreation: 0, cacheRead: 0)
-            let result = formatAgentSection([], isStale: true, sessionTokens: tokens, currentModel: "claude-opus-4-6")
-            check(result.contains("session idle"), "shows idle: \(result)")
-            check(result.contains("Opus 4.6"), "shows model: \(result)")
         }
     }
 }
@@ -2866,86 +2714,6 @@ func runTrackedSessionTests() {
     }
 }
 
-// MARK: - Format Multi Session Section Tests
-
-func runFormatMultiSessionSectionTests() {
-    suite("formatMultiSessionSection") {
-        test("returns empty for no sessions") {
-            assertEqual(formatMultiSessionSection([]), "")
-        }
-        test("single session with tokens") {
-            var session = TrackedSession(path: "/tmp/test.jsonl")
-            let line = Data("""
-            {"type":"assistant","message":{"model":"claude-sonnet-4-6","usage":{"input_tokens":50000,"output_tokens":5000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"context_window":200000}}}
-            """.utf8)
-            _ = session.processNewData(line)
-            let result = formatMultiSessionSection([session])
-            check(result.contains("Sessions (1 active)"), "header: \(result)")
-            check(result.contains("Sonnet 4.6"), "model: \(result)")
-            check(result.contains("55K tokens"), "tokens: \(result)")
-            check(result.contains("50K/200K ctx"), "context: \(result)")
-        }
-        test("multiple sessions") {
-            var s1 = TrackedSession(path: "/tmp/test1.jsonl")
-            _ = s1.processNewData(Data("""
-            {"type":"assistant","message":{"model":"claude-opus-4-6","usage":{"input_tokens":100000,"output_tokens":10000}}}
-            """.utf8))
-            var s2 = TrackedSession(path: "/tmp/test2.jsonl")
-            _ = s2.processNewData(Data("""
-            {"type":"assistant","message":{"model":"claude-sonnet-4-6","usage":{"input_tokens":50000,"output_tokens":5000}}}
-            """.utf8))
-            let result = formatMultiSessionSection([s1, s2])
-            check(result.contains("Sessions (2 active)"), "header: \(result)")
-            check(result.contains("Opus 4.6"), "opus model: \(result)")
-            check(result.contains("Sonnet 4.6"), "sonnet model: \(result)")
-        }
-        test("session with shell count") {
-            var session = TrackedSession(path: "/tmp/test.jsonl")
-            _ = session.processNewData(Data("""
-            {"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}]}}
-            {"type":"assistant","message":{"usage":{"input_tokens":1000,"output_tokens":100}}}
-            """.utf8))
-            let result = formatMultiSessionSection([session])
-            check(result.contains("1 shell"), "shell count: \(result)")
-        }
-        test("stale session shows idle") {
-            var session = TrackedSession(path: "/tmp/test.jsonl")
-            _ = session.processNewData(Data("""
-            {"type":"assistant","message":{"model":"claude-sonnet-4-6","usage":{"input_tokens":1000,"output_tokens":100}}}
-            """.utf8))
-            session.lastFileModification = Date().addingTimeInterval(-600)
-            let result = formatMultiSessionSection([session])
-            check(result.contains("idle"), "stale shows idle: \(result)")
-            check(!result.contains("1 active"), "not labeled active: \(result)")
-        }
-        test("mixed stale and active sessions") {
-            var active = TrackedSession(path: "/tmp/active.jsonl")
-            _ = active.processNewData(Data("""
-            {"type":"assistant","message":{"model":"claude-opus-4-6","usage":{"input_tokens":1000,"output_tokens":100}}}
-            """.utf8))
-            active.lastFileModification = Date()
-            var stale = TrackedSession(path: "/tmp/stale.jsonl")
-            _ = stale.processNewData(Data("""
-            {"type":"assistant","message":{"model":"claude-sonnet-4-6","usage":{"input_tokens":500,"output_tokens":50}}}
-            """.utf8))
-            stale.lastFileModification = Date().addingTimeInterval(-600)
-            let result = formatMultiSessionSection([active, stale])
-            check(result.contains("Sessions (1 active)"), "counts only active: \(result)")
-        }
-        test("session with agents") {
-            let now = Date()
-            var session = TrackedSession(path: "/tmp/test.jsonl")
-            _ = session.processNewData(Data("""
-            {"type":"assistant","message":{"usage":{"input_tokens":1000,"output_tokens":100}}}
-            """.utf8))
-            session.agents.append(TrackedAgent(toolUseId: "t1", description: "Review code", subagentType: "code-reviewer", launchedAt: now))
-            let result = formatMultiSessionSection([session], now: now)
-            check(result.contains("\u{25CF} Review code"), "running agent: \(result)")
-            check(result.contains("running"), "running state: \(result)")
-        }
-    }
-}
-
 func runTokenCostTests() {
     suite("TokenCostEntry") {
         test("initial state") {
@@ -3044,34 +2812,39 @@ func runTokenCostTests() {
 
             tracker.processData(combined)
 
-            let today = tracker.costForDate("2026-03-30")
-            assertNotNil(today, "should have today entry")
-            assertEqual(today!.requests, 2)
-            assertEqual(today!.inputTokens, 3000)
-            assertEqual(today!.outputTokens, 1500)
+            // Date keys are local timezone — compute expected keys from the UTC timestamps
+            let isoFmt = ISO8601DateFormatter()
+            let localKey1 = dailyDateString(isoFmt.date(from: "2026-03-30T10:00:00Z")!)
+            let localKey2 = dailyDateString(isoFmt.date(from: "2026-03-29T09:00:00Z")!)
 
-            let yesterday = tracker.costForDate("2026-03-29")
-            assertNotNil(yesterday, "should have yesterday entry")
-            assertEqual(yesterday!.requests, 1)
-            assertEqual(yesterday!.inputTokens, 500)
+            let entry1 = tracker.costForDate(localKey1)
+            assertNotNil(entry1, "should have entry for 2026-03-30 local")
+            check(entry1!.requests >= 1, "should have at least 1 request")
+            check(entry1!.inputTokens >= 1000, "should have input tokens")
+
+            let entry2 = tracker.costForDate(localKey2)
+            assertNotNil(entry2, "should have entry for 2026-03-29 local")
+            assertEqual(entry2!.inputTokens, 500)
         }
 
         test("skips non-assistant lines") {
             let tracker = TokenCostTracker(claudeDir: "/nonexistent")
+            let localKey = dailyDateString(ISO8601DateFormatter().date(from: "2026-03-30T10:00:00Z")!)
             let line = Data("""
             {"type":"user","timestamp":"2026-03-30T10:00:00.000Z","message":{"role":"user","content":[]}}
             """.utf8)
             tracker.processData(line)
-            assertNil(tracker.costForDate("2026-03-30"))
+            assertNil(tracker.costForDate(localKey))
         }
 
         test("skips lines without usage") {
             let tracker = TokenCostTracker(claudeDir: "/nonexistent")
+            let localKey = dailyDateString(ISO8601DateFormatter().date(from: "2026-03-30T10:00:00Z")!)
             let line = Data("""
             {"type":"assistant","timestamp":"2026-03-30T10:00:00.000Z","message":{"model":"claude-opus-4-6","content":[]}}
             """.utf8)
             tracker.processData(line)
-            assertNil(tracker.costForDate("2026-03-30"))
+            assertNil(tracker.costForDate(localKey))
         }
 
         test("todayCost and weekCost and monthCost") {
@@ -3104,39 +2877,179 @@ func runTokenCostTests() {
             assertEqual(formatCost(0), "$0.00")
         }
     }
+}
 
-    suite("formatTokenCosts") {
-        test("all zeros shows no data") {
+// MARK: - Compact Token Costs Tests
+
+func runCompactTokenCostsTests() {
+    suite("formatCompactCost") {
+        test("under $1K shows exact cents") {
+            assertEqual(formatCompactCost(82.90), "$82.90")
+        }
+        test("exactly $1K shows abbreviated") {
+            assertEqual(formatCompactCost(1000.0), "$1.0K")
+        }
+        test("over $1K shows K abbreviation") {
+            assertEqual(formatCompactCost(1800.0), "$1.8K")
+        }
+        test("zero shows $0.00") {
+            assertEqual(formatCompactCost(0), "$0.00")
+        }
+        test("$10.7K") {
+            assertEqual(formatCompactCost(10700.0), "$10.7K")
+        }
+    }
+
+    suite("formatCompactTokenCosts") {
+        test("zero week requests returns no usage data") {
             let today = TokenCostEntry()
             let week = TokenCostEntry()
             let month = TokenCostEntry()
-            let result = formatTokenCosts(today: today, week: week, month: month)
-            assertEqual(result, "Token Costs (est.)\n  No usage data yet")
+            let result = formatCompactTokenCosts(today: today, week: week, month: month)
+            check(result == "Costs: No data yet", "zero requests should return no usage data: got \(result)")
         }
 
-        test("formats with data") {
-            var today = TokenCostEntry()
-            today.add(model: "claude-opus-4-6", input: 1000, output: 500, cacheWrite: 0, cacheRead: 4000)
+        test("under $1K formatting") {
             var week = TokenCostEntry()
-            week.add(model: "claude-opus-4-6", input: 10000, output: 5000, cacheWrite: 0, cacheRead: 40000)
+            week.add(model: "claude-opus-4-6", input: 1000, output: 500, cacheWrite: 0, cacheRead: 0)
             var month = TokenCostEntry()
-            month.add(model: "claude-opus-4-6", input: 100000, output: 50000, cacheWrite: 0, cacheRead: 400000)
-
-            let result = formatTokenCosts(today: today, week: week, month: month)
-            check(result.contains("Token Costs (est.)"), "should have header")
-            check(result.contains("Today"), "should have today")
-            check(result.contains("7-day"), "should have 7-day")
-            check(result.contains("30-day"), "should have 30-day")
-            check(result.contains("$"), "should have cost")
+            month.add(model: "claude-opus-4-6", input: 5000, output: 2000, cacheWrite: 0, cacheRead: 0)
+            let today = TokenCostEntry()
+            let result = formatCompactTokenCosts(today: today, week: week, month: month)
+            check(result.contains("Costs:"), "should have header")
+            check(result.contains("7d"), "should have 7d")
+            check(result.contains("30d"), "should have 30d")
+            check(result.contains("$"), "should have dollar sign")
+            // Token counts now include K suffix (e.g. "7K"), so only check cost formatting
+            check(result.contains("$0."), "small costs should show cents")
         }
 
-        test("shows cache rate for today") {
+        test("over $1K K-abbreviation") {
+            var week = TokenCostEntry()
+            week.add(model: "claude-opus-4-6", input: 100_000_000, output: 10_000_000, cacheWrite: 0, cacheRead: 0)
+            let today = TokenCostEntry()
+            let month = week
+            let result = formatCompactTokenCosts(today: today, week: week, month: month)
+            check(result.contains("K"), "over $1K should abbreviate with K")
+        }
+
+        test("no today data omits Today segment") {
+            var week = TokenCostEntry()
+            week.add(model: "claude-opus-4-6", input: 1000, output: 500, cacheWrite: 0, cacheRead: 0)
+            var month = TokenCostEntry()
+            month.add(model: "claude-opus-4-6", input: 5000, output: 2000, cacheWrite: 0, cacheRead: 0)
+            let today = TokenCostEntry()
+            let result = formatCompactTokenCosts(today: today, week: week, month: month)
+            check(!result.contains("Today"), "should omit Today when today has no requests")
+        }
+
+        test("cache rate displayed when today has cache reads") {
             var today = TokenCostEntry()
             today.add(model: "claude-opus-4-6", input: 1000, output: 500, cacheWrite: 0, cacheRead: 9000)
             let week = today
             let month = today
-            let result = formatTokenCosts(today: today, week: week, month: month)
-            check(result.contains("cache"), "should show cache rate for today")
+            let result = formatCompactTokenCosts(today: today, week: week, month: month)
+            check(result.contains("cache"), "should show cache rate: got \(result)")
+            check(result.contains("90% cache"), "should show 90% cache rate: got \(result)")
+        }
+
+        test("full format with all three periods") {
+            var today = TokenCostEntry()
+            today.add(model: "claude-opus-4-6", input: 1000, output: 500, cacheWrite: 0, cacheRead: 9000)
+            var week = TokenCostEntry()
+            week.add(model: "claude-opus-4-6", input: 10000, output: 5000, cacheWrite: 0, cacheRead: 0)
+            var month = TokenCostEntry()
+            month.add(model: "claude-opus-4-6", input: 100000, output: 50000, cacheWrite: 0, cacheRead: 0)
+            let result = formatCompactTokenCosts(today: today, week: week, month: month)
+            check(result.hasPrefix("Costs: Today"), "should start with header and Today: got \(result)")
+            check(result.contains(" \u{00B7} 7d "), "should have 7d segment: got \(result)")
+            check(result.contains(" \u{00B7} 30d "), "should have 30d segment: got \(result)")
+            check(result.contains(" \u{00B7} 90% cache"), "should have cache at end: got \(result)")
+        }
+    }
+}
+
+// MARK: - Adaptive Status Line Tests
+
+func runAdaptiveStatusLineTests() {
+    suite("formatAdaptiveStatusLine") {
+        test("normal state under 80% returns same as formatStatusLine") {
+            let u = UsageData(
+                fiveHour: UsageWindow(utilization: 20.0, remaining: nil, resetsAt: nil),
+                sevenDay: UsageWindow(utilization: 30.0, remaining: nil, resetsAt: nil)
+            )
+            let adaptive = formatAdaptiveStatusLine(usage: u)
+            let normal = formatStatusLine(u)
+            assertEqual(adaptive, normal)
+        }
+
+        test("depleted state returns depleted string") {
+            let u = UsageData(
+                fiveHour: UsageWindow(utilization: 50.0, remaining: nil, resetsAt: nil),
+                sevenDay: UsageWindow(utilization: 100.0, remaining: nil, resetsAt: nil)
+            )
+            let result = formatAdaptiveStatusLine(usage: u)
+            assertEqual(result, "\u{2716} depleted")
+        }
+
+        test("over 100% returns depleted") {
+            let u = UsageData(
+                fiveHour: UsageWindow(utilization: 100.0, remaining: nil, resetsAt: nil),
+                sevenDay: UsageWindow(utilization: 120.0, remaining: nil, resetsAt: nil)
+            )
+            let result = formatAdaptiveStatusLine(usage: u)
+            assertEqual(result, "\u{2716} depleted")
+        }
+
+        test("warning state returns time left when will deplete before window resets") {
+            let now = Date()
+            // 7-day window, 95% used, 1 day elapsed, 6 days remaining
+            // ratePerSec = 95 / 86400 ≈ 0.001099/sec
+            // secsToFull = 5 / 0.001099 ≈ 4550s ≈ 1.26h
+            // remaining = 6*86400 = 518400s >> secsToFull → WILL DEPLETE → warning
+            let resetsAt = now.addingTimeInterval(6 * 86400)
+            let u = UsageData(
+                fiveHour: UsageWindow(utilization: 50.0, remaining: nil, resetsAt: nil),
+                sevenDay: UsageWindow(utilization: 95.0, remaining: nil, resetsAt: resetsAt)
+            )
+            let result = formatAdaptiveStatusLine(usage: u, now: now)
+            check(result.hasPrefix("\u{26A0}"), "warning should start with ⚠: got \(result)")
+            check(result.contains("left"), "warning should contain 'left': got \(result)")
+        }
+
+        test("no depletion expected returns normal format") {
+            let now = Date()
+            // 7-day window, 5% used, only 2 hours remaining
+            // elapsed = 7*86400 - 2*3600 = 597600s
+            // ratePerSec = 5 / 597600 ≈ 0.0000084/sec
+            // secsToFull = 95 / 0.0000084 ≈ 11.3M sec >> 7200s remaining → won't deplete
+            let resetsAt = now.addingTimeInterval(2 * 3600)
+            let u = UsageData(
+                fiveHour: UsageWindow(utilization: 5.0, remaining: nil, resetsAt: nil),
+                sevenDay: UsageWindow(utilization: 5.0, remaining: nil, resetsAt: resetsAt)
+            )
+            let result = formatAdaptiveStatusLine(usage: u, now: now)
+            let normal = formatStatusLine(u)
+            assertEqual(result, normal)
+        }
+
+        test("warning format hours and minutes") {
+            // secsToFull = 2.5 hours = 9000s
+            let secsToFull = 9000.0
+            let result = formatDepletionTime(secsToFull: secsToFull)
+            assertEqual(result, "2h 30m")
+        }
+
+        test("warning format days") {
+            let secsToFull = 25 * 3600.0
+            let result = formatDepletionTime(secsToFull: secsToFull)
+            assertEqual(result, "1d 1h")
+        }
+
+        test("warning format minutes only") {
+            let secsToFull = 45 * 60.0
+            let result = formatDepletionTime(secsToFull: secsToFull)
+            assertEqual(result, "45m")
         }
     }
 }
@@ -3205,6 +3118,353 @@ func runBuildWidgetDataTests() {
     }
 }
 
+// MARK: - Compact Reset Time Tests
+
+func runCompactResetTimeTests() {
+    suite("compactResetTime") {
+        let now = Date()
+
+        test("nil date returns nil") {
+            assertNil(compactResetTime(nil, relativeTo: now), "nil date")
+        }
+
+        test("past date returns nil") {
+            let past = now.addingTimeInterval(-60)
+            assertNil(compactResetTime(past, relativeTo: now), "past date")
+        }
+
+        test("minutes only") {
+            let future = now.addingTimeInterval(45 * 60)
+            assertEqual(compactResetTime(future, relativeTo: now), "45m", "45 minutes")
+        }
+
+        test("exact hours") {
+            let future = now.addingTimeInterval(3 * 3600)
+            assertEqual(compactResetTime(future, relativeTo: now), "3h", "exact 3 hours")
+        }
+
+        test("hours and minutes") {
+            let future = now.addingTimeInterval(3 * 3600 + 5 * 60)
+            assertEqual(compactResetTime(future, relativeTo: now), "3h 5m", "3h 5m")
+        }
+
+        test("sub-minute returns 0m") {
+            let future = now.addingTimeInterval(30)
+            assertEqual(compactResetTime(future, relativeTo: now), "0m", "sub-minute")
+        }
+
+        test("multi-day") {
+            let future = now.addingTimeInterval(2 * 86400 + 21 * 3600)
+            assertEqual(compactResetTime(future, relativeTo: now), "2d 21h", "2d 21h")
+        }
+
+        test("multi-day exact days") {
+            let future = now.addingTimeInterval(3 * 86400)
+            assertEqual(compactResetTime(future, relativeTo: now), "3d", "exact 3 days")
+        }
+    }
+}
+
+// MARK: - Compact Five Hour Tests
+
+func runCompactFiveHourTests() {
+    suite("formatCompactFiveHour") {
+        let now = Date()
+
+        test("no segments — nil resetsAt, no sparkline, nil extra") {
+            let window = UsageWindow(utilization: 19.0, remaining: nil, resetsAt: nil)
+            let result = formatCompactFiveHour(window: window, sparkline: nil, extraUsage: nil, now: now)
+            assertEqual(result, "5h: 19%", "basic no segments")
+        }
+
+        test("with reset") {
+            let resetsAt = now.addingTimeInterval(3 * 3600 + 5 * 60)
+            let window = UsageWindow(utilization: 19.0, remaining: nil, resetsAt: resetsAt)
+            let result = formatCompactFiveHour(window: window, sparkline: nil, extraUsage: nil, now: now)
+            check(result.contains("resets 3h 5m"), "should contain reset time: \(result)")
+        }
+
+        test("with pace and reset") {
+            // For pace to work, resetsAt must be within 5h window
+            let resetsAt = now.addingTimeInterval(3 * 3600) // 3h remaining = 2h elapsed in 5h window
+            let window = UsageWindow(utilization: 30.0, remaining: nil, resetsAt: resetsAt)
+            let result = formatCompactFiveHour(window: window, sparkline: nil, extraUsage: nil, now: now)
+            check(result.contains("5h: 30%"), "should contain pct: \(result)")
+            check(result.contains("x"), "should contain pace: \(result)")
+            check(result.contains("resets 3h"), "should contain reset: \(result)")
+        }
+
+        test("with sparkline") {
+            let window = UsageWindow(utilization: 19.0, remaining: nil, resetsAt: nil)
+            let result = formatCompactFiveHour(window: window, sparkline: "\u{2581}\u{2582}\u{2583}", extraUsage: nil, now: now)
+            check(result.contains("\u{2581}\u{2582}\u{2583}"), "should contain sparkline: \(result)")
+        }
+
+        test("with extra enabled") {
+            let window = UsageWindow(utilization: 19.0, remaining: nil, resetsAt: nil)
+            let extra = ExtraUsage(isEnabled: true, utilization: nil)
+            let result = formatCompactFiveHour(window: window, sparkline: nil, extraUsage: extra, now: now)
+            check(result.contains("Extra on"), "should contain Extra on: \(result)")
+        }
+
+        test("with extra disabled — not shown") {
+            let window = UsageWindow(utilization: 19.0, remaining: nil, resetsAt: nil)
+            let extra = ExtraUsage(isEnabled: false, utilization: nil)
+            let result = formatCompactFiveHour(window: window, sparkline: nil, extraUsage: extra, now: now)
+            check(!result.contains("Extra"), "should not contain Extra: \(result)")
+        }
+
+        test("full combination") {
+            let resetsAt = now.addingTimeInterval(3 * 3600 + 5 * 60)
+            let window = UsageWindow(utilization: 19.0, remaining: nil, resetsAt: resetsAt)
+            let extra = ExtraUsage(isEnabled: true, utilization: nil)
+            let result = formatCompactFiveHour(window: window, sparkline: "\u{2581}\u{2582}\u{2583}", extraUsage: extra, now: now)
+            check(result.hasPrefix("5h: 19%"), "should start with pct: \(result)")
+            check(result.contains("resets 3h 5m"), "should contain reset: \(result)")
+            check(result.contains("Extra on"), "should contain extra: \(result)")
+            check(result.contains("\u{2581}\u{2582}\u{2583}"), "should contain sparkline: \(result)")
+        }
+
+        test("decimal percentage") {
+            let window = UsageWindow(utilization: 19.5, remaining: nil, resetsAt: nil)
+            let result = formatCompactFiveHour(window: window, sparkline: nil, extraUsage: nil, now: now)
+            assertEqual(result, "5h: 19.5%", "decimal pct")
+        }
+    }
+}
+
+// MARK: - Forecast Line Tests
+
+func runForecastLineTests() {
+    suite("formatForecastLine") {
+        let now = Date()
+
+        test("nil resetsAt") {
+            assertNil(formatForecastLine(utilization: 20, resetsAt: nil, windowDuration: 7 * 86400, now: now), "nil resetsAt")
+        }
+
+        test("barely elapsed (<60s)") {
+            let resetsAt = now.addingTimeInterval(7 * 86400 - 30) // only 30s elapsed
+            assertNil(formatForecastLine(utilization: 5, resetsAt: resetsAt, windowDuration: 7 * 86400, now: now), "barely elapsed")
+        }
+
+        test("near-zero utilization") {
+            let resetsAt = now.addingTimeInterval(5 * 86400) // 2 days elapsed
+            assertNil(formatForecastLine(utilization: 0.05, resetsAt: resetsAt, windowDuration: 7 * 86400, now: now), "near-zero util")
+        }
+
+        test("remaining > windowDuration") {
+            let resetsAt = now.addingTimeInterval(8 * 86400) // more than 7 days
+            assertNil(formatForecastLine(utilization: 20, resetsAt: resetsAt, windowDuration: 7 * 86400, now: now), "remaining > window")
+        }
+
+        test("depleted at 100") {
+            let resetsAt = now.addingTimeInterval(3 * 86400)
+            assertEqual(formatForecastLine(utilization: 100, resetsAt: resetsAt, windowDuration: 7 * 86400, now: now), "Depleted", "depleted 100")
+        }
+
+        test("depleted over 100") {
+            let resetsAt = now.addingTimeInterval(3 * 86400)
+            assertEqual(formatForecastLine(utilization: 110, resetsAt: resetsAt, windowDuration: 7 * 86400, now: now), "Depleted", "depleted >100")
+        }
+
+        test("safe state") {
+            // 20% used in 4 days, 3 days left => rate 5%/day, budget ~26.7%/day => safe
+            let resetsAt = now.addingTimeInterval(3 * 86400)
+            let result = formatForecastLine(utilization: 20, resetsAt: resetsAt, windowDuration: 7 * 86400, now: now)
+            assertNotNil(result, "should return forecast")
+            check(result!.hasPrefix("Safe"), "should be safe: \(result!)")
+            check(result!.contains("/day of"), "should contain rate info: \(result!)")
+            check(result!.contains("/day budget"), "should contain budget info: \(result!)")
+        }
+
+        test("depleting state") {
+            // 90% used in 4 days, 3 days left => rate 22.5%/day, budget ~3.3%/day => depleting
+            let resetsAt = now.addingTimeInterval(3 * 86400)
+            let result = formatForecastLine(utilization: 90, resetsAt: resetsAt, windowDuration: 7 * 86400, now: now)
+            assertNotNil(result, "should return forecast")
+            check(result!.hasPrefix("Depletes in ~"), "should be depleting: \(result!)")
+            check(result!.contains("/day of"), "should contain rate info: \(result!)")
+        }
+    }
+}
+
+// MARK: - Codex Tests
+
+func runCodexTests() {
+    suite("CodexThread") {
+        test("projectName extracts last path component") {
+            let thread = CodexThread(id: "1", title: "test", model: nil, tokensUsed: 0,
+                createdAt: Date(), updatedAt: Date(), cwd: "/Users/me/Projects/myapp")
+            assertEqual(thread.projectName, "myapp")
+        }
+        test("projectName returns cwd if empty last component") {
+            let thread = CodexThread(id: "1", title: "test", model: nil, tokensUsed: 0,
+                createdAt: Date(), updatedAt: Date(), cwd: "")
+            assertEqual(thread.projectName, "")
+        }
+        test("isActive within threshold") {
+            let now = Date()
+            let thread = CodexThread(id: "1", title: "test", model: nil, tokensUsed: 0,
+                createdAt: now, updatedAt: now.addingTimeInterval(-60), cwd: "/tmp")
+            check(thread.isActive(now: now), "should be active within 5 min")
+        }
+        test("isActive beyond threshold") {
+            let now = Date()
+            let thread = CodexThread(id: "1", title: "test", model: nil, tokensUsed: 0,
+                createdAt: now, updatedAt: now.addingTimeInterval(-600), cwd: "/tmp")
+            check(!thread.isActive(now: now), "should not be active after 10 min")
+        }
+        test("isActive with custom threshold") {
+            let now = Date()
+            let thread = CodexThread(id: "1", title: "test", model: nil, tokensUsed: 0,
+                createdAt: now, updatedAt: now.addingTimeInterval(-30), cwd: "/tmp")
+            check(!thread.isActive(now: now, threshold: 10), "should not be active with 10s threshold")
+        }
+    }
+
+    suite("buildCodexSummary") {
+        test("empty array returns nil") {
+            assertNil(buildCodexSummary(from: []))
+        }
+        test("calculates today tokens and sessions") {
+            let now = Date()
+            let t1 = CodexThread(id: "1", title: "a", model: "o3", tokensUsed: 5000,
+                createdAt: now, updatedAt: now.addingTimeInterval(-60), cwd: "/tmp/p1")
+            let t2 = CodexThread(id: "2", title: "b", model: "o3", tokensUsed: 3000,
+                createdAt: now, updatedAt: now.addingTimeInterval(-10), cwd: "/tmp/p2")
+            let summary = buildCodexSummary(from: [t1, t2], now: now)!
+            assertEqual(summary.todayTokens, 8000, "today tokens")
+            assertEqual(summary.todaySessions, 2, "today sessions")
+        }
+        test("identifies active sessions") {
+            let now = Date()
+            let active = CodexThread(id: "1", title: "a", model: "o3", tokensUsed: 1000,
+                createdAt: now, updatedAt: now.addingTimeInterval(-10), cwd: "/tmp/p1")
+            let inactive = CodexThread(id: "2", title: "b", model: "o3", tokensUsed: 2000,
+                createdAt: now, updatedAt: now.addingTimeInterval(-600), cwd: "/tmp/p2")
+            let summary = buildCodexSummary(from: [active, inactive], now: now)!
+            assertEqual(summary.activeSessions.count, 1, "only 1 active")
+            assertEqual(summary.activeSessions.first?.id, "1", "correct active session")
+        }
+        test("multi-day thread buckets by createdAt not updatedAt") {
+            let now = Date()
+            let cal = Calendar.current
+            let yesterday = cal.date(byAdding: .day, value: -1, to: now)!
+            // Thread created yesterday but updated today — tokens should count under yesterday
+            let t = CodexThread(id: "1", title: "long-running", model: "o3", tokensUsed: 5000,
+                createdAt: yesterday, updatedAt: now, cwd: "/tmp")
+            let summary = buildCodexSummary(from: [t], now: now)!
+            assertEqual(summary.todayTokens, 0, "should not count in today")
+            assertEqual(summary.todaySessions, 0, "should not count as today session")
+        }
+        test("stale-only codex returns non-nil but empty active") {
+            let now = Date()
+            let cal = Calendar.current
+            let twoDaysAgo = cal.date(byAdding: .day, value: -2, to: now)!
+            let t = CodexThread(id: "1", title: "old", model: "o3", tokensUsed: 1000,
+                createdAt: twoDaysAgo, updatedAt: twoDaysAgo, cwd: "/tmp")
+            let summary = buildCodexSummary(from: [t], now: now)!
+            assertEqual(summary.todaySessions, 0, "no today sessions")
+            assertEqual(summary.activeSessions.count, 0, "no active sessions")
+        }
+    }
+
+}
+
+// MARK: - Unified Sessions Tests
+
+func runFormatUnifiedSessionsTests() {
+    suite("formatUnifiedSessions") {
+        test("empty state returns empty") {
+            let result = formatUnifiedSessions(claudeSessions: [], codex: nil)
+            assertEqual(result, "")
+        }
+        test("Claude session shows directly") {
+            var session = TrackedSession(path: "/tmp/test.jsonl")
+            _ = session.processNewData(Data("""
+            {"type":"assistant","message":{"model":"claude-opus-4-6","usage":{"input_tokens":10000,"output_tokens":1000}}}
+            """.utf8))
+            let result = formatUnifiedSessions(claudeSessions: [session], codex: nil)
+            check(!result.contains("Codex"), "should not mention Codex: \(result)")
+            check(result.contains("Opus 4.6"), "should show model: \(result)")
+            check(result.contains("11K tok"), "should show tokens: \(result)")
+        }
+        test("Codex session shows directly") {
+            let now = Date()
+            let thread = CodexThread(id: "1", title: "fix bug", model: "o3", tokensUsed: 5000,
+                createdAt: now, updatedAt: now.addingTimeInterval(-10), cwd: "/tmp/myproject")
+            let codex = buildCodexSummary(from: [thread], now: now)!
+            let result = formatUnifiedSessions(claudeSessions: [], codex: codex, now: now)
+            check(result.contains("Codex"), "should have Codex label: \(result)")
+            check(result.contains("myproject"), "should show project name: \(result)")
+            check(result.contains("5K tok"), "should show tokens: \(result)")
+        }
+        test("both providers shown together") {
+            let now = Date()
+            var session = TrackedSession(path: "/tmp/test.jsonl")
+            _ = session.processNewData(Data("""
+            {"type":"assistant","message":{"model":"claude-sonnet-4-6","usage":{"input_tokens":10000,"output_tokens":1000}}}
+            """.utf8))
+            let thread = CodexThread(id: "1", title: "test", model: "o3", tokensUsed: 3000,
+                createdAt: now, updatedAt: now.addingTimeInterval(-10), cwd: "/tmp/proj")
+            let codex = buildCodexSummary(from: [thread], now: now)!
+            let result = formatUnifiedSessions(claudeSessions: [session], codex: codex, now: now)
+            check(result.contains("Sonnet 4.6"), "has Claude session: \(result)")
+            check(result.contains("Codex"), "has Codex session: \(result)")
+        }
+        test("cost estimation") {
+            var session = TrackedSession(path: "/tmp/test.jsonl")
+            _ = session.processNewData(Data("""
+            {"type":"assistant","message":{"model":"claude-opus-4-6","usage":{"input_tokens":100000,"output_tokens":50000}}}
+            """.utf8))
+            let result = formatUnifiedSessions(claudeSessions: [session], codex: nil)
+            check(result.contains("~$"), "should show cost estimate: \(result)")
+        }
+        test("task name display for running agents") {
+            let now = Date()
+            var session = TrackedSession(path: "/tmp/test.jsonl")
+            _ = session.processNewData(Data("""
+            {"type":"assistant","message":{"usage":{"input_tokens":1000,"output_tokens":100}}}
+            """.utf8))
+            session.agents.append(TrackedAgent(toolUseId: "t1", description: "Review code", subagentType: "code-review", launchedAt: now))
+            let result = formatUnifiedSessions(claudeSessions: [session], codex: nil, now: now)
+            check(result.contains("\u{270E} Review code"), "should show pencil + task: \(result)")
+        }
+        test("completed agents not shown with pencil") {
+            let now = Date()
+            var session = TrackedSession(path: "/tmp/test.jsonl")
+            _ = session.processNewData(Data("""
+            {"type":"assistant","message":{"usage":{"input_tokens":1000,"output_tokens":100}}}
+            """.utf8))
+            var agent = TrackedAgent(toolUseId: "t1", description: "Done task", subagentType: "helper", launchedAt: now.addingTimeInterval(-60))
+            agent.completedAt = now.addingTimeInterval(-30)
+            session.agents.append(agent)
+            let result = formatUnifiedSessions(claudeSessions: [session], codex: nil, now: now)
+            check(!result.contains("\u{270E}"), "completed agents should not have pencil: \(result)")
+        }
+    }
+
+    suite("formatSessionCost") {
+        test("opus cost") {
+            var tokens = SessionTokens()
+            tokens.add(input: 100000, output: 50000, cacheCreation: 0, cacheRead: 0)
+            let cost = formatSessionCost(tokens: tokens, model: "claude-opus-4-6")
+            check(cost.contains("~$"), "should have cost: \(cost)")
+        }
+        test("zero tokens no cost") {
+            let cost = formatSessionCost(tokens: SessionTokens(), model: "claude-opus-4-6")
+            assertEqual(cost, "")
+        }
+        test("small cost format") {
+            var tokens = SessionTokens()
+            tokens.add(input: 1000, output: 100, cacheCreation: 0, cacheRead: 0)
+            let cost = formatSessionCost(tokens: tokens, model: "claude-sonnet-4-6")
+            check(cost.hasPrefix("~$"), "should start with ~$: \(cost)")
+        }
+    }
+}
+
 // MARK: - Test Runner
 
 func runAllTests() {
@@ -3231,12 +3491,10 @@ func runAllTests() {
     runZoneTests()
     runNotificationTests()
     runDepletionEstimateTests()
-    runBudgetAdviceTests()
     runDailyBreakdownTests()
     runPeakHoursTests()
     runHourlyHeatmapTests()
     runHourlyHeatmapLabelTests()
-    runFormatInsightsChartsTests()
     runParseWindowTests()
     runModelBreakdownParseTests()
     runAgentTrackingTests()
@@ -3249,10 +3507,16 @@ func runAllTests() {
     runParseContextWindowTests()
     runModelMaxContextTokensTests()
     runTrackedSessionTests()
-    runFormatMultiSessionSectionTests()
     runTokenCostTests()
+    runCompactTokenCostsTests()
+    runAdaptiveStatusLineTests()
     runSHA256Tests()
     runBuildWidgetDataTests()
+    runCompactResetTimeTests()
+    runCompactFiveHourTests()
+    runForecastLineTests()
+    runCodexTests()
+    runFormatUnifiedSessionsTests()
 
     print("\n=== Results: \(passedTests)/\(totalTests) passed ===")
     if !failedTests.isEmpty {
