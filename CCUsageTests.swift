@@ -3465,6 +3465,204 @@ func runFormatUnifiedSessionsTests() {
     }
 }
 
+// MARK: - Daily Cost Tests
+
+func runDailyCostTests() {
+    suite("recordDailyCost") {
+        test("records first cost entry") {
+            var store = DailyUsageData()
+            let now = Date()
+            recordDailyCost(&store, todayCost: 1.50, now: now)
+            assertEqual(store.dailyCosts?.count, 1, "one cost entry")
+            assertEqual(store.dailyCosts?[0].cost, 1.50, "cost value")
+            assertEqual(store.dailyCosts?[0].date, dailyDateString(now), "date matches today")
+        }
+
+        test("updates same day cost") {
+            var store = DailyUsageData()
+            let now = Date()
+            recordDailyCost(&store, todayCost: 1.50, now: now)
+            recordDailyCost(&store, todayCost: 3.25, now: now)
+            assertEqual(store.dailyCosts?.count, 1, "still one entry")
+            assertEqual(store.dailyCosts?[0].cost, 3.25, "cost replaced")
+        }
+
+        test("adds new day entry") {
+            var store = DailyUsageData()
+            let cal = Calendar.current
+            let yesterday = cal.date(byAdding: .day, value: -1, to: Date())!
+            let today = Date()
+            recordDailyCost(&store, todayCost: 1.00, now: yesterday)
+            recordDailyCost(&store, todayCost: 2.00, now: today)
+            assertEqual(store.dailyCosts?.count, 2, "two cost entries")
+            assertEqual(store.dailyCosts?[0].cost, 1.00, "yesterday cost")
+            assertEqual(store.dailyCosts?[1].cost, 2.00, "today cost")
+        }
+
+        test("prunes entries older than 7 days") {
+            var store = DailyUsageData()
+            let cal = Calendar.current
+            let oldDate = cal.date(byAdding: .day, value: -8, to: Date())!
+            store.dailyCosts = [DailyCostEntry(date: dailyDateString(oldDate), cost: 5.00)]
+            recordDailyCost(&store, todayCost: 1.00, now: Date())
+            check(!(store.dailyCosts ?? []).contains(where: { $0.date == dailyDateString(oldDate) }), "old entry pruned")
+            assertEqual(store.dailyCosts?.count, 1, "only today entry remains")
+        }
+
+        test("nil dailyCosts initializes array") {
+            var store = DailyUsageData()
+            assertNil(store.dailyCosts, "starts nil")
+            recordDailyCost(&store, todayCost: 0.50, now: Date())
+            assertNotNil(store.dailyCosts, "initialized after recording")
+        }
+    }
+}
+
+// MARK: - Extended Widget Data Tests
+
+func runExtendedWidgetDataTests() {
+    suite("buildWidgetData with model breakdown") {
+        test("includes opus and sonnet utilization") {
+            let usage = UsageData(
+                fiveHour: UsageWindow(utilization: 50, remaining: nil, resetsAt: nil),
+                sevenDay: UsageWindow(utilization: 30, remaining: nil, resetsAt: nil),
+                models: ModelBreakdown(opus: UsageWindow(utilization: 60, remaining: nil, resetsAt: nil), sonnet: UsageWindow(utilization: 20, remaining: nil, resetsAt: nil), oauthApps: nil, cowork: nil)
+            )
+            let widget = buildWidgetData(usage)
+            assertEqual(widget.opusUtilization, 60, "opus utilization")
+            assertEqual(widget.sonnetUtilization, 20, "sonnet utilization")
+            assertNil(widget.haikuUtilization, "haiku not in model breakdown")
+        }
+
+        test("nil models produce nil utilization") {
+            let usage = UsageData(
+                fiveHour: UsageWindow(utilization: 10, remaining: nil, resetsAt: nil),
+                sevenDay: UsageWindow(utilization: 5, remaining: nil, resetsAt: nil)
+            )
+            let widget = buildWidgetData(usage)
+            assertNil(widget.opusUtilization, "no opus")
+            assertNil(widget.sonnetUtilization, "no sonnet")
+        }
+
+        test("extra usage utilization included") {
+            let usage = UsageData(
+                fiveHour: UsageWindow(utilization: 10, remaining: nil, resetsAt: nil),
+                sevenDay: UsageWindow(utilization: 5, remaining: nil, resetsAt: nil),
+                extraUsage: ExtraUsage(isEnabled: true, utilization: 42.5)
+            )
+            let widget = buildWidgetData(usage)
+            assertEqual(widget.extraUsageUtilization, 42.5, "extra usage utilization")
+        }
+    }
+
+    suite("buildWidgetData with daily entries") {
+        test("maps daily entries") {
+            let usage = UsageData(
+                fiveHour: UsageWindow(utilization: 10, remaining: nil, resetsAt: nil),
+                sevenDay: UsageWindow(utilization: 5, remaining: nil, resetsAt: nil)
+            )
+            let entries = [
+                DailyEntry(date: "2026-04-07", usage: 12.5),
+                DailyEntry(date: "2026-04-08", usage: 8.0),
+            ]
+            let widget = buildWidgetData(usage, dailyEntries: entries)
+            assertEqual(widget.dailyEntries?.count, 2, "two entries")
+            assertEqual(widget.dailyEntries?[0].date, "2026-04-07", "first date")
+            assertEqual(widget.dailyEntries?[0].usage, 12.5, "first usage")
+            assertEqual(widget.dailyEntries?[1].date, "2026-04-08", "second date")
+        }
+
+        test("nil daily entries") {
+            let usage = UsageData(
+                fiveHour: UsageWindow(utilization: 10, remaining: nil, resetsAt: nil),
+                sevenDay: UsageWindow(utilization: 5, remaining: nil, resetsAt: nil)
+            )
+            let widget = buildWidgetData(usage)
+            assertNil(widget.dailyEntries, "no daily entries")
+        }
+    }
+
+    suite("buildWidgetData with daily costs") {
+        test("maps daily costs") {
+            let usage = UsageData(
+                fiveHour: UsageWindow(utilization: 10, remaining: nil, resetsAt: nil),
+                sevenDay: UsageWindow(utilization: 5, remaining: nil, resetsAt: nil)
+            )
+            let costs = [
+                DailyCostEntry(date: "2026-04-07", cost: 1.50),
+                DailyCostEntry(date: "2026-04-08", cost: 2.75),
+            ]
+            let widget = buildWidgetData(usage, dailyCosts: costs)
+            assertEqual(widget.dailyCosts?.count, 2, "two cost entries")
+            assertEqual(widget.dailyCosts?[0].cost, 1.50, "first cost")
+            assertEqual(widget.dailyCosts?[1].date, "2026-04-08", "second date")
+        }
+    }
+
+    suite("hasSameValues with new fields") {
+        test("same values returns true") {
+            let usage = UsageData(
+                fiveHour: UsageWindow(utilization: 50, remaining: nil, resetsAt: Date(timeIntervalSince1970: 1700000000)),
+                sevenDay: UsageWindow(utilization: 30, remaining: nil, resetsAt: Date(timeIntervalSince1970: 1700100000)),
+                models: ModelBreakdown(opus: UsageWindow(utilization: 60, remaining: nil, resetsAt: nil), sonnet: UsageWindow(utilization: 20, remaining: nil, resetsAt: nil), oauthApps: nil, cowork: nil)
+            )
+            let entries = [DailyEntry(date: "2026-04-08", usage: 5.0)]
+            let costs = [DailyCostEntry(date: "2026-04-08", cost: 1.0)]
+            let a = buildWidgetData(usage, dailyEntries: entries, dailyCosts: costs)
+            let b = buildWidgetData(usage, dailyEntries: entries, dailyCosts: costs)
+            check(a.hasSameValues(as: b), "identical builds should match")
+        }
+
+        test("different opus utilization returns false") {
+            let usage1 = UsageData(
+                fiveHour: UsageWindow(utilization: 50, remaining: nil, resetsAt: nil),
+                sevenDay: UsageWindow(utilization: 30, remaining: nil, resetsAt: nil),
+                models: ModelBreakdown(opus: UsageWindow(utilization: 60, remaining: nil, resetsAt: nil), sonnet: nil, oauthApps: nil, cowork: nil)
+            )
+            let usage2 = UsageData(
+                fiveHour: UsageWindow(utilization: 50, remaining: nil, resetsAt: nil),
+                sevenDay: UsageWindow(utilization: 30, remaining: nil, resetsAt: nil),
+                models: ModelBreakdown(opus: UsageWindow(utilization: 70, remaining: nil, resetsAt: nil), sonnet: nil, oauthApps: nil, cowork: nil)
+            )
+            let a = buildWidgetData(usage1)
+            let b = buildWidgetData(usage2)
+            check(!a.hasSameValues(as: b), "different opus should differ")
+        }
+
+        test("different daily entries returns false") {
+            let usage = UsageData(
+                fiveHour: UsageWindow(utilization: 10, remaining: nil, resetsAt: nil),
+                sevenDay: UsageWindow(utilization: 5, remaining: nil, resetsAt: nil)
+            )
+            let a = buildWidgetData(usage, dailyEntries: [DailyEntry(date: "2026-04-08", usage: 5.0)])
+            let b = buildWidgetData(usage, dailyEntries: [DailyEntry(date: "2026-04-08", usage: 10.0)])
+            check(!a.hasSameValues(as: b), "different daily entries should differ")
+        }
+    }
+
+    suite("WidgetData v3 JSON encoding") {
+        test("encodes new fields to JSON") {
+            let usage = UsageData(
+                fiveHour: UsageWindow(utilization: 10, remaining: nil, resetsAt: nil),
+                sevenDay: UsageWindow(utilization: 20, remaining: nil, resetsAt: nil),
+                models: ModelBreakdown(opus: UsageWindow(utilization: 55, remaining: nil, resetsAt: nil), sonnet: nil, oauthApps: nil, cowork: nil),
+                extraUsage: ExtraUsage(isEnabled: true, utilization: 12.5)
+            )
+            let entries = [DailyEntry(date: "2026-04-08", usage: 7.5)]
+            let costs = [DailyCostEntry(date: "2026-04-08", cost: 2.0)]
+            let widget = buildWidgetData(usage, dailyEntries: entries, dailyCosts: costs)
+            let data = try? JSONEncoder().encode(widget)
+            check(data != nil, "should encode to JSON")
+            if let data, let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                assertEqual(json["opusUtilization"] as? Double, 55, "opus in JSON")
+                assertEqual(json["extraUsageUtilization"] as? Double, 12.5, "extra usage in JSON")
+                assertNotNil(json["dailyEntries"], "dailyEntries in JSON")
+                assertNotNil(json["dailyCosts"], "dailyCosts in JSON")
+            }
+        }
+    }
+}
+
 // MARK: - Test Runner
 
 func runAllTests() {
@@ -3517,6 +3715,8 @@ func runAllTests() {
     runForecastLineTests()
     runCodexTests()
     runFormatUnifiedSessionsTests()
+    runDailyCostTests()
+    runExtendedWidgetDataTests()
 
     print("\n=== Results: \(passedTests)/\(totalTests) passed ===")
     if !failedTests.isEmpty {
