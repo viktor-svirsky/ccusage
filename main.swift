@@ -69,6 +69,23 @@ struct UsageData: Equatable {
     }
 }
 
+struct DailyEntryData: Codable, Equatable {
+    let date: String
+    let usage: Double
+}
+
+struct DailyCostData: Codable, Equatable {
+    let date: String
+    let cost: Double
+}
+
+struct SessionData: Codable, Equatable {
+    let project: String
+    let model: String?
+    let tokens: Int?
+    let durationSeconds: Int?
+}
+
 struct WidgetData: Codable {
     let fiveHourUtilization: Double
     let sevenDayUtilization: Double
@@ -82,6 +99,14 @@ struct WidgetData: Codable {
     let depletionSeconds: Double?  // seconds until 7d depletion, nil if safe
     let todayCost: Double?
     let activeSessionCount: Int?
+    // v3 fields — analytics for iOS widget
+    let opusUtilization: Double?
+    let sonnetUtilization: Double?
+    let haikuUtilization: Double?
+    let dailyEntries: [DailyEntryData]?
+    let dailyCosts: [DailyCostData]?
+    let sessions: [SessionData]?
+    let extraUsageUtilization: Double?
 
     func hasSameValues(as other: WidgetData) -> Bool {
         fiveHourUtilization == other.fiveHourUtilization
@@ -94,6 +119,13 @@ struct WidgetData: Codable {
             && depletionSeconds == other.depletionSeconds
             && todayCost == other.todayCost
             && activeSessionCount == other.activeSessionCount
+            && opusUtilization == other.opusUtilization
+            && sonnetUtilization == other.sonnetUtilization
+            && haikuUtilization == other.haikuUtilization
+            && dailyEntries == other.dailyEntries
+            && dailyCosts == other.dailyCosts
+            && sessions == other.sessions
+            && extraUsageUtilization == other.extraUsageUtilization
     }
 }
 
@@ -640,17 +672,24 @@ struct DailyEntry: Codable, Equatable {
     var usage: Double
 }
 
+struct DailyCostEntry: Codable, Equatable {
+    let date: String
+    let cost: Double
+}
+
 struct DailyUsageData: Codable, Equatable {
     var lastUtilization: Double?
     var days: [DailyEntry]
     var historyEntries: [UsageHistory.Entry]?
     var usageIncreases: [Date]?
+    var dailyCosts: [DailyCostEntry]?
 
-    init(lastUtilization: Double? = nil, days: [DailyEntry] = [], historyEntries: [UsageHistory.Entry]? = nil, usageIncreases: [Date]? = nil) {
+    init(lastUtilization: Double? = nil, days: [DailyEntry] = [], historyEntries: [UsageHistory.Entry]? = nil, usageIncreases: [Date]? = nil, dailyCosts: [DailyCostEntry]? = nil) {
         self.lastUtilization = lastUtilization
         self.days = days
         self.historyEntries = historyEntries
         self.usageIncreases = usageIncreases
+        self.dailyCosts = dailyCosts
     }
 }
 
@@ -685,6 +724,22 @@ func recordDailyUsage(_ store: inout DailyUsageData, sevenDayUtilization: Double
     let cutoff = Calendar.current.date(byAdding: .day, value: -7, to: now)!
     let cutoffStr = dailyDateString(cutoff)
     store.days = store.days.filter { $0.date > cutoffStr }
+}
+
+func recordDailyCost(_ store: inout DailyUsageData, todayCost: Double, now: Date = Date()) {
+    let today = dailyDateString(now)
+    if var costs = store.dailyCosts {
+        if let idx = costs.firstIndex(where: { $0.date == today }) {
+            costs[idx] = DailyCostEntry(date: today, cost: todayCost)
+        } else {
+            costs.append(DailyCostEntry(date: today, cost: todayCost))
+        }
+        let cutoff = Calendar.current.date(byAdding: .day, value: -7, to: now)!
+        let cutoffStr = dailyDateString(cutoff)
+        store.dailyCosts = costs.filter { $0.date > cutoffStr }
+    } else {
+        store.dailyCosts = [DailyCostEntry(date: today, cost: todayCost)]
+    }
 }
 
 func weeklyChart(_ days: [DailyEntry], now: Date = Date()) -> String? {
@@ -2086,7 +2141,7 @@ struct FetchSchedule {
 
 // MARK: - Widget Data
 
-func buildWidgetData(_ usage: UsageData, todayCost: Double = 0, activeSessionCount: Int = 0) -> WidgetData {
+func buildWidgetData(_ usage: UsageData, todayCost: Double = 0, activeSessionCount: Int = 0, dailyEntries: [DailyEntry]? = nil, dailyCosts: [DailyCostEntry]? = nil, activeSessions: [TrackedSession]? = nil) -> WidgetData {
     let h5Pace = calculatePace(utilization: usage.fiveHour.utilization, resetsAt: usage.fiveHour.resetsAt, windowDuration: 5 * 3600)
     let d7Pace = calculatePace(utilization: usage.sevenDay.utilization, resetsAt: usage.sevenDay.resetsAt, windowDuration: 7 * 86400)
     // Calculate depletion for 7d
@@ -2104,6 +2159,29 @@ func buildWidgetData(_ usage: UsageData, todayCost: Double = 0, activeSessionCou
             }
         }
     }
+    // Model breakdown utilization
+    let opusUtil = usage.models?.opus?.utilization
+    let sonnetUtil = usage.models?.sonnet?.utilization
+    // No haiku in ModelBreakdown yet — nil for forward compat
+    let haikuUtil: Double? = nil
+    // Daily entries
+    let entryData = dailyEntries?.map { DailyEntryData(date: $0.date, usage: $0.usage) }
+    // Daily costs
+    let costData = dailyCosts?.map { DailyCostData(date: $0.date, cost: $0.cost) }
+    // Sessions
+    let sessionData: [SessionData]? = activeSessions.flatMap { sessions in
+        let list = sessions.filter { $0.hasDisplayableData }.map { s in
+            let project = s.projectName ?? "unknown"
+            let model = s.currentModel
+            let tokens = s.sessionTokens.totalTokens > 0 ? s.sessionTokens.totalTokens : nil
+            let duration: Int? = s.lastFileModification.flatMap { mod in
+                let secs = Int(Date().timeIntervalSince(mod))
+                return secs > 0 && secs < 86400 ? secs : nil
+            }
+            return SessionData(project: project, model: model, tokens: tokens, durationSeconds: duration)
+        }
+        return list.isEmpty ? nil : list
+    }
     return WidgetData(
         fiveHourUtilization: usage.fiveHour.utilization,
         sevenDayUtilization: usage.sevenDay.utilization,
@@ -2115,7 +2193,14 @@ func buildWidgetData(_ usage: UsageData, todayCost: Double = 0, activeSessionCou
         extraUsageEnabled: usage.extraUsage?.isEnabled,
         depletionSeconds: depletionSecs,
         todayCost: todayCost > 0 ? todayCost : nil,
-        activeSessionCount: activeSessionCount > 0 ? activeSessionCount : nil
+        activeSessionCount: activeSessionCount > 0 ? activeSessionCount : nil,
+        opusUtilization: opusUtil,
+        sonnetUtilization: sonnetUtil,
+        haikuUtilization: haikuUtil,
+        dailyEntries: entryData,
+        dailyCosts: costData,
+        sessions: sessionData,
+        extraUsageUtilization: usage.extraUsage?.utilization
     )
 }
 
@@ -2363,7 +2448,14 @@ class StatusBarController: NSObject {
         guard let credData = readCredentialData(),
               let token = parseToken(from: credData),
               let url = URL(string: "\(widgetWorkerURL)/widget") else { return }
-        let widgetData = buildWidgetData(usage, todayCost: tokenCostTracker.todayCost.totalCost, activeSessionCount: agentTracker.totalRunningCount)
+        let widgetData = buildWidgetData(
+            usage,
+            todayCost: tokenCostTracker.todayCost.totalCost,
+            activeSessionCount: agentTracker.totalRunningCount,
+            dailyEntries: dailyStore.days,
+            dailyCosts: dailyStore.dailyCosts,
+            activeSessions: Array(agentTracker.activeSessions)
+        )
         if let last = lastPushedWidgetData, last.hasSameValues(as: widgetData) { return }
         let body = WidgetPushBody(data: widgetData)
         guard let bodyData = try? JSONEncoder().encode(body) else { return }
@@ -2716,6 +2808,7 @@ class StatusBarController: NSObject {
         lastUsage = usage
         history.record(usage)
         recordDailyUsage(&dailyStore, sevenDayUtilization: usage.sevenDay.utilization)
+        recordDailyCost(&dailyStore, todayCost: tokenCostTracker.todayCost.totalCost)
         saveDailyStore()
         #if !TESTING
         pushWidgetData(usage)

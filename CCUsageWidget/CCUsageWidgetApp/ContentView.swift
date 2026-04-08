@@ -1,231 +1,183 @@
 import SwiftUI
-import AVFoundation
 import WidgetKit
 
-private let appGroupID = "group.com.viktorsvirsky.ccusage"
-private let widgetURLKey = "widgetURL"
-
 struct ContentView: View {
-    @State private var savedURL: String = ""
-    @State private var pasteText: String = ""
+    @StateObject private var dataService = DataService()
+    @Environment(\.scenePhase) private var scenePhase
+
+    var body: some View {
+        Group {
+            if dataService.isConnected {
+                TabView {
+                    DashboardView()
+                        .tabItem {
+                            Label("Dashboard", systemImage: "gauge.with.dots.needle.33percent")
+                        }
+                    HistoryView()
+                        .tabItem {
+                            Label("History", systemImage: "chart.bar.fill")
+                        }
+                    SettingsView()
+                        .tabItem {
+                            Label("Settings", systemImage: "gearshape.fill")
+                        }
+                }
+                .tint(.blue)
+            } else {
+                OnboardingView()
+            }
+        }
+        .environmentObject(dataService)
+        .preferredColorScheme(.dark)
+        .onChange(of: scenePhase) { _, phase in
+            switch phase {
+            case .active:
+                dataService.start()
+            case .background, .inactive:
+                dataService.stop()
+            @unknown default:
+                break
+            }
+        }
+    }
+}
+
+// MARK: - Onboarding
+
+private struct OnboardingView: View {
+    @EnvironmentObject var dataService: DataService
+
     @State private var showScanner = false
+    @State private var pasteText = ""
     @State private var statusMessage: String?
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(spacing: 24) {
+        ScrollView {
+            VStack(spacing: 24) {
+                Spacer().frame(height: 40)
+
+                // Icon
+                ZStack {
+                    Circle()
+                        .fill(Theme.accentCardBackground)
+                        .frame(width: 100, height: 100)
                     Image(systemName: "chart.bar.fill")
-                        .font(.system(size: 64))
+                        .font(.system(size: 40))
                         .foregroundStyle(.blue)
-                        .padding(.top, 32)
+                }
 
-                    VStack(spacing: 8) {
-                        Text("CCUsage Widget")
-                            .font(.title).fontWeight(.bold)
-                        Text("Shows Claude Code usage limits synced from your Mac.")
-                            .font(.body).foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
-                    }
+                VStack(spacing: 8) {
+                    Text("CCUsage")
+                        .font(.largeTitle).fontWeight(.bold)
+                        .foregroundStyle(Theme.textPrimary)
+                    Text("Monitor your Claude Code usage\nlimits from your iPhone.")
+                        .font(.body)
+                        .foregroundStyle(Theme.textSecondary)
+                        .multilineTextAlignment(.center)
+                }
 
-                    // Connection status
-                    if !savedURL.isEmpty {
-                        VStack(spacing: 8) {
-                            Label("Connected", systemImage: "checkmark.circle.fill")
-                                .foregroundStyle(.green)
-                                .font(.headline)
-                            Text(savedURL)
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
-                                .lineLimit(2)
-                                .multilineTextAlignment(.center)
-                        }
-                        .padding()
-                        .frame(maxWidth: .infinity)
-                        .background(Color(.secondarySystemGroupedBackground))
-                        .clipShape(RoundedRectangle(cornerRadius: 14))
-                    }
-
-                    // Setup section
+                // Setup card
+                GlassCard {
                     VStack(alignment: .leading, spacing: 16) {
-                        Text("Setup").font(.headline)
+                        Text("GET STARTED")
+                            .font(.caption2).fontWeight(.semibold)
+                            .foregroundStyle(Theme.textTertiary)
 
                         Button(action: { showScanner = true }) {
                             Label("Scan QR Code", systemImage: "qrcode.viewfinder")
+                                .font(.subheadline).fontWeight(.medium)
+                                .foregroundStyle(.white)
                                 .frame(maxWidth: .infinity)
+                                .padding(.vertical, 12)
+                                .background(Color.blue)
+                                .clipShape(RoundedRectangle(cornerRadius: 10))
                         }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.large)
 
                         Text("Or paste the URL from your Mac:")
-                            .font(.subheadline).foregroundStyle(.secondary)
+                            .font(.caption)
+                            .foregroundStyle(Theme.textSecondary)
 
-                        HStack {
+                        HStack(spacing: 8) {
                             TextField("https://...", text: $pasteText)
-                                .textFieldStyle(.roundedBorder)
+                                .font(.subheadline)
+                                .foregroundStyle(Theme.textPrimary)
+                                .padding(10)
+                                .background(Theme.accentCardBackground)
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .stroke(Theme.accentCardBorder, lineWidth: 1)
+                                )
                                 .autocorrectionDisabled()
                                 .textInputAutocapitalization(.never)
                                 .keyboardType(.URL)
+
                             Button("Save") {
-                                saveURL(pasteText)
+                                handleURL(pasteText)
                             }
-                            .buttonStyle(.bordered)
+                            .font(.subheadline).fontWeight(.medium)
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
+                            .background(pasteText.isEmpty ? Color.blue.opacity(0.4) : Color.blue)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
                             .disabled(pasteText.isEmpty)
                         }
 
                         if let msg = statusMessage {
                             Text(msg)
                                 .font(.caption)
-                                .foregroundStyle(msg.contains("Error") ? .red : .green)
+                                .foregroundStyle(msg.contains("Error") ? Theme.red : Theme.green)
                         }
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding()
-                    .background(Color(.secondarySystemGroupedBackground))
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                }
 
-                    // Instructions
-                    VStack(alignment: .leading, spacing: 16) {
-                        Text("How it works").font(.headline)
-                        StepRow(n: 1, text: "Run CCUsage on your Mac")
-                        StepRow(n: 2, text: "Click \"Share to iPhone\" in the menu bar")
-                        StepRow(n: 3, text: "Scan the QR code or paste the URL")
-                        StepRow(n: 4, text: "Add the widget to your Home Screen")
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding()
-                    .background(Color(.secondarySystemGroupedBackground))
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                // How it works
+                GlassCard {
+                    VStack(alignment: .leading, spacing: 14) {
+                        Text("HOW IT WORKS")
+                            .font(.caption2).fontWeight(.semibold)
+                            .foregroundStyle(Theme.textTertiary)
 
-                    if !savedURL.isEmpty {
-                        Button(role: .destructive) {
-                            disconnect()
-                        } label: {
-                            Text("Disconnect")
-                        }
-                        .padding(.top, 8)
+                        OnboardingStep(number: 1, text: "Run CCUsage on your Mac")
+                        OnboardingStep(number: 2, text: "Click \"Share to iPhone\" in the menu bar")
+                        OnboardingStep(number: 3, text: "Scan the QR code or paste the URL")
+                        OnboardingStep(number: 4, text: "Add the widget to your Home Screen")
                     }
                 }
-                .padding(.horizontal, 20)
+
+                Spacer().frame(height: 20)
             }
-            .navigationTitle("CCUsage")
-            .background(Color(.systemGroupedBackground).ignoresSafeArea())
-            .sheet(isPresented: $showScanner) {
-                QRScannerView { code in
-                    showScanner = false
-                    saveURL(code)
-                }
-            }
+            .padding(.horizontal, 20)
         }
-        .onAppear {
-            if let defaults = UserDefaults(suiteName: appGroupID) {
-                savedURL = defaults.string(forKey: widgetURLKey) ?? ""
+        .background(Theme.backgroundGradient.ignoresSafeArea())
+        .sheet(isPresented: $showScanner) {
+            QRScannerView { code in
+                showScanner = false
+                handleURL(code)
             }
         }
     }
 
-    private func saveURL(_ urlString: String) {
-        let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let url = URL(string: trimmed),
-              url.scheme == "https",
-              url.host?.hasSuffix(".workers.dev") == true,
-              let key = url.path.split(separator: "/").last,
-              key.count == 64,
-              key.allSatisfy({ $0.isHexDigit }) else {
-            statusMessage = "Error: Invalid widget URL"
-            return
-        }
-        if let defaults = UserDefaults(suiteName: appGroupID) {
-            defaults.set(trimmed, forKey: widgetURLKey)
-            savedURL = trimmed
+    private func handleURL(_ urlString: String) {
+        if let error = dataService.saveURL(urlString) {
+            statusMessage = "Error: \(error)"
+        } else {
             pasteText = ""
-            statusMessage = "Saved! Widget will update shortly."
-            WidgetCenter.shared.reloadAllTimelines()
-        }
-    }
-
-    private func disconnect() {
-        if let defaults = UserDefaults(suiteName: appGroupID) {
-            defaults.removeObject(forKey: widgetURLKey)
-            savedURL = ""
-            statusMessage = nil
-            WidgetCenter.shared.reloadAllTimelines()
+            statusMessage = "Connected!"
         }
     }
 }
 
-// MARK: - QR Scanner
+// MARK: - Onboarding Step
 
-struct QRScannerView: UIViewControllerRepresentable {
-    let onScan: (String) -> Void
-
-    func makeUIViewController(context: Context) -> QRScannerController {
-        let vc = QRScannerController()
-        vc.onScan = onScan
-        return vc
-    }
-
-    func updateUIViewController(_ uiViewController: QRScannerController, context: Context) {}
-}
-
-class QRScannerController: UIViewController, AVCaptureMetadataOutputObjectsDelegate {
-    var onScan: ((String) -> Void)?
-    private let session = AVCaptureSession()
-    private var didScan = false
-
-    override func viewDidLoad() {
-        super.viewDidLoad()
-        view.backgroundColor = .black
-
-        guard let device = AVCaptureDevice.default(for: .video),
-              let input = try? AVCaptureDeviceInput(device: device),
-              session.canAddInput(input) else {
-            dismiss(animated: true)
-            return
-        }
-        session.addInput(input)
-
-        let output = AVCaptureMetadataOutput()
-        if session.canAddOutput(output) {
-            session.addOutput(output)
-            output.setMetadataObjectsDelegate(self, queue: .main)
-            output.metadataObjectTypes = [.qr]
-        }
-
-        let preview = AVCaptureVideoPreviewLayer(session: session)
-        preview.frame = view.bounds
-        preview.videoGravity = .resizeAspectFill
-        view.layer.addSublayer(preview)
-
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            self?.session.startRunning()
-        }
-    }
-
-    func metadataOutput(_ output: AVCaptureMetadataOutput, didOutput metadataObjects: [AVMetadataObject], from connection: AVCaptureConnection) {
-        guard !didScan,
-              let obj = metadataObjects.first as? AVMetadataMachineReadableCodeObject,
-              let value = obj.stringValue else { return }
-        didScan = true
-        session.stopRunning()
-        onScan?(value)
-    }
-
-    override func viewWillDisappear(_ animated: Bool) {
-        super.viewWillDisappear(animated)
-        session.stopRunning()
-    }
-}
-
-// MARK: - Step Row
-
-private struct StepRow: View {
-    let n: Int
+private struct OnboardingStep: View {
+    let number: Int
     let text: String
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            Text("\(n)")
+            Text("\(number)")
                 .font(.caption).fontWeight(.bold)
                 .frame(width: 24, height: 24)
                 .background(Color.blue)
@@ -233,6 +185,7 @@ private struct StepRow: View {
                 .clipShape(Circle())
             Text(text)
                 .font(.subheadline)
+                .foregroundStyle(Theme.textPrimary)
             Spacer()
         }
     }

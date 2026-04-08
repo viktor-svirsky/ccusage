@@ -1,0 +1,334 @@
+import SwiftUI
+
+struct DashboardView: View {
+    @EnvironmentObject var dataService: DataService
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 16) {
+                header
+                if let data = dataService.data {
+                    utilizationCards(data)
+                    depletionBanner(data)
+                    modelBreakdown(data)
+                    quickStats(data)
+                    activeSessions(data)
+                } else {
+                    noDataView
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 24)
+        }
+        .background(Theme.backgroundGradient.ignoresSafeArea())
+    }
+
+    // MARK: - Header
+
+    private var header: some View {
+        HStack {
+            Text("Dashboard")
+                .font(.title2).fontWeight(.bold)
+                .foregroundStyle(Theme.textPrimary)
+            Spacer()
+            if let data = dataService.data {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(Theme.green)
+                        .frame(width: 8, height: 8)
+                    Text(updatedLabel(data.updatedAt))
+                        .font(.caption)
+                        .foregroundStyle(Theme.textSecondary)
+                }
+            }
+        }
+        .padding(.top, 8)
+    }
+
+    // MARK: - Utilization Cards
+
+    private func utilizationCards(_ data: WidgetData) -> some View {
+        HStack(spacing: 12) {
+            utilizationCard(
+                label: "5-Hour",
+                pct: data.fiveHourUtilization,
+                pace: data.fiveHourPace,
+                resetsAt: data.fiveHourResetsAt
+            )
+            utilizationCard(
+                label: "7-Day",
+                pct: data.sevenDayUtilization,
+                pace: data.sevenDayPace,
+                resetsAt: data.sevenDayResetsAt
+            )
+        }
+    }
+
+    private func utilizationCard(label: String, pct: Double, pace: Double?, resetsAt: TimeInterval?) -> some View {
+        GlassCard {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(label.uppercased())
+                    .font(.caption2).fontWeight(.semibold)
+                    .foregroundStyle(Theme.textTertiary)
+
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Text("\(Int(pct.rounded()))%")
+                        .font(.system(size: 32, weight: .bold, design: .rounded))
+                        .foregroundStyle(Theme.usageColor(pct, pace: pace))
+                    Text(Theme.paceSymbol(pace))
+                        .font(.caption)
+                        .foregroundStyle(Theme.textSecondary)
+                }
+
+                Text(Theme.paceLabel(pace))
+                    .font(.caption2)
+                    .foregroundStyle(Theme.textSecondary)
+
+                ProgressView(value: min(pct / 100, 1))
+                    .tint(Theme.usageColor(pct, pace: pace))
+
+                let reset = Theme.resetLabel(resetsAt)
+                if !reset.isEmpty {
+                    Text("Resets in \(reset)")
+                        .font(.caption2)
+                        .foregroundStyle(Theme.textTertiary)
+                }
+            }
+        }
+    }
+
+    // MARK: - Depletion Banner
+
+    @ViewBuilder
+    private func depletionBanner(_ data: WidgetData) -> some View {
+        if let dep = data.depletionSeconds, dep > 0 {
+            HStack(spacing: 10) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(Theme.orange)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Depletion Warning")
+                        .font(.caption).fontWeight(.semibold)
+                        .foregroundStyle(Theme.textPrimary)
+                    Text("Usage depletes in \(Theme.depletionLabel(dep))")
+                        .font(.caption2)
+                        .foregroundStyle(Theme.textSecondary)
+                }
+                Spacer()
+            }
+            .padding(14)
+            .background(Theme.orange.opacity(0.1))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(Theme.orange.opacity(0.2), lineWidth: 1)
+            )
+        }
+    }
+
+    // MARK: - Model Breakdown
+
+    @ViewBuilder
+    private func modelBreakdown(_ data: WidgetData) -> some View {
+        let opusPct = data.opusUtilization ?? 0
+        let sonnetPct = data.sonnetUtilization ?? 0
+        let haikuPct = data.haikuUtilization ?? 0
+        let total = opusPct + sonnetPct + haikuPct
+
+        if total > 0 {
+            GlassCard {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("MODEL BREAKDOWN")
+                        .font(.caption2).fontWeight(.semibold)
+                        .foregroundStyle(Theme.textTertiary)
+
+                    // Stacked bar
+                    GeometryReader { geo in
+                        HStack(spacing: 2) {
+                            if opusPct > 0 {
+                                RoundedRectangle(cornerRadius: 4)
+                                    .fill(Theme.opus)
+                                    .frame(width: geo.size.width * CGFloat(opusPct / total))
+                            }
+                            if sonnetPct > 0 {
+                                RoundedRectangle(cornerRadius: 4)
+                                    .fill(Theme.sonnet)
+                                    .frame(width: geo.size.width * CGFloat(sonnetPct / total))
+                            }
+                            if haikuPct > 0 {
+                                RoundedRectangle(cornerRadius: 4)
+                                    .fill(Theme.haiku)
+                                    .frame(width: geo.size.width * CGFloat(haikuPct / total))
+                            }
+                        }
+                    }
+                    .frame(height: 10)
+
+                    // Legend
+                    HStack(spacing: 16) {
+                        modelLegend(color: Theme.opus, name: "Opus", pct: opusPct)
+                        modelLegend(color: Theme.sonnet, name: "Sonnet", pct: sonnetPct)
+                        modelLegend(color: Theme.haiku, name: "Haiku", pct: haikuPct)
+                    }
+                }
+            }
+        }
+    }
+
+    private func modelLegend(color: Color, name: String, pct: Double) -> some View {
+        HStack(spacing: 4) {
+            Circle().fill(color).frame(width: 8, height: 8)
+            Text("\(name) \(Int(pct.rounded()))%")
+                .font(.caption2)
+                .foregroundStyle(Theme.textSecondary)
+        }
+    }
+
+    // MARK: - Quick Stats
+
+    private func quickStats(_ data: WidgetData) -> some View {
+        HStack(spacing: 10) {
+            statCard(
+                icon: "dollarsign.circle.fill",
+                color: Theme.costPurple,
+                value: data.todayCost.map { String(format: "$%.2f", $0) } ?? "--",
+                label: "Today"
+            )
+            statCard(
+                icon: "bolt.fill",
+                color: Theme.green,
+                value: data.activeSessionCount.map { "\($0)" } ?? "0",
+                label: "Sessions"
+            )
+            statCard(
+                icon: "arrow.up.right",
+                color: data.extraUsageEnabled == true ? Theme.green : Theme.textTertiary,
+                value: data.extraUsageEnabled == true ? "On" : "Off",
+                label: "Extra"
+            )
+        }
+    }
+
+    private func statCard(icon: String, color: Color, value: String, label: String) -> some View {
+        GlassCard {
+            VStack(spacing: 6) {
+                Image(systemName: icon)
+                    .font(.caption)
+                    .foregroundStyle(color)
+                Text(value)
+                    .font(.subheadline).fontWeight(.semibold)
+                    .foregroundStyle(Theme.textPrimary)
+                Text(label)
+                    .font(.caption2)
+                    .foregroundStyle(Theme.textTertiary)
+            }
+            .frame(maxWidth: .infinity)
+        }
+    }
+
+    // MARK: - Active Sessions
+
+    @ViewBuilder
+    private func activeSessions(_ data: WidgetData) -> some View {
+        if let sessions = data.sessions, !sessions.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("ACTIVE SESSIONS")
+                    .font(.caption2).fontWeight(.semibold)
+                    .foregroundStyle(Theme.textTertiary)
+
+                ForEach(Array(sessions.enumerated()), id: \.offset) { _, session in
+                    sessionCard(session)
+                }
+            }
+        }
+    }
+
+    private func sessionCard(_ session: SessionData) -> some View {
+        GlassCard {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text(session.project)
+                        .font(.subheadline).fontWeight(.medium)
+                        .foregroundStyle(Theme.textPrimary)
+                        .lineLimit(1)
+                    Spacer()
+                    Text("LIVE")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(Theme.green)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Theme.green.opacity(0.15))
+                        .clipShape(Capsule())
+                }
+                HStack(spacing: 12) {
+                    if let model = session.model {
+                        Label(model, systemImage: "cpu")
+                            .font(.caption2)
+                            .foregroundStyle(modelColor(model))
+                    }
+                    if let tokens = session.tokens {
+                        Label(formatTokens(tokens), systemImage: "number")
+                            .font(.caption2)
+                            .foregroundStyle(Theme.textSecondary)
+                    }
+                    if let dur = session.durationSeconds {
+                        Label(formatDuration(dur), systemImage: "clock")
+                            .font(.caption2)
+                            .foregroundStyle(Theme.textSecondary)
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - No Data
+
+    private var noDataView: some View {
+        GlassCard {
+            VStack(spacing: 16) {
+                Image(systemName: "chart.bar.xaxis")
+                    .font(.system(size: 40))
+                    .foregroundStyle(Theme.textTertiary)
+                Text("No Data Yet")
+                    .font(.headline)
+                    .foregroundStyle(Theme.textPrimary)
+                Text("Connect to your Mac running CCUsage to see live usage data.")
+                    .font(.subheadline)
+                    .foregroundStyle(Theme.textSecondary)
+                    .multilineTextAlignment(.center)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 24)
+        }
+    }
+
+    // MARK: - Helpers
+
+    private func updatedLabel(_ ts: TimeInterval) -> String {
+        let ago = Int(Date().timeIntervalSince1970 - ts)
+        if ago < 60 { return "just now" }
+        if ago < 3600 { return "\(ago / 60)m ago" }
+        if ago < 86400 { return "\(ago / 3600)h ago" }
+        return "\(ago / 86400)d ago"
+    }
+
+    private func modelColor(_ model: String) -> Color {
+        let lower = model.lowercased()
+        if lower.contains("opus") { return Theme.opus }
+        if lower.contains("sonnet") { return Theme.sonnet }
+        if lower.contains("haiku") { return Theme.haiku }
+        return Theme.textSecondary
+    }
+
+    private func formatTokens(_ tokens: Int) -> String {
+        if tokens >= 1_000_000 { return String(format: "%.1fM", Double(tokens) / 1_000_000) }
+        if tokens >= 1_000 { return String(format: "%.1fK", Double(tokens) / 1_000) }
+        return "\(tokens)"
+    }
+
+    private func formatDuration(_ seconds: Int) -> String {
+        let h = seconds / 3600
+        let m = (seconds % 3600) / 60
+        if h >= 1 { return "\(h)h \(m)m" }
+        return "\(m)m"
+    }
+}

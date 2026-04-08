@@ -16,6 +16,14 @@ struct WidgetData: Codable {
     let depletionSeconds: Double?
     let todayCost: Double?
     let activeSessionCount: Int?
+    // v3 fields — decoded but not rendered by widget
+    let opusUtilization: Double?
+    let sonnetUtilization: Double?
+    let haikuUtilization: Double?
+    let dailyEntries: [DailyEntryData]?
+    let dailyCosts: [DailyCostData]?
+    let sessions: [SessionData]?
+    let extraUsageUtilization: Double?
 
     static let placeholder = WidgetData(
         fiveHourUtilization: 45,
@@ -28,8 +36,32 @@ struct WidgetData: Codable {
         extraUsageEnabled: nil,
         depletionSeconds: nil,
         todayCost: nil,
-        activeSessionCount: nil
+        activeSessionCount: nil,
+        opusUtilization: nil,
+        sonnetUtilization: nil,
+        haikuUtilization: nil,
+        dailyEntries: nil,
+        dailyCosts: nil,
+        sessions: nil,
+        extraUsageUtilization: nil
     )
+}
+
+struct DailyEntryData: Codable {
+    let date: String
+    let usage: Double
+}
+
+struct DailyCostData: Codable {
+    let date: String
+    let cost: Double
+}
+
+struct SessionData: Codable {
+    let project: String
+    let model: String?
+    let tokens: Int?
+    let durationSeconds: Int?
 }
 
 // MARK: - Shared Config
