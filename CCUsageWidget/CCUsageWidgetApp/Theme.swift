@@ -33,6 +33,19 @@ enum Theme {
 
     static let costPurple = Color(red: 168 / 255, green: 85 / 255, blue: 247 / 255)   // #a855f7
 
+    // MARK: - Staleness
+
+    static let staleThreshold: TimeInterval = 600      // 10 minutes
+    static let veryStaleThreshold: TimeInterval = 3600  // 1 hour
+
+    static func isStale(_ updatedAt: TimeInterval) -> Bool {
+        Date().timeIntervalSince1970 - updatedAt > staleThreshold
+    }
+
+    static func isVeryStale(_ updatedAt: TimeInterval) -> Bool {
+        Date().timeIntervalSince1970 - updatedAt > veryStaleThreshold
+    }
+
     // MARK: - Text Hierarchy
 
     static let textPrimary = Color(red: 226 / 255, green: 232 / 255, blue: 240 / 255)     // #e2e8f0

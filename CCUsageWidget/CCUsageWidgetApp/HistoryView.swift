@@ -19,6 +19,7 @@ struct HistoryView: View {
             .padding(.bottom, 24)
         }
         .background(Theme.backgroundGradient.ignoresSafeArea())
+        .refreshable { await dataService.fetch() }
     }
 
     // MARK: - Header
@@ -72,8 +73,8 @@ struct HistoryView: View {
                     // Summary row
                     HStack {
                         summaryItem(
-                            label: "Week Total",
-                            value: "\(Int(entries.map(\.usage).reduce(0, +).rounded()))%"
+                            label: "Active Days",
+                            value: "\(entries.filter { $0.usage > 0 }.count)/\(entries.count)"
                         )
                         Spacer()
                         summaryItem(
@@ -146,8 +147,9 @@ struct HistoryView: View {
         let sonnetPct = data.sonnetUtilization ?? 0
         let haikuPct = data.haikuUtilization ?? 0
         let total = opusPct + sonnetPct + haikuPct
+        let modelCount = [opusPct, sonnetPct, haikuPct].filter { $0 > 0 }.count
 
-        if total > 0 {
+        if total > 0, modelCount >= 2 {
             GlassCard {
                 VStack(alignment: .leading, spacing: 14) {
                     Text("MODEL MIX")
