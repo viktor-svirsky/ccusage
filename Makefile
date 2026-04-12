@@ -5,7 +5,7 @@ MACOS = $(CONTENTS)/MacOS
 INSTALL_DIR = /Applications
 VERSION ?= $(shell cat VERSION 2>/dev/null || echo 0.0.0-dev)
 
-.PHONY: build test install uninstall clean generate-icon
+.PHONY: build test install uninstall clean generate-icon widget
 
 generate-icon:
 	swiftc -O build-icon.swift -framework Cocoa -o build-icon
@@ -33,6 +33,7 @@ uninstall:
 	rm -rf $(INSTALL_DIR)/$(APP_DIR)
 
 widget:
+	rm -rf /tmp/CCUsageWidget.xcarchive /tmp/CCUsageIPA
 	xcodebuild -project CCUsageWidget/CCUsageWidget.xcodeproj \
 		-scheme CCUsageWidgetApp \
 		-configuration Release \

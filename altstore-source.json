@@ -15,9 +15,9 @@
         "entitlements": [
           "com.apple.security.application-groups"
         ],
-        "privacy": [
-          "NSCameraUsageDescription"
-        ]
+        "privacy": {
+          "NSCameraUsageDescription": "CCUsage needs camera access to scan the QR code from your Mac."
+        }
       },
       "versions": [
         {
