@@ -9,6 +9,7 @@
       "bundleIdentifier": "com.viktorsvirsky.ccusage-widget",
       "developerName": "Viktor Svirsky",
       "subtitle": "Claude Code usage on your homescreen",
+      "category": "utilities",
       "localizedDescription": "iOS widget companion for CCUsage. Shows Claude Code 5-hour and 7-day utilization, pace-aware color coding, and usage history — synced from your Mac via Cloudflare.",
       "iconURL": "https://raw.githubusercontent.com/viktor-svirsky/ccusage/main/CCUsageWidget/CCUsageWidgetApp/Assets.xcassets/AppIcon.appiconset/AppIcon.png",
       "versions": [
