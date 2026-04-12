@@ -11,6 +11,14 @@
       "subtitle": "Claude Code usage on your homescreen",
       "localizedDescription": "iOS widget companion for CCUsage. Shows Claude Code 5-hour and 7-day utilization, pace-aware color coding, and usage history — synced from your Mac via Cloudflare.",
       "iconURL": "https://raw.githubusercontent.com/viktor-svirsky/ccusage/main/CCUsageWidget/CCUsageWidgetApp/Assets.xcassets/AppIcon.appiconset/AppIcon.png",
+      "appPermissions": {
+        "entitlements": [
+          "com.apple.security.application-groups"
+        ],
+        "privacy": [
+          "NSCameraUsageDescription"
+        ]
+      },
       "versions": [
         {
           "version": "1.25.0",
