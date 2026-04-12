@@ -52,6 +52,54 @@ jobs:
         if: env.SKIP_RELEASE != 'true'
         run: ditto -c -k --keepParent CCUsage.app CCUsage.zip
 
+      - name: Build iOS widget IPA
+        if: env.SKIP_RELEASE != 'true'
+        run: |
+          xcodebuild -project CCUsageWidget/CCUsageWidget.xcodeproj \
+            -scheme CCUsageWidgetApp \
+            -configuration Release \
+            -archivePath /tmp/CCUsageWidget.xcarchive \
+            archive \
+            CODE_SIGN_IDENTITY=- \
+            CODE_SIGNING_ALLOWED=NO \
+            MARKETING_VERSION=${{ env.VERSION }} \
+            CURRENT_PROJECT_VERSION=${{ env.VERSION }}
+          mkdir -p /tmp/CCUsageIPA/Payload
+          cp -r /tmp/CCUsageWidget.xcarchive/Products/Applications/CCUsageWidgetApp.app /tmp/CCUsageIPA/Payload/
+          cd /tmp/CCUsageIPA && zip -r /tmp/CCUsageWidgetApp.ipa Payload/
+          cp /tmp/CCUsageWidgetApp.ipa CCUsageWidgetApp.ipa
+
+      - name: Update AltStore source
+        if: env.SKIP_RELEASE != 'true'
+        run: |
+          IPA_SIZE=$(stat -f%z CCUsageWidgetApp.ipa)
+          DOWNLOAD_URL="https://github.com/viktor-svirsky/ccusage/releases/download/${{ env.TAG }}/CCUsageWidgetApp.ipa"
+          DATE=$(date -u +%Y-%m-%d)
+          python3 -c "
+          import json, sys
+          with open('altstore-source.json') as f:
+              source = json.load(f)
+          new_version = {
+              'version': '${{ env.VERSION }}',
+              'date': '${DATE}',
+              'downloadURL': '${DOWNLOAD_URL}',
+              'size': ${IPA_SIZE},
+              'localizedDescription': 'Update to v${{ env.VERSION }}'
+          }
+          versions = source['apps'][0]['versions']
+          versions = [v for v in versions if v['version'] != '${{ env.VERSION }}']
+          versions.insert(0, new_version)
+          source['apps'][0]['versions'] = versions
+          with open('altstore-source.json', 'w') as f:
+              json.dump(source, f, indent=2)
+              f.write('\n')
+          "
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add altstore-source.json
+          git commit -m "chore: update AltStore source for v${{ env.VERSION }}"
+          git push origin HEAD:main
+
       - name: Create tag (push to main or manual dispatch)
         if: env.SKIP_RELEASE != 'true' && !startsWith(github.ref, 'refs/tags/')
         run: |
@@ -64,7 +112,9 @@ jobs:
         with:
           tag_name: ${{ env.TAG }}
           name: CCUsage ${{ env.TAG }}
-          files: CCUsage.zip
+          files: |
+            CCUsage.zip
+            CCUsageWidgetApp.ipa
           generate_release_notes: true
 
       - name: Update Homebrew tap
