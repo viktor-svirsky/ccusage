@@ -33,3 +33,91 @@ jobs:
           name: CCUsage.app
           path: CCUsage.zip
           retention-days: 90
+
+  validate-altstore:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Validate AltStore source JSON
+        run: |
+          python3 -c "
+          import json, sys
+
+          with open('altstore-source.json') as f:
+              source = json.load(f)
+
+          errors = []
+
+          # Required top-level fields
+          for field in ['name', 'identifier', 'sourceURL', 'apps']:
+              if field not in source:
+                  errors.append(f'Missing top-level field: {field}')
+
+          for i, app in enumerate(source.get('apps', [])):
+              prefix = f'apps[{i}]'
+              for field in ['name', 'bundleIdentifier', 'developerName', 'versions']:
+                  if field not in app:
+                      errors.append(f'{prefix}: missing {field}')
+
+              # Validate appPermissions structure
+              perms = app.get('appPermissions', {})
+              if 'entitlements' in perms and not isinstance(perms['entitlements'], list):
+                  errors.append(f'{prefix}.appPermissions.entitlements must be array')
+              if 'privacy' in perms and not isinstance(perms['privacy'], dict):
+                  errors.append(f'{prefix}.appPermissions.privacy must be dict')
+
+              # Validate versions
+              for j, ver in enumerate(app.get('versions', [])):
+                  vprefix = f'{prefix}.versions[{j}]'
+                  for field in ['version', 'date', 'downloadURL', 'size']:
+                      if field not in ver:
+                          errors.append(f'{vprefix}: missing {field}')
+                  if 'size' in ver and not isinstance(ver['size'], int):
+                      errors.append(f'{vprefix}.size must be integer')
+
+          if errors:
+              print('AltStore source validation failed:')
+              for e in errors:
+                  print(f'  - {e}')
+              sys.exit(1)
+          print('AltStore source JSON is valid')
+          "
+
+      - name: Verify version consistency
+        run: |
+          APP_VERSION=$(cat VERSION)
+          LATEST_SOURCE_VERSION=$(python3 -c "
+          import json
+          with open('altstore-source.json') as f:
+              source = json.load(f)
+          versions = source['apps'][0].get('versions', [])
+          print(versions[0]['version'] if versions else 'none')
+          ")
+          echo "VERSION file: $APP_VERSION"
+          echo "AltStore latest: $LATEST_SOURCE_VERSION"
+          if [ "$LATEST_SOURCE_VERSION" != "none" ] && [ "$LATEST_SOURCE_VERSION" != "$APP_VERSION" ]; then
+            echo "::warning::AltStore source version ($LATEST_SOURCE_VERSION) differs from VERSION file ($APP_VERSION)"
+          fi
+
+  build-widget:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build iOS widget IPA
+        run: make widget VERSION=$(cat VERSION)
+
+      - name: Verify IPA version matches VERSION file
+        run: |
+          EXPECTED=$(cat VERSION)
+          ACTUAL=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" /tmp/CCUsageWidget.xcarchive/Products/Applications/CCUsageWidgetApp.app/Info.plist)
+          echo "Expected: $EXPECTED, Actual: $ACTUAL"
+          [ "$EXPECTED" = "$ACTUAL" ] || { echo "::error::IPA version mismatch"; exit 1; }
+
+      - name: Upload widget artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: CCUsageWidgetApp.ipa
+          path: /tmp/CCUsageWidgetApp.ipa
+          retention-days: 90

@@ -15,6 +15,7 @@ jobs:
     runs-on: macos-latest
     permissions:
       contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v6
 
@@ -55,22 +56,30 @@ jobs:
       - name: Build iOS widget IPA
         if: env.SKIP_RELEASE != 'true'
         run: |
-          xcodebuild -project CCUsageWidget/CCUsageWidget.xcodeproj \
-            -scheme CCUsageWidgetApp \
-            -configuration Release \
-            -archivePath /tmp/CCUsageWidget.xcarchive \
-            archive \
-            CODE_SIGN_IDENTITY=- \
-            CODE_SIGNING_ALLOWED=NO \
-            MARKETING_VERSION=${{ env.VERSION }} \
-            CURRENT_PROJECT_VERSION=${{ env.VERSION }}
-          mkdir -p /tmp/CCUsageIPA/Payload
-          cp -r /tmp/CCUsageWidget.xcarchive/Products/Applications/CCUsageWidgetApp.app /tmp/CCUsageIPA/Payload/
-          cd /tmp/CCUsageIPA && zip -r /tmp/CCUsageWidgetApp.ipa Payload/
+          make widget VERSION=${{ env.VERSION }}
           cp /tmp/CCUsageWidgetApp.ipa CCUsageWidgetApp.ipa
+
+      - name: Create tag (push to main or manual dispatch)
+        if: env.SKIP_RELEASE != 'true' && !startsWith(github.ref, 'refs/tags/')
+        run: |
+          git tag ${{ env.TAG }}
+          git push origin ${{ env.TAG }}
+
+      - name: Create GitHub Release
+        if: env.SKIP_RELEASE != 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          name: CCUsage ${{ env.TAG }}
+          files: |
+            CCUsage.zip
+            CCUsageWidgetApp.ipa
+          generate_release_notes: true
 
       - name: Update AltStore source
         if: env.SKIP_RELEASE != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           IPA_SIZE=$(stat -f%z CCUsageWidgetApp.ipa)
           DOWNLOAD_URL="https://github.com/viktor-svirsky/ccusage/releases/download/${{ env.TAG }}/CCUsageWidgetApp.ipa"
@@ -94,28 +103,17 @@ jobs:
               json.dump(source, f, indent=2)
               f.write('\n')
           "
+          BRANCH="chore/altstore-v${{ env.VERSION }}"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
           git add altstore-source.json
           git commit -m "chore: update AltStore source for v${{ env.VERSION }}"
-          git push origin HEAD:main
-
-      - name: Create tag (push to main or manual dispatch)
-        if: env.SKIP_RELEASE != 'true' && !startsWith(github.ref, 'refs/tags/')
-        run: |
-          git tag ${{ env.TAG }}
-          git push origin ${{ env.TAG }}
-
-      - name: Create GitHub Release
-        if: env.SKIP_RELEASE != 'true'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ env.TAG }}
-          name: CCUsage ${{ env.TAG }}
-          files: |
-            CCUsage.zip
-            CCUsageWidgetApp.ipa
-          generate_release_notes: true
+          git push origin "$BRANCH"
+          gh pr create --title "chore: update AltStore source for v${{ env.VERSION }}" \
+            --body "Auto-generated: update AltStore source with v${{ env.VERSION }} IPA." \
+            --base main --head "$BRANCH"
+          gh pr merge "$BRANCH" --auto --squash
 
       - name: Update Homebrew tap
         if: env.SKIP_RELEASE != 'true'
