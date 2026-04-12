@@ -5,7 +5,7 @@ MACOS = $(CONTENTS)/MacOS
 INSTALL_DIR = /Applications
 VERSION ?= $(shell cat VERSION 2>/dev/null || echo 0.0.0-dev)
 
-.PHONY: build test install uninstall clean generate-icon
+.PHONY: build test install uninstall clean generate-icon widget
 
 generate-icon:
 	swiftc -O build-icon.swift -framework Cocoa -o build-icon
@@ -32,5 +32,21 @@ uninstall:
 	pkill -f $(APP_NAME) 2>/dev/null || true
 	rm -rf $(INSTALL_DIR)/$(APP_DIR)
 
+widget:
+	rm -rf /tmp/CCUsageWidget.xcarchive /tmp/CCUsageIPA
+	xcodebuild -project CCUsageWidget/CCUsageWidget.xcodeproj \
+		-scheme CCUsageWidgetApp \
+		-configuration Release \
+		-archivePath /tmp/CCUsageWidget.xcarchive \
+		archive \
+		CODE_SIGN_IDENTITY=- \
+		CODE_SIGNING_ALLOWED=NO \
+		MARKETING_VERSION=$(VERSION) \
+		CURRENT_PROJECT_VERSION=$(VERSION)
+	mkdir -p /tmp/CCUsageIPA/Payload
+	cp -r /tmp/CCUsageWidget.xcarchive/Products/Applications/CCUsageWidgetApp.app /tmp/CCUsageIPA/Payload/
+	cd /tmp/CCUsageIPA && zip -r /tmp/CCUsageWidgetApp.ipa Payload/
+	@echo "IPA built: /tmp/CCUsageWidgetApp.ipa (v$(VERSION))"
+
 clean:
-	rm -rf $(APP_DIR) /tmp/$(APP_NAME)Tests $(APP_NAME).iconset $(APP_NAME).icns build-icon
+	rm -rf $(APP_DIR) /tmp/$(APP_NAME)Tests $(APP_NAME).iconset $(APP_NAME).icns build-icon /tmp/CCUsageWidget.xcarchive /tmp/CCUsageIPA
