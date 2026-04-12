@@ -8,6 +8,7 @@ struct DashboardView: View {
             VStack(spacing: 16) {
                 header
                 if let data = dataService.data {
+                    staleBanner(data)
                     utilizationCards(data)
                     depletionBanner(data)
                     modelBreakdown(data)
@@ -21,6 +22,7 @@ struct DashboardView: View {
             .padding(.bottom, 24)
         }
         .background(Theme.backgroundGradient.ignoresSafeArea())
+        .refreshable { await dataService.fetch() }
     }
 
     // MARK: - Header
@@ -45,6 +47,34 @@ struct DashboardView: View {
         .padding(.top, 8)
     }
 
+    // MARK: - Stale Banner
+
+    @ViewBuilder
+    private func staleBanner(_ data: WidgetData) -> some View {
+        if Theme.isStale(data.updatedAt) {
+            HStack(spacing: 10) {
+                Image(systemName: "wifi.slash")
+                    .foregroundStyle(Theme.isVeryStale(data.updatedAt) ? Theme.red : Theme.orange)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Data may be outdated")
+                        .font(.caption).fontWeight(.semibold)
+                        .foregroundStyle(Theme.textPrimary)
+                    Text("Last updated \(updatedLabel(data.updatedAt))")
+                        .font(.caption2)
+                        .foregroundStyle(Theme.textSecondary)
+                }
+                Spacer()
+            }
+            .padding(14)
+            .background((Theme.isVeryStale(data.updatedAt) ? Theme.red : Theme.orange).opacity(0.1))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke((Theme.isVeryStale(data.updatedAt) ? Theme.red : Theme.orange).opacity(0.2), lineWidth: 1)
+            )
+        }
+    }
+
     // MARK: - Utilization Cards
 
     private func utilizationCards(_ data: WidgetData) -> some View {
@@ -62,6 +92,7 @@ struct DashboardView: View {
                 resetsAt: data.sevenDayResetsAt
             )
         }
+        .opacity(Theme.isStale(data.updatedAt) ? 0.6 : 1.0)
     }
 
     private func utilizationCard(label: String, pct: Double, pace: Double?, resetsAt: TimeInterval?) -> some View {
@@ -101,7 +132,7 @@ struct DashboardView: View {
 
     @ViewBuilder
     private func depletionBanner(_ data: WidgetData) -> some View {
-        if let dep = data.depletionSeconds, dep > 0 {
+        if let dep = data.depletionSeconds, dep > 0, dep < 7200 {
             HStack(spacing: 10) {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(Theme.orange)
@@ -133,8 +164,9 @@ struct DashboardView: View {
         let sonnetPct = data.sonnetUtilization ?? 0
         let haikuPct = data.haikuUtilization ?? 0
         let total = opusPct + sonnetPct + haikuPct
+        let modelCount = [opusPct, sonnetPct, haikuPct].filter { $0 > 0 }.count
 
-        if total > 0 {
+        if total > 0, modelCount >= 2 {
             GlassCard {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("MODEL BREAKDOWN")
@@ -196,7 +228,7 @@ struct DashboardView: View {
             statCard(
                 icon: "bolt.fill",
                 color: Theme.green,
-                value: data.activeSessionCount.map { "\($0)" } ?? "0",
+                value: "\(data.activeSessionCount ?? data.sessions?.count ?? 0)",
                 label: "Sessions"
             )
             statCard(
