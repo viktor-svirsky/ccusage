@@ -55,18 +55,7 @@ jobs:
       - name: Build iOS widget IPA
         if: env.SKIP_RELEASE != 'true'
         run: |
-          xcodebuild -project CCUsageWidget/CCUsageWidget.xcodeproj \
-            -scheme CCUsageWidgetApp \
-            -configuration Release \
-            -archivePath /tmp/CCUsageWidget.xcarchive \
-            archive \
-            CODE_SIGN_IDENTITY=- \
-            CODE_SIGNING_ALLOWED=NO \
-            MARKETING_VERSION=${{ env.VERSION }} \
-            CURRENT_PROJECT_VERSION=${{ env.VERSION }}
-          mkdir -p /tmp/CCUsageIPA/Payload
-          cp -r /tmp/CCUsageWidget.xcarchive/Products/Applications/CCUsageWidgetApp.app /tmp/CCUsageIPA/Payload/
-          cd /tmp/CCUsageIPA && zip -r /tmp/CCUsageWidgetApp.ipa Payload/
+          make widget VERSION=${{ env.VERSION }}
           cp /tmp/CCUsageWidgetApp.ipa CCUsageWidgetApp.ipa
 
       - name: Update AltStore source
