@@ -97,6 +97,8 @@ async function handlePut(request: Request, env: Env): Promise<Response> {
 	const newValue = JSON.stringify(body.data);
 
 	// Read-before-write: free tier has 5M reads/day but only 100K writes/day.
+	// Always update expires_at to extend TTL, but skip data write if unchanged.
+	const ttl = 86400; // 24 hours — Mac pushes every ~60s, but widget needs data when Mac is off
 	const existing = await env.DB.prepare(
 		'SELECT data FROM widget_data WHERE key = ? AND expires_at > ?'
 	).bind(canonicalKey, now).first<{ data: string }>();
@@ -104,7 +106,12 @@ async function handlePut(request: Request, env: Env): Promise<Response> {
 	if (!existing || !sameExceptUpdatedAt(existing.data, newValue)) {
 		await env.DB.prepare(
 			'INSERT OR REPLACE INTO widget_data (key, data, expires_at) VALUES (?, ?, ?)'
-		).bind(canonicalKey, newValue, now + 3600).run();
+		).bind(canonicalKey, newValue, now + ttl).run();
+	} else {
+		// Data unchanged — just bump TTL and updatedAt
+		await env.DB.prepare(
+			'UPDATE widget_data SET data = ?, expires_at = ? WHERE key = ?'
+		).bind(newValue, now + ttl, canonicalKey).run();
 	}
 
 	// Opportunistic cleanup of expired rows (~1% of requests)
