@@ -1,9 +1,15 @@
 import Foundation
+#if !TESTING
 import WidgetKit
+#else
+import Combine
+#endif
 
 private let appGroupID = "group.com.viktorsvirsky.ccusage"
 private let widgetURLKey = "widgetURL"
 private let cachedDataKey = "cachedAppWidgetData"
+private let widgetCachedDataKey = "cachedWidgetData"
+private let widgetCachedTimestampKey = "cachedWidgetDataTimestamp"
 private let fetchInterval: TimeInterval = 120
 
 @MainActor
@@ -12,11 +18,19 @@ class DataService: ObservableObject {
     @Published var isConnected: Bool = false
 
     private var timer: Timer?
-    private let defaults = UserDefaults(suiteName: appGroupID)
+    private let defaults: UserDefaults?
 
     init() {
+        self.defaults = UserDefaults(suiteName: appGroupID)
         loadCached()
     }
+
+    #if TESTING
+    init(suiteName: String) {
+        self.defaults = UserDefaults(suiteName: suiteName)
+        loadCached()
+    }
+    #endif
 
     // MARK: - Connection
 
@@ -36,8 +50,10 @@ class DataService: ObservableObject {
         }
         defaults?.set(trimmed, forKey: widgetURLKey)
         isConnected = true
+        #if !TESTING
         WidgetCenter.shared.reloadAllTimelines()
         Task { await fetch() }
+        #endif
         return nil
     }
 
@@ -45,9 +61,13 @@ class DataService: ObservableObject {
         stop()
         defaults?.removeObject(forKey: widgetURLKey)
         defaults?.removeObject(forKey: cachedDataKey)
+        defaults?.removeObject(forKey: widgetCachedDataKey)
+        defaults?.removeObject(forKey: widgetCachedTimestampKey)
         data = nil
         isConnected = false
+        #if !TESTING
         WidgetCenter.shared.reloadAllTimelines()
+        #endif
     }
 
     // MARK: - Lifecycle
@@ -83,7 +103,13 @@ class DataService: ObservableObject {
             self.data = decoded
             self.isConnected = true
             defaults?.set(responseData, forKey: cachedDataKey)
+            // Share data with widget extension so it doesn't need network access
+            defaults?.set(responseData, forKey: widgetCachedDataKey)
+            defaults?.set(Date().timeIntervalSince1970, forKey: widgetCachedTimestampKey)
+            #if !TESTING
+            WidgetCenter.shared.reloadAllTimelines()
             NotificationService.shared.evaluate(decoded)
+            #endif
         } catch {
             // Keep existing data on failure
         }
