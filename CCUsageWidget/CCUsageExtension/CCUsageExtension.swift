@@ -183,7 +183,7 @@ struct CCUsageIntent: WidgetConfigurationIntent {
     static var title: LocalizedStringResource = "Claude Usage"
     static var description = IntentDescription("Configure your Claude Code usage widget.")
 
-    @Parameter(title: "Widget URL", description: "Paste from CCUsage Mac menu bar → Share to iPhone. Only needed if widget shows No Data.")
+    @Parameter(title: "Widget URL", description: "Paste from CCUsage Mac menu bar → Share to iPhone.")
     var widgetURL: String?
 }
 
@@ -221,10 +221,10 @@ struct CCUsageProvider: AppIntentTimelineProvider {
     private func fetchData(intentURL: String?) async -> WidgetData? {
         let defaults = UserDefaults(suiteName: appGroupID) ?? .standard
 
-        // Resolve URL: App Group → Keychain → intent configuration
-        let urlString = defaults.string(forKey: widgetURLKey)
+        // Resolve URL: intent (most reliable under AltStore) → App Group → Keychain
+        let urlString = intentURL
+            ?? defaults.string(forKey: widgetURLKey)
             ?? KeychainHelper.load(key: "widgetURL")
-            ?? intentURL
         guard let urlString, let url = URL(string: urlString) else {
             return decodeCached(defaults)
         }
