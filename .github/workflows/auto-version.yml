@@ -69,4 +69,3 @@ jobs:
             --title "chore: bump version ${OLD_VERSION} → ${NEW_VERSION}" \
             --body "Auto-generated version bump from merged PR: **${{ github.event.pull_request.title }}**" \
             --base main --head "$BRANCH"
-          gh pr merge "$BRANCH" --auto --squash
