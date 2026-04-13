@@ -20,6 +20,7 @@
 		AA0000000000000000000014 /* DashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE0000000000000000000014 /* DashboardView.swift */; };
 		AA0000000000000000000015 /* HistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE0000000000000000000015 /* HistoryView.swift */; };
 		AA0000000000000000000016 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE0000000000000000000016 /* SettingsView.swift */; };
+		AA0000000000000000000017 /* KeychainHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE0000000000000000000017 /* KeychainHelper.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -59,6 +60,7 @@
 		EE0000000000000000000014 /* DashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardView.swift; sourceTree = "<group>"; };
 		EE0000000000000000000015 /* HistoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryView.swift; sourceTree = "<group>"; };
 		EE0000000000000000000016 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		EE0000000000000000000017 /* KeychainHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainHelper.swift; sourceTree = "<group>"; };
 		FF0000000000000000000001 /* CCUsageExtension.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CCUsageExtension.swift; sourceTree = "<group>"; };
 		FF0000000000000000000002 /* CCUsageExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = CCUsageExtension.entitlements; sourceTree = "<group>"; };
 		FF0000000000000000000003 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -114,6 +116,7 @@
 				EE0000000000000000000014 /* DashboardView.swift */,
 				EE0000000000000000000015 /* HistoryView.swift */,
 				EE0000000000000000000016 /* SettingsView.swift */,
+				EE0000000000000000000017 /* KeychainHelper.swift */,
 				EE0000000000000000000003 /* CCUsageWidgetApp.entitlements */,
 				EE0000000000000000000004 /* Assets.xcassets */,
 			);
@@ -240,6 +243,7 @@
 				AA0000000000000000000014 /* DashboardView.swift in Sources */,
 				AA0000000000000000000015 /* HistoryView.swift in Sources */,
 				AA0000000000000000000016 /* SettingsView.swift in Sources */,
+				AA0000000000000000000017 /* KeychainHelper.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
