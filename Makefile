@@ -5,7 +5,7 @@ MACOS = $(CONTENTS)/MacOS
 INSTALL_DIR = /Applications
 VERSION ?= $(shell cat VERSION 2>/dev/null || echo 0.0.0-dev)
 
-.PHONY: build test install uninstall clean generate-icon widget
+.PHONY: build test install uninstall clean generate-icon widget widget-test
 
 generate-icon:
 	swiftc -O build-icon.swift -framework Cocoa -o build-icon
@@ -31,6 +31,13 @@ install: build
 uninstall:
 	pkill -f $(APP_NAME) 2>/dev/null || true
 	rm -rf $(INSTALL_DIR)/$(APP_DIR)
+
+widget-test:
+	swiftc -DTESTING -o /tmp/CCUsageWidgetTests \
+		CCUsageWidget/CCUsageWidgetApp/SharedModels.swift \
+		CCUsageWidget/CCUsageWidgetApp/DataService.swift \
+		CCUsageWidget/WidgetTests.swift
+	/tmp/CCUsageWidgetTests
 
 widget:
 	rm -rf /tmp/CCUsageWidget.xcarchive /tmp/CCUsageIPA

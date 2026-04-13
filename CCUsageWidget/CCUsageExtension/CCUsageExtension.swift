@@ -182,17 +182,15 @@ struct CCUsageProvider: TimelineProvider {
 
     private static let cachedDataKey = "cachedWidgetData"
     private static let cachedDataTimestampKey = "cachedWidgetDataTimestamp"
-    private static let cacheMaxAge: TimeInterval = 90 // 1.5 minutes
+    private static let cacheMaxAge: TimeInterval = 300 // 5 minutes — app refreshes every 2min
 
     private func fetchData(completion: @escaping (WidgetData?) -> Void) {
-        guard let defaults = UserDefaults(suiteName: appGroupID),
-              let urlString = defaults.string(forKey: widgetURLKey),
-              let url = URL(string: urlString) else {
+        guard let defaults = UserDefaults(suiteName: appGroupID) else {
             completion(nil)
             return
         }
 
-        // Return cached data if fresh enough
+        // Prefer data written by the app — no network needed
         let cachedTimestamp = defaults.double(forKey: Self.cachedDataTimestampKey)
         if cachedTimestamp > 0,
            Date().timeIntervalSince1970 - cachedTimestamp < Self.cacheMaxAge,
@@ -202,24 +200,35 @@ struct CCUsageProvider: TimelineProvider {
             return
         }
 
+        // Fall back to network fetch if app data is stale
+        guard let urlString = defaults.string(forKey: widgetURLKey),
+              let url = URL(string: urlString) else {
+            // No URL configured — try stale cache
+            completion(decodeCached(defaults))
+            return
+        }
+
         URLSession.shared.dataTask(with: url) { data, response, _ in
             guard let data,
                   let http = response as? HTTPURLResponse,
                   http.statusCode == 200,
                   let decoded = try? JSONDecoder().decode(WidgetData.self, from: data) else {
-                // Fall back to stale cache on network failure
-                if let cachedData = defaults.data(forKey: Self.cachedDataKey),
-                   let cached = try? JSONDecoder().decode(WidgetData.self, from: cachedData) {
-                    completion(cached)
-                } else {
-                    completion(nil)
-                }
+                // Network failed — use any cached data regardless of age
+                completion(self.decodeCached(defaults))
                 return
             }
             defaults.set(data, forKey: Self.cachedDataKey)
             defaults.set(Date().timeIntervalSince1970, forKey: Self.cachedDataTimestampKey)
             completion(decoded)
         }.resume()
+    }
+
+    private func decodeCached(_ defaults: UserDefaults) -> WidgetData? {
+        guard let data = defaults.data(forKey: Self.cachedDataKey),
+              let cached = try? JSONDecoder().decode(WidgetData.self, from: data) else {
+            return nil
+        }
+        return cached
     }
 }
 
