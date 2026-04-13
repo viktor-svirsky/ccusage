@@ -40,7 +40,13 @@ jobs:
             echo "bump=manual" >> $GITHUB_OUTPUT
           else
             TITLE="${{ github.event.pull_request.title }}"
-            CURRENT=$(cat VERSION)
+
+            # Use highest existing tag as base, not VERSION file (avoids race condition
+            # when two PRs merge before housekeeping PR updates VERSION on main)
+            CURRENT=$(git tag -l 'v*' | sed 's/^v//' | sort -V | tail -1)
+            if [ -z "$CURRENT" ]; then
+              CURRENT=$(cat VERSION)
+            fi
             IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
 
             if echo "$TITLE" | grep -qiE '^feat(\(.*\))?!:|^[a-z]+(\(.*\))?!:|BREAKING CHANGE'; then
