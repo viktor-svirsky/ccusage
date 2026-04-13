@@ -209,9 +209,9 @@ struct CCUsageProvider: AppIntentTimelineProvider {
 
     func timeline(for configuration: CCUsageIntent, in context: Context) async -> Timeline<CCUsageEntry> {
         let data = await fetchData(intentURL: configuration.widgetURL)
-        let entry = CCUsageEntry(date: Date(), data: data)
-        let next = Calendar.current.date(byAdding: .minute, value: 2, to: Date())!
-        return Timeline(entries: [entry], policy: .after(next))
+        let predicted = buildPredictiveTimeline(base: data, from: Date(), count: 15, intervalSeconds: 120)
+        let entries = predicted.map { CCUsageEntry(date: $0.date, data: $0.data) }
+        return Timeline(entries: entries, policy: .atEnd)
     }
 
     private static let cachedDataKey = "cachedWidgetData"

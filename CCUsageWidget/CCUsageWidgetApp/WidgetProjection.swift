@@ -44,3 +44,25 @@ func projectWidgetData(_ base: WidgetData, secondsAhead: TimeInterval) -> Widget
         extraUsageUtilization: base.extraUsageUtilization
     )
 }
+
+// MARK: - Predictive Timeline
+
+struct PredictiveEntry {
+    let date: Date
+    let data: WidgetData?
+
+    var utilization5h: Double? { data?.fiveHourUtilization }
+    var utilization7d: Double? { data?.sevenDayUtilization }
+    var updatedAt: TimeInterval? { data?.updatedAt }
+}
+
+func buildPredictiveTimeline(base: WidgetData?, from startDate: Date, count: Int, intervalSeconds: TimeInterval) -> [PredictiveEntry] {
+    guard let base else {
+        return [PredictiveEntry(date: startDate, data: nil)]
+    }
+    return (0..<count).map { i in
+        let elapsed = TimeInterval(i) * intervalSeconds
+        let projected = projectWidgetData(base, secondsAhead: elapsed)
+        return PredictiveEntry(date: startDate.addingTimeInterval(elapsed), data: projected)
+    }
+}

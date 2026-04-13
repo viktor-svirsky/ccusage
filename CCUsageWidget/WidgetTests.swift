@@ -548,6 +548,48 @@ func runProjectionTests() {
             let projected = projectWidgetData(base, secondsAhead: 600)
             assertEqual(projected.depletionSeconds!, 0, "depletion clamped at 0")
         }
+
+        test("buildPredictiveTimeline generates 15 entries over 28 min") {
+            let now = Date()
+            let base = WidgetData(
+                fiveHourUtilization: 40,
+                sevenDayUtilization: 20,
+                fiveHourPace: 1.2,
+                sevenDayPace: 0.9,
+                fiveHourResetsAt: now.addingTimeInterval(14400).timeIntervalSince1970,
+                sevenDayResetsAt: now.addingTimeInterval(4 * 86400).timeIntervalSince1970,
+                updatedAt: now.timeIntervalSince1970,
+                extraUsageEnabled: nil, depletionSeconds: nil, todayCost: nil,
+                activeSessionCount: nil, opusUtilization: nil, sonnetUtilization: nil,
+                haikuUtilization: nil, dailyEntries: nil, dailyCosts: nil,
+                sessions: nil, extraUsageUtilization: nil
+            )
+
+            let entries = buildPredictiveTimeline(base: base, from: now, count: 15, intervalSeconds: 120)
+
+            assertEqual(entries.count, 15, "15 entries")
+            assertEqual(entries[0].utilization5h, 40, "first entry = base 5h")
+            check(entries[1].utilization5h! > 40, "second entry projected forward")
+
+            let lastDate = entries.last!.date
+            let diff = lastDate.timeIntervalSince(now)
+            assertEqual(Int(diff), 14 * 120, "last entry at 28 min")
+
+            for i in 1..<entries.count {
+                check(entries[i].date > entries[i-1].date, "entry \(i) after entry \(i-1)")
+            }
+
+            for entry in entries {
+                assertEqual(entry.updatedAt, now.timeIntervalSince1970, "updatedAt frozen")
+            }
+        }
+
+        test("buildPredictiveTimeline with nil data returns single nil entry") {
+            let now = Date()
+            let entries = buildPredictiveTimeline(base: nil, from: now, count: 15, intervalSeconds: 120)
+            assertEqual(entries.count, 1, "single entry for nil data")
+            assertNil(entries[0].utilization5h, "nil data -> nil utilization")
+        }
     }
 }
 
