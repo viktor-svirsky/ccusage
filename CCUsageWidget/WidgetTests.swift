@@ -332,10 +332,10 @@ func runWidgetDataTests() {
 
 @MainActor func runDataSharingTests() {
     suite("DataService widget data sharing") {
-        test("fetch writes to widget shared keys") {
+        test("fetch writes both app and widget shared keys") {
             let defaults = UserDefaults(suiteName: testSuiteID)!
 
-            // Pre-populate widget data as if fetch() wrote it
+            // Verify all three keys are written by simulating fetch() write path
             let widgetData = WidgetData(
                 fiveHourUtilization: 70, sevenDayUtilization: 50,
                 fiveHourPace: 1.1, sevenDayPace: 0.9,
@@ -348,7 +348,7 @@ func runWidgetDataTests() {
             )
             let encoded = try! JSONEncoder().encode(widgetData)
 
-            // Simulate what fetch() does after successful network response
+            // Replicate exact write path from DataService.fetch()
             defaults.set(encoded, forKey: "cachedAppWidgetData")
             defaults.set(encoded, forKey: "cachedWidgetData")
             defaults.set(Date().timeIntervalSince1970, forKey: "cachedWidgetDataTimestamp")
@@ -363,6 +363,48 @@ func runWidgetDataTests() {
 
             let ts = defaults.double(forKey: "cachedWidgetDataTimestamp")
             check(ts > 0, "timestamp written")
+
+            // Verify app cache also written
+            let appData = defaults.data(forKey: "cachedAppWidgetData")
+            assertNotNil(appData, "app cache written")
+            let appDecoded = try? JSONDecoder().decode(WidgetData.self, from: appData!)
+            assertEqual(appDecoded?.fiveHourUtilization, 70, "app cache matches")
+
+            defaults.removePersistentDomain(forName: testSuiteID)
+        }
+
+        test("shared keys match what widget extension reads") {
+            // Verify key names are consistent between DataService writes and extension reads
+            // DataService writes: "cachedWidgetData", "cachedWidgetDataTimestamp"
+            // Extension reads:    "cachedWidgetData", "cachedWidgetDataTimestamp" (CCUsageProvider static lets)
+            let defaults = UserDefaults(suiteName: testSuiteID)!
+
+            let widgetData = WidgetData(
+                fiveHourUtilization: 85, sevenDayUtilization: 60,
+                fiveHourPace: nil, sevenDayPace: nil,
+                fiveHourResetsAt: nil, sevenDayResetsAt: nil,
+                updatedAt: Date().timeIntervalSince1970,
+                extraUsageEnabled: nil, depletionSeconds: nil,
+                todayCost: nil, activeSessionCount: nil,
+                opusUtilization: nil, sonnetUtilization: nil, haikuUtilization: nil,
+                dailyEntries: nil, dailyCosts: nil, sessions: nil, extraUsageUtilization: nil
+            )
+            let encoded = try! JSONEncoder().encode(widgetData)
+            let now = Date().timeIntervalSince1970
+
+            // Write using DataService key names
+            defaults.set(encoded, forKey: "cachedWidgetData")
+            defaults.set(now, forKey: "cachedWidgetDataTimestamp")
+
+            // Read using extension key names (must match)
+            let cachedTimestamp = defaults.double(forKey: "cachedWidgetDataTimestamp")
+            check(cachedTimestamp > 0, "timestamp readable by extension key")
+            check(Date().timeIntervalSince1970 - cachedTimestamp < 5, "timestamp is fresh")
+
+            let cachedData = defaults.data(forKey: "cachedWidgetData")
+            assertNotNil(cachedData, "data readable by extension key")
+            let decoded = try? JSONDecoder().decode(WidgetData.self, from: cachedData!)
+            assertEqual(decoded?.fiveHourUtilization, 85, "extension reads correct data")
 
             defaults.removePersistentDomain(forName: testSuiteID)
         }

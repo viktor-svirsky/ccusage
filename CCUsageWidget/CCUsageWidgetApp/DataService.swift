@@ -107,6 +107,7 @@ class DataService: ObservableObject {
             defaults?.set(responseData, forKey: widgetCachedDataKey)
             defaults?.set(Date().timeIntervalSince1970, forKey: widgetCachedTimestampKey)
             #if !TESTING
+            WidgetCenter.shared.reloadAllTimelines()
             NotificationService.shared.evaluate(decoded)
             #endif
         } catch {
