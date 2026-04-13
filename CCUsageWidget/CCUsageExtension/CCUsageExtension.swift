@@ -221,15 +221,6 @@ struct CCUsageProvider: AppIntentTimelineProvider {
     private func fetchData(intentURL: String?) async -> WidgetData? {
         let defaults = UserDefaults(suiteName: appGroupID) ?? .standard
 
-        // Prefer data written by the app via App Group — no network needed
-        let cachedTimestamp = defaults.double(forKey: Self.cachedDataTimestampKey)
-        if cachedTimestamp > 0,
-           Date().timeIntervalSince1970 - cachedTimestamp < Self.cacheMaxAge,
-           let cachedData = defaults.data(forKey: Self.cachedDataKey),
-           let cached = try? JSONDecoder().decode(WidgetData.self, from: cachedData) {
-            return cached
-        }
-
         // Resolve URL: App Group → Keychain → intent configuration
         let urlString = defaults.string(forKey: widgetURLKey)
             ?? KeychainHelper.load(key: "widgetURL")
@@ -238,7 +229,7 @@ struct CCUsageProvider: AppIntentTimelineProvider {
             return decodeCached(defaults)
         }
 
-        // Network fetch
+        // Always fetch from network — App Group cache doesn't work under AltStore
         do {
             let (data, response) = try await URLSession.shared.data(from: url)
             guard let http = response as? HTTPURLResponse, http.statusCode == 200,
@@ -254,6 +245,11 @@ struct CCUsageProvider: AppIntentTimelineProvider {
     }
 
     private func decodeCached(_ defaults: UserDefaults) -> WidgetData? {
+        // Reject cache older than 1 hour — show "No Data" instead of stale numbers
+        let ts = defaults.double(forKey: Self.cachedDataTimestampKey)
+        if ts > 0, Date().timeIntervalSince1970 - ts > 3600 {
+            return nil
+        }
         guard let data = defaults.data(forKey: Self.cachedDataKey),
               let cached = try? JSONDecoder().decode(WidgetData.self, from: data) else {
             return nil
