@@ -22,6 +22,13 @@
       },
       "versions": [
         {
+          "version": "1.25.11",
+          "date": "2026-04-13",
+          "downloadURL": "https://github.com/viktor-svirsky/ccusage/releases/download/v1.25.11/CCUsageWidgetApp.ipa",
+          "size": 1486812,
+          "localizedDescription": "Update to v1.25.11"
+        },
+        {
           "version": "1.25.9",
           "date": "2026-04-13",
           "downloadURL": "https://github.com/viktor-svirsky/ccusage/releases/download/v1.25.9/CCUsageWidgetApp.ipa",
