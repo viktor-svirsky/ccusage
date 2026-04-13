@@ -218,15 +218,23 @@ struct CCUsageProvider: AppIntentTimelineProvider {
     private static let cachedDataTimestampKey = "cachedWidgetDataTimestamp"
     private static let cacheMaxAge: TimeInterval = 300 // 5 minutes — app refreshes every 2min
 
+    private static let savedURLKey = "savedWidgetURL"
+
     private func fetchData(intentURL: String?) async -> WidgetData? {
         let defaults = UserDefaults(suiteName: appGroupID) ?? .standard
 
-        // Resolve URL: intent (most reliable under AltStore) → App Group → Keychain
+        // Resolve URL: intent → extension's own saved URL → App Group → Keychain
         let urlString = intentURL
+            ?? defaults.string(forKey: Self.savedURLKey)
             ?? defaults.string(forKey: widgetURLKey)
             ?? KeychainHelper.load(key: "widgetURL")
         guard let urlString, let url = URL(string: urlString) else {
             return decodeCached(defaults)
+        }
+
+        // Persist URL in extension's own storage so it survives app updates
+        if defaults.string(forKey: Self.savedURLKey) != urlString {
+            defaults.set(urlString, forKey: Self.savedURLKey)
         }
 
         // Always fetch from network — App Group cache doesn't work under AltStore
