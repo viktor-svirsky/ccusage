@@ -77,12 +77,42 @@ private let widgetURLKey = "widgetURL"
 
 private enum KeychainHelper {
     private static let service = "com.viktorsvirsky.ccusage.shared"
+    private static let accessGroup: String = {
+        let tempQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "com.viktorsvirsky.ccusage.teamid-probe",
+            kSecAttrAccount as String: "probe",
+            kSecValueData as String: Data([0]),
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
+        ]
+        SecItemDelete(tempQuery as CFDictionary)
+        SecItemAdd(tempQuery as CFDictionary, nil)
+
+        var readQuery = tempQuery
+        readQuery.removeValue(forKey: kSecValueData as String)
+        readQuery[kSecReturnAttributes as String] = true
+
+        var result: AnyObject?
+        let status = SecItemCopyMatching(readQuery as CFDictionary, &result)
+        SecItemDelete(tempQuery as CFDictionary)
+
+        if status == errSecSuccess,
+           let attrs = result as? [String: Any],
+           let group = attrs[kSecAttrAccessGroup as String] as? String {
+            if let dotIndex = group.firstIndex(of: ".") {
+                let prefix = String(group[group.startIndex...dotIndex])
+                return prefix + "com.viktorsvirsky.ccusage.shared"
+            }
+        }
+        return "com.viktorsvirsky.ccusage.shared"
+    }()
 
     static func load(key: String) -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: key,
+            kSecAttrAccessGroup as String: accessGroup,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
