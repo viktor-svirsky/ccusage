@@ -10,6 +10,10 @@ on:
         description: 'Version to release (e.g. 1.0.0)'
         required: true
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   release:
     if: >
@@ -30,12 +34,10 @@ jobs:
         id: version
         run: |
           if [ -n "${{ inputs.version }}" ]; then
-            # Manual dispatch — use provided version
             echo "VERSION=${{ inputs.version }}" >> $GITHUB_ENV
             echo "TAG=v${{ inputs.version }}" >> $GITHUB_ENV
             echo "bump=manual" >> $GITHUB_OUTPUT
           else
-            # Auto from PR merge — determine bump type
             TITLE="${{ github.event.pull_request.title }}"
             CURRENT=$(cat VERSION)
             IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
@@ -86,9 +88,16 @@ jobs:
           make widget VERSION=${{ env.VERSION }}
           cp /tmp/CCUsageWidgetApp.ipa CCUsageWidgetApp.ipa
 
-      - name: Create tag
+      - name: Bump VERSION and create tag
         if: steps.version.outputs.bump != 'none' && env.SKIP_RELEASE != 'true'
         run: |
+          # Bump VERSION on main so tag points to correct commit
+          echo "${{ env.VERSION }}" > VERSION
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add VERSION
+          git commit -m "chore: bump version to ${{ env.VERSION }} [skip ci]"
+          git push origin main
           git tag ${{ env.TAG }}
           git push origin ${{ env.TAG }}
 
@@ -102,57 +111,6 @@ jobs:
             CCUsage.zip
             CCUsageWidgetApp.ipa
           generate_release_notes: true
-
-      - name: Create post-release PR
-        if: steps.version.outputs.bump != 'none' && env.SKIP_RELEASE != 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # Update VERSION file
-          echo "${{ env.VERSION }}" > VERSION
-
-          # Update AltStore source
-          IPA_SIZE=$(stat -f%z CCUsageWidgetApp.ipa)
-          DOWNLOAD_URL="https://github.com/viktor-svirsky/ccusage/releases/download/${{ env.TAG }}/CCUsageWidgetApp.ipa"
-          DATE=$(date -u +%Y-%m-%d)
-          python3 -c "
-          import json
-          with open('altstore-source.json') as f:
-              source = json.load(f)
-          new_version = {
-              'version': '${{ env.VERSION }}',
-              'date': '${DATE}',
-              'downloadURL': '${DOWNLOAD_URL}',
-              'size': ${IPA_SIZE},
-              'localizedDescription': 'Update to v${{ env.VERSION }}'
-          }
-          versions = source['apps'][0]['versions']
-          versions = [v for v in versions if v['version'] != '${{ env.VERSION }}']
-          versions.insert(0, new_version)
-          source['apps'][0]['versions'] = versions
-          with open('altstore-source.json', 'w') as f:
-              json.dump(source, f, indent=2)
-              f.write('\n')
-          "
-
-          # Create single PR with both changes
-          BRANCH="chore/release-v${{ env.VERSION }}"
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git checkout -b "$BRANCH"
-          git add VERSION altstore-source.json
-          git commit -m "chore: release v${{ env.VERSION }} — bump VERSION + update AltStore"
-          git push origin "$BRANCH" --force
-          gh pr create \
-            --title "chore: release v${{ env.VERSION }}" \
-            --body "Auto-generated from merged PR: **${{ github.event.pull_request.title || inputs.version }}**
-
-          - [x] VERSION bumped: ${OLD_VERSION:-manual} → ${{ env.VERSION }}
-          - [x] GitHub Release created: ${{ env.TAG }}
-          - [x] AltStore source updated
-          - [x] Homebrew tap updated
-          - [ ] Merge this PR to sync main" \
-            --base main --head "$BRANCH"
 
       - name: Update Homebrew tap
         if: steps.version.outputs.bump != 'none' && env.SKIP_RELEASE != 'true'
@@ -190,3 +148,48 @@ jobs:
             --field message="Update CCUsage to ${{ env.VERSION }}" \
             --field content="$(base64 < /tmp/ccusage_final.rb)" \
             $SHA_ARGS
+
+      - name: Create post-release PR
+        if: steps.version.outputs.bump != 'none' && env.SKIP_RELEASE != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Update AltStore source
+          IPA_SIZE=$(stat -f%z CCUsageWidgetApp.ipa)
+          DOWNLOAD_URL="https://github.com/viktor-svirsky/ccusage/releases/download/${{ env.TAG }}/CCUsageWidgetApp.ipa"
+          DATE=$(date -u +%Y-%m-%d)
+          python3 -c "
+          import json
+          with open('altstore-source.json') as f:
+              source = json.load(f)
+          new_version = {
+              'version': '${{ env.VERSION }}',
+              'date': '${DATE}',
+              'downloadURL': '${DOWNLOAD_URL}',
+              'size': ${IPA_SIZE},
+              'localizedDescription': 'Update to v${{ env.VERSION }}'
+          }
+          versions = source['apps'][0]['versions']
+          versions = [v for v in versions if v['version'] != '${{ env.VERSION }}']
+          versions.insert(0, new_version)
+          source['apps'][0]['versions'] = versions
+          with open('altstore-source.json', 'w') as f:
+              json.dump(source, f, indent=2)
+              f.write('\n')
+          "
+
+          BRANCH="chore/release-v${{ env.VERSION }}"
+          git checkout -b "$BRANCH"
+          git add altstore-source.json
+          git commit -m "chore: update AltStore source for v${{ env.VERSION }}"
+          git push origin "$BRANCH" --force
+          HOMEBREW_STATUS=${{ job.status }}
+          gh pr create \
+            --title "chore: release v${{ env.VERSION }} — update AltStore" \
+            --body "Auto-generated from merged PR: **${{ github.event.pull_request.title || inputs.version }}**
+
+          - [x] VERSION bumped to ${{ env.VERSION }} (committed to main)
+          - [x] GitHub Release created: ${{ env.TAG }}
+          - [x] Homebrew tap updated
+          - [ ] Merge this PR to update AltStore source on main" \
+            --base main --head "$BRANCH"
