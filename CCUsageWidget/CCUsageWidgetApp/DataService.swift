@@ -49,6 +49,9 @@ class DataService: ObservableObject {
             return "Invalid widget URL"
         }
         defaults?.set(trimmed, forKey: widgetURLKey)
+        #if !TESTING
+        KeychainHelper.save(key: "widgetURL", value: trimmed)
+        #endif
         isConnected = true
         #if !TESTING
         WidgetCenter.shared.reloadAllTimelines()
@@ -63,6 +66,9 @@ class DataService: ObservableObject {
         defaults?.removeObject(forKey: cachedDataKey)
         defaults?.removeObject(forKey: widgetCachedDataKey)
         defaults?.removeObject(forKey: widgetCachedTimestampKey)
+        #if !TESTING
+        KeychainHelper.delete(key: "widgetURL")
+        #endif
         data = nil
         isConnected = false
         #if !TESTING
@@ -118,7 +124,12 @@ class DataService: ObservableObject {
     // MARK: - Cache
 
     private func loadCached() {
-        isConnected = defaults?.string(forKey: widgetURLKey) != nil
+        let hasURL = defaults?.string(forKey: widgetURLKey) != nil
+        #if !TESTING
+        isConnected = hasURL || KeychainHelper.load(key: "widgetURL") != nil
+        #else
+        isConnected = hasURL
+        #endif
         guard let cachedData = defaults?.data(forKey: cachedDataKey),
               let cached = try? JSONDecoder().decode(WidgetData.self, from: cachedData) else { return }
         data = cached

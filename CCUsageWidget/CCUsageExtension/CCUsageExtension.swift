@@ -72,6 +72,29 @@ struct SessionData: Codable {
 
 private let appGroupID = "group.com.viktorsvirsky.ccusage"
 private let widgetURLKey = "widgetURL"
+
+// MARK: - Keychain (shared with app — works when App Group doesn't)
+
+private enum KeychainHelper {
+    private static let service = "com.viktorsvirsky.ccusage.shared"
+
+    static func load(key: String) -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: key,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var result: AnyObject?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let data = result as? Data,
+              let string = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+        return string
+    }
+}
 private let staleThreshold: TimeInterval = 600     // 10 minutes
 private let veryStaleThreshold: TimeInterval = 3600 // 1 hour
 
@@ -204,8 +227,10 @@ struct CCUsageProvider: AppIntentTimelineProvider {
             return cached
         }
 
-        // Resolve URL: App Group first, then intent configuration fallback
-        let urlString = defaults.string(forKey: widgetURLKey) ?? intentURL
+        // Resolve URL: App Group → Keychain → intent configuration
+        let urlString = defaults.string(forKey: widgetURLKey)
+            ?? KeychainHelper.load(key: "widgetURL")
+            ?? intentURL
         guard let urlString, let url = URL(string: urlString) else {
             return decodeCached(defaults)
         }
