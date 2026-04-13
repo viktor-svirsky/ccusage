@@ -10,7 +10,7 @@
       "developerName": "Viktor Svirsky",
       "subtitle": "Claude Code usage on your homescreen",
       "category": "utilities",
-      "localizedDescription": "iOS widget companion for CCUsage. Shows Claude Code 5-hour and 7-day utilization, pace-aware color coding, and usage history — synced from your Mac via Cloudflare.",
+      "localizedDescription": "iOS widget companion for CCUsage. Shows Claude Code 5-hour and 7-day utilization, pace-aware color coding, and usage history \u2014 synced from your Mac via Cloudflare.",
       "iconURL": "https://raw.githubusercontent.com/viktor-svirsky/ccusage/main/CCUsageWidget/CCUsageWidgetApp/Assets.xcassets/AppIcon.appiconset/AppIcon.png",
       "appPermissions": {
         "entitlements": [
@@ -22,11 +22,18 @@
       },
       "versions": [
         {
+          "version": "1.25.2",
+          "date": "2026-04-13",
+          "downloadURL": "https://github.com/viktor-svirsky/ccusage/releases/download/v1.25.2/CCUsageWidgetApp.ipa",
+          "size": 1477394,
+          "localizedDescription": "Update to v1.25.2"
+        },
+        {
           "version": "1.25.0",
           "date": "2026-04-12",
           "downloadURL": "https://github.com/viktor-svirsky/ccusage/releases/download/v1.25.0/CCUsageWidgetApp.ipa",
           "size": 1474475,
-          "localizedDescription": "Initial AltStore release — large widget, stale data indicators, pull-to-refresh"
+          "localizedDescription": "Initial AltStore release \u2014 large widget, stale data indicators, pull-to-refresh"
         }
       ]
     }
