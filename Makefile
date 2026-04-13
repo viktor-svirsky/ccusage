@@ -35,6 +35,7 @@ uninstall:
 widget-test:
 	swiftc -DTESTING -o /tmp/CCUsageWidgetTests \
 		CCUsageWidget/CCUsageWidgetApp/SharedModels.swift \
+		CCUsageWidget/CCUsageWidgetApp/WidgetProjection.swift \
 		CCUsageWidget/CCUsageWidgetApp/DataService.swift \
 		CCUsageWidget/WidgetTests.swift
 	/tmp/CCUsageWidgetTests

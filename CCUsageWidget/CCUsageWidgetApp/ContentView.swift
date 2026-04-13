@@ -39,6 +39,11 @@ struct ContentView: View {
                 break
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
+            #if !TESTING
+            dataService.scheduleBackgroundDownload()
+            #endif
+        }
     }
 }
 
