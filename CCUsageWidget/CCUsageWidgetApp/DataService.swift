@@ -12,6 +12,38 @@ private let widgetCachedDataKey = "cachedWidgetData"
 private let widgetCachedTimestampKey = "cachedWidgetDataTimestamp"
 private let fetchInterval: TimeInterval = 120
 
+#if !TESTING
+class BackgroundSessionDelegate: NSObject, URLSessionDownloadDelegate {
+    let defaults: UserDefaults?
+    var backgroundCompletionHandler: (() -> Void)?
+
+    init(defaults: UserDefaults?) {
+        self.defaults = defaults
+    }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
+        guard let data = try? Data(contentsOf: location),
+              let _ = try? JSONDecoder().decode(WidgetData.self, from: data) else { return }
+        defaults?.set(data, forKey: "cachedWidgetData")
+        defaults?.set(Date().timeIntervalSince1970, forKey: "cachedWidgetDataTimestamp")
+        DispatchQueue.main.async {
+            WidgetCenter.shared.reloadAllTimelines()
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        // No action — next foreground fetch will retry
+    }
+
+    func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
+        DispatchQueue.main.async { [weak self] in
+            self?.backgroundCompletionHandler?()
+            self?.backgroundCompletionHandler = nil
+        }
+    }
+}
+#endif
+
 @MainActor
 class DataService: ObservableObject {
     @Published var data: WidgetData?
@@ -19,9 +51,22 @@ class DataService: ObservableObject {
 
     private var timer: Timer?
     private let defaults: UserDefaults?
+    #if !TESTING
+    private var backgroundDelegate: BackgroundSessionDelegate?
+    private var backgroundSession: URLSession?
+    private static let backgroundSessionID = "com.viktorsvirsky.ccusage.background-refresh"
+    #endif
 
     init() {
         self.defaults = UserDefaults(suiteName: appGroupID)
+        #if !TESTING
+        let delegate = BackgroundSessionDelegate(defaults: self.defaults)
+        self.backgroundDelegate = delegate
+        let config = URLSessionConfiguration.background(withIdentifier: Self.backgroundSessionID)
+        config.sessionSendsLaunchEvents = true
+        config.isDiscretionary = false
+        self.backgroundSession = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
+        #endif
         loadCached()
     }
 
@@ -114,12 +159,28 @@ class DataService: ObservableObject {
             defaults?.set(Date().timeIntervalSince1970, forKey: widgetCachedTimestampKey)
             #if !TESTING
             WidgetCenter.shared.reloadAllTimelines()
+            scheduleBackgroundDownload()
             NotificationService.shared.evaluate(decoded)
             #endif
         } catch {
             // Keep existing data on failure
         }
     }
+
+    #if !TESTING
+    func scheduleBackgroundDownload() {
+        guard let urlString = defaults?.string(forKey: widgetURLKey),
+              let url = URL(string: urlString) else { return }
+        backgroundSession?.getAllTasks { [weak self] tasks in
+            guard tasks.isEmpty else { return }
+            self?.backgroundSession?.downloadTask(with: url).resume()
+        }
+    }
+
+    func handleBackgroundSessionCompletion(_ completionHandler: @escaping () -> Void) {
+        backgroundDelegate?.backgroundCompletionHandler = completionHandler
+    }
+    #endif
 
     // MARK: - Cache
 
