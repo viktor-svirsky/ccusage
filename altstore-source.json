@@ -22,6 +22,13 @@
       },
       "versions": [
         {
+          "version": "1.25.8",
+          "date": "2026-04-13",
+          "downloadURL": "https://github.com/viktor-svirsky/ccusage/releases/download/v1.25.8/CCUsageWidgetApp.ipa",
+          "size": 1490331,
+          "localizedDescription": "Fix widget extension Keychain lookup under AltStore, extend worker data TTL to 24h"
+        },
+        {
           "version": "1.25.7",
           "date": "2026-04-13",
           "downloadURL": "https://github.com/viktor-svirsky/ccusage/releases/download/v1.25.7/CCUsageWidgetApp.ipa",
