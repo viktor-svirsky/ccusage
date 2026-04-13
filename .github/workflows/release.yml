@@ -1,8 +1,8 @@
 name: Release
 
 on:
-  push:
-    tags: ['v*']
+  pull_request:
+    types: [closed]
     branches: [main]
   workflow_dispatch:
     inputs:
@@ -12,61 +12,88 @@ on:
 
 jobs:
   release:
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.merged == true &&
+       !startsWith(github.event.pull_request.title, 'chore:'))
     runs-on: macos-latest
     permissions:
       contents: write
       pull-requests: write
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
 
       - name: Determine version
+        id: version
         run: |
           if [ -n "${{ inputs.version }}" ]; then
+            # Manual dispatch — use provided version
             echo "VERSION=${{ inputs.version }}" >> $GITHUB_ENV
             echo "TAG=v${{ inputs.version }}" >> $GITHUB_ENV
-          elif [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_ENV
-            echo "TAG=${GITHUB_REF_NAME}" >> $GITHUB_ENV
+            echo "bump=manual" >> $GITHUB_OUTPUT
           else
-            VERSION=$(cat VERSION)
-            echo "VERSION=$VERSION" >> $GITHUB_ENV
-            echo "TAG=v$VERSION" >> $GITHUB_ENV
+            # Auto from PR merge — determine bump type
+            TITLE="${{ github.event.pull_request.title }}"
+            CURRENT=$(cat VERSION)
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+
+            if echo "$TITLE" | grep -qiE '^feat(\(.*\))?!:|^[a-z]+(\(.*\))?!:|BREAKING CHANGE'; then
+              MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0
+              echo "bump=major" >> $GITHUB_OUTPUT
+            elif echo "$TITLE" | grep -qiE '^feat(\(.*\))?:'; then
+              MINOR=$((MINOR + 1)); PATCH=0
+              echo "bump=minor" >> $GITHUB_OUTPUT
+            elif echo "$TITLE" | grep -qiE '^fix(\(.*\))?:'; then
+              PATCH=$((PATCH + 1))
+              echo "bump=patch" >> $GITHUB_OUTPUT
+            else
+              echo "bump=none" >> $GITHUB_OUTPUT
+              echo "No version bump needed for: $TITLE"
+            fi
+
+            NEW="${MAJOR}.${MINOR}.${PATCH}"
+            echo "VERSION=$NEW" >> $GITHUB_ENV
+            echo "TAG=v$NEW" >> $GITHUB_ENV
+            echo "OLD_VERSION=$CURRENT" >> $GITHUB_ENV
           fi
 
       - name: Check if release already exists
-        if: github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')
+        if: steps.version.outputs.bump != 'none'
         run: |
           if git ls-remote --tags origin "refs/tags/${{ env.TAG }}" | grep -q .; then
-            echo "Tag ${{ env.TAG }} already exists, skipping release."
+            echo "Tag ${{ env.TAG }} already exists, skipping."
             echo "SKIP_RELEASE=true" >> $GITHUB_ENV
           fi
 
       - name: Run tests
-        if: env.SKIP_RELEASE != 'true'
+        if: steps.version.outputs.bump != 'none' && env.SKIP_RELEASE != 'true'
         run: make test
 
-      - name: Build app with version
-        if: env.SKIP_RELEASE != 'true'
+      - name: Build app
+        if: steps.version.outputs.bump != 'none' && env.SKIP_RELEASE != 'true'
         run: make build VERSION=${{ env.VERSION }}
 
       - name: Create release archive
-        if: env.SKIP_RELEASE != 'true'
+        if: steps.version.outputs.bump != 'none' && env.SKIP_RELEASE != 'true'
         run: ditto -c -k --keepParent CCUsage.app CCUsage.zip
 
       - name: Build iOS widget IPA
-        if: env.SKIP_RELEASE != 'true'
+        if: steps.version.outputs.bump != 'none' && env.SKIP_RELEASE != 'true'
         run: |
           make widget VERSION=${{ env.VERSION }}
           cp /tmp/CCUsageWidgetApp.ipa CCUsageWidgetApp.ipa
 
-      - name: Create tag (push to main or manual dispatch)
-        if: env.SKIP_RELEASE != 'true' && !startsWith(github.ref, 'refs/tags/')
+      - name: Create tag
+        if: steps.version.outputs.bump != 'none' && env.SKIP_RELEASE != 'true'
         run: |
           git tag ${{ env.TAG }}
           git push origin ${{ env.TAG }}
 
       - name: Create GitHub Release
-        if: env.SKIP_RELEASE != 'true'
+        if: steps.version.outputs.bump != 'none' && env.SKIP_RELEASE != 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAG }}
@@ -76,16 +103,20 @@ jobs:
             CCUsageWidgetApp.ipa
           generate_release_notes: true
 
-      - name: Update AltStore source
-        if: env.SKIP_RELEASE != 'true'
+      - name: Create post-release PR
+        if: steps.version.outputs.bump != 'none' && env.SKIP_RELEASE != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # Update VERSION file
+          echo "${{ env.VERSION }}" > VERSION
+
+          # Update AltStore source
           IPA_SIZE=$(stat -f%z CCUsageWidgetApp.ipa)
           DOWNLOAD_URL="https://github.com/viktor-svirsky/ccusage/releases/download/${{ env.TAG }}/CCUsageWidgetApp.ipa"
           DATE=$(date -u +%Y-%m-%d)
           python3 -c "
-          import json, sys
+          import json
           with open('altstore-source.json') as f:
               source = json.load(f)
           new_version = {
@@ -103,20 +134,28 @@ jobs:
               json.dump(source, f, indent=2)
               f.write('\n')
           "
-          BRANCH="chore/altstore-v${{ env.VERSION }}"
+
+          # Create single PR with both changes
+          BRANCH="chore/release-v${{ env.VERSION }}"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout -b "$BRANCH"
-          git add altstore-source.json
-          git commit -m "chore: update AltStore source for v${{ env.VERSION }}"
-          git push origin "$BRANCH"
-          gh pr create --title "chore: update AltStore source for v${{ env.VERSION }}" \
-            --body "Auto-generated: update AltStore source with v${{ env.VERSION }} IPA." \
+          git add VERSION altstore-source.json
+          git commit -m "chore: release v${{ env.VERSION }} — bump VERSION + update AltStore"
+          git push origin "$BRANCH" --force
+          gh pr create \
+            --title "chore: release v${{ env.VERSION }}" \
+            --body "Auto-generated from merged PR: **${{ github.event.pull_request.title || inputs.version }}**
+
+          - [x] VERSION bumped: ${OLD_VERSION:-manual} → ${{ env.VERSION }}
+          - [x] GitHub Release created: ${{ env.TAG }}
+          - [x] AltStore source updated
+          - [x] Homebrew tap updated
+          - [ ] Merge this PR to sync main" \
             --base main --head "$BRANCH"
-          gh pr merge "$BRANCH" --auto --squash
 
       - name: Update Homebrew tap
-        if: env.SKIP_RELEASE != 'true'
+        if: steps.version.outputs.bump != 'none' && env.SKIP_RELEASE != 'true'
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
