@@ -683,13 +683,15 @@ struct DailyUsageData: Codable, Equatable {
     var historyEntries: [UsageHistory.Entry]?
     var usageIncreases: [Date]?
     var dailyCosts: [DailyCostEntry]?
+    var widgetKey: String?
 
-    init(lastUtilization: Double? = nil, days: [DailyEntry] = [], historyEntries: [UsageHistory.Entry]? = nil, usageIncreases: [Date]? = nil, dailyCosts: [DailyCostEntry]? = nil) {
+    init(lastUtilization: Double? = nil, days: [DailyEntry] = [], historyEntries: [UsageHistory.Entry]? = nil, usageIncreases: [Date]? = nil, dailyCosts: [DailyCostEntry]? = nil, widgetKey: String? = nil) {
         self.lastUtilization = lastUtilization
         self.days = days
         self.historyEntries = historyEntries
         self.usageIncreases = usageIncreases
         self.dailyCosts = dailyCosts
+        self.widgetKey = widgetKey
     }
 }
 
@@ -2206,7 +2208,7 @@ func buildWidgetData(_ usage: UsageData, todayCost: Double = 0, activeSessionCou
 
 // MARK: - Status Bar Controller
 
-class StatusBarController: NSObject {
+class StatusBarController: NSObject, UNUserNotificationCenterDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private var uiTimer: Timer?
     private var secondsTimer: Timer?
@@ -2224,6 +2226,7 @@ class StatusBarController: NSObject {
     private var dailyStore = DailyUsageData()
     private let dailyStorePath = NSHomeDirectory() + "/.ccusage-daily.json"
     private var widgetKey: String?  // Canonical key from Worker (SHA-256 of org ID)
+    private var widgetKeyVerified = false  // True after first successful push confirms the key
     private var lastPushedWidgetData: WidgetData?
     private var qrWindow: NSWindow?
     private let lastRefreshItem = NSMenuItem(title: "Last refresh: never", action: nil, keyEquivalent: "")
@@ -2252,6 +2255,7 @@ class StatusBarController: NSObject {
         if let saved = dailyStore.usageIncreases {
             usageIncreases = saved.filter { Date().timeIntervalSince($0) < 86400 }
         }
+        widgetKey = dailyStore.widgetKey
 
         statusItem.button?.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
         statusItem.button?.title = "CC ..."
@@ -2287,6 +2291,7 @@ class StatusBarController: NSObject {
         statusItem.menu = menu
 
         #if !TESTING
+        UNUserNotificationCenter.current().delegate = self
         requestNotificationPermission()
         #endif
 
@@ -2470,13 +2475,18 @@ class StatusBarController: NSObject {
                   let key = json["key"] as? String, !key.isEmpty else { return }
             DispatchQueue.main.async {
                 self?.widgetKey = key
+                self?.widgetKeyVerified = true
                 self?.lastPushedWidgetData = widgetData
+                if self?.dailyStore.widgetKey != key {
+                    self?.dailyStore.widgetKey = key
+                    self?.saveDailyStore()
+                }
             }
         }.resume()
     }
 
     private func widgetURL() -> String? {
-        guard let key = widgetKey else { return nil }
+        guard let key = widgetKey, widgetKeyVerified else { return nil }
         return "\(widgetWorkerURL)/widget/\(key)"
     }
 
@@ -2916,6 +2926,14 @@ class StatusBarController: NSObject {
         detailFiveHour.title = "Error: \(msg)"
         detailSevenDay.isHidden = true
         lastRefreshItem.title = "Last attempt: failed"
+    }
+
+    // MARK: - Notification Delegate
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                willPresent notification: UNNotification,
+                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.banner, .sound])
     }
 
     // MARK: - Actions
