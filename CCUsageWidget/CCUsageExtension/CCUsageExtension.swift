@@ -1,5 +1,6 @@
 import WidgetKit
 import SwiftUI
+import AppIntents
 
 // MARK: - Data Model
 
@@ -150,6 +151,16 @@ private func modelColor(_ model: String) -> Color {
 
 private let extraPurple = Color(red: 168/255, green: 85/255, blue: 247/255)
 
+// MARK: - Widget Intent (configurable URL fallback)
+
+struct CCUsageIntent: WidgetConfigurationIntent {
+    static var title: LocalizedStringResource = "Claude Usage"
+    static var description = IntentDescription("Configure your Claude Code usage widget.")
+
+    @Parameter(title: "Widget URL", description: "Paste from CCUsage Mac menu bar → Share to iPhone. Only needed if widget shows No Data.")
+    var widgetURL: String?
+}
+
 // MARK: - Provider
 
 struct CCUsageEntry: TimelineEntry {
@@ -157,70 +168,61 @@ struct CCUsageEntry: TimelineEntry {
     let data: WidgetData?
 }
 
-struct CCUsageProvider: TimelineProvider {
+struct CCUsageProvider: AppIntentTimelineProvider {
     func placeholder(in context: Context) -> CCUsageEntry {
         CCUsageEntry(date: Date(), data: .placeholder)
     }
 
-    func getSnapshot(in context: Context, completion: @escaping (CCUsageEntry) -> Void) {
+    func snapshot(for configuration: CCUsageIntent, in context: Context) async -> CCUsageEntry {
         if context.isPreview {
-            completion(CCUsageEntry(date: Date(), data: .placeholder))
-            return
+            return CCUsageEntry(date: Date(), data: .placeholder)
         }
-        fetchData { data in
-            completion(CCUsageEntry(date: Date(), data: data ?? .placeholder))
-        }
+        let data = await fetchData(intentURL: configuration.widgetURL)
+        return CCUsageEntry(date: Date(), data: data ?? .placeholder)
     }
 
-    func getTimeline(in context: Context, completion: @escaping (Timeline<CCUsageEntry>) -> Void) {
-        fetchData { data in
-            let entry = CCUsageEntry(date: Date(), data: data)
-            let next = Calendar.current.date(byAdding: .minute, value: 2, to: Date())!
-            completion(Timeline(entries: [entry], policy: .after(next)))
-        }
+    func timeline(for configuration: CCUsageIntent, in context: Context) async -> Timeline<CCUsageEntry> {
+        let data = await fetchData(intentURL: configuration.widgetURL)
+        let entry = CCUsageEntry(date: Date(), data: data)
+        let next = Calendar.current.date(byAdding: .minute, value: 2, to: Date())!
+        return Timeline(entries: [entry], policy: .after(next))
     }
 
     private static let cachedDataKey = "cachedWidgetData"
     private static let cachedDataTimestampKey = "cachedWidgetDataTimestamp"
     private static let cacheMaxAge: TimeInterval = 300 // 5 minutes — app refreshes every 2min
 
-    private func fetchData(completion: @escaping (WidgetData?) -> Void) {
-        guard let defaults = UserDefaults(suiteName: appGroupID) else {
-            completion(nil)
-            return
-        }
+    private func fetchData(intentURL: String?) async -> WidgetData? {
+        let defaults = UserDefaults(suiteName: appGroupID) ?? .standard
 
-        // Prefer data written by the app — no network needed
+        // Prefer data written by the app via App Group — no network needed
         let cachedTimestamp = defaults.double(forKey: Self.cachedDataTimestampKey)
         if cachedTimestamp > 0,
            Date().timeIntervalSince1970 - cachedTimestamp < Self.cacheMaxAge,
            let cachedData = defaults.data(forKey: Self.cachedDataKey),
            let cached = try? JSONDecoder().decode(WidgetData.self, from: cachedData) {
-            completion(cached)
-            return
+            return cached
         }
 
-        // Fall back to network fetch if app data is stale
-        guard let urlString = defaults.string(forKey: widgetURLKey),
-              let url = URL(string: urlString) else {
-            // No URL configured — try stale cache
-            completion(decodeCached(defaults))
-            return
+        // Resolve URL: App Group first, then intent configuration fallback
+        let urlString = defaults.string(forKey: widgetURLKey) ?? intentURL
+        guard let urlString, let url = URL(string: urlString) else {
+            return decodeCached(defaults)
         }
 
-        URLSession.shared.dataTask(with: url) { data, response, _ in
-            guard let data,
-                  let http = response as? HTTPURLResponse,
-                  http.statusCode == 200,
+        // Network fetch
+        do {
+            let (data, response) = try await URLSession.shared.data(from: url)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200,
                   let decoded = try? JSONDecoder().decode(WidgetData.self, from: data) else {
-                // Network failed — use any cached data regardless of age
-                completion(self.decodeCached(defaults))
-                return
+                return decodeCached(defaults)
             }
             defaults.set(data, forKey: Self.cachedDataKey)
             defaults.set(Date().timeIntervalSince1970, forKey: Self.cachedDataTimestampKey)
-            completion(decoded)
-        }.resume()
+            return decoded
+        } catch {
+            return decodeCached(defaults)
+        }
     }
 
     private func decodeCached(_ defaults: UserDefaults) -> WidgetData? {
@@ -774,19 +776,14 @@ struct CCUsageExtensionBundle: Widget {
     let kind = "CCUsageWidget"
 
     var body: some WidgetConfiguration {
-        StaticConfiguration(kind: kind, provider: CCUsageProvider()) { entry in
+        AppIntentConfiguration(kind: kind, intent: CCUsageIntent.self, provider: CCUsageProvider()) { entry in
             CCUsageEntryView(entry: entry)
         }
         .configurationDisplayName("Claude Usage")
         .description("Claude Code limits synced from your Mac.")
-        .supportedFamilies(supportedFamilies)
-    }
-
-    private var supportedFamilies: [WidgetFamily] {
-        var families: [WidgetFamily] = [.systemSmall, .systemMedium, .systemLarge]
-        if #available(iOSApplicationExtension 16.0, *) {
-            families.append(contentsOf: [.accessoryCircular, .accessoryRectangular, .accessoryInline])
-        }
-        return families
+        .supportedFamilies([
+            .systemSmall, .systemMedium, .systemLarge,
+            .accessoryCircular, .accessoryRectangular, .accessoryInline
+        ])
     }
 }
