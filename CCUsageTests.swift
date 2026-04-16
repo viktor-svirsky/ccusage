@@ -3663,6 +3663,124 @@ func runExtendedWidgetDataTests() {
     }
 }
 
+// MARK: - Codesign Parsing Tests
+
+func runCodesignParsingTests() {
+    suite("teamIdentifier(fromCodesignOutput:)") {
+        test("extracts standard TeamIdentifier line") {
+            let out = """
+            Executable=/Applications/Foo.app/Contents/MacOS/Foo
+            Identifier=com.example.foo
+            Format=app bundle with Mach-O thin (arm64)
+            TeamIdentifier=ABCD1234EF
+            Signature size=9000
+            """
+            assertEqual(teamIdentifier(fromCodesignOutput: out), "ABCD1234EF", "parses team id")
+        }
+
+        test("handles `not set` as nil (ad-hoc signed)") {
+            let out = "TeamIdentifier=not set"
+            assertNil(teamIdentifier(fromCodesignOutput: out), "ad-hoc signed -> nil")
+        }
+
+        test("missing TeamIdentifier line is nil") {
+            let out = "Identifier=com.example.foo\nFormat=app bundle"
+            assertNil(teamIdentifier(fromCodesignOutput: out), "absent -> nil")
+        }
+
+        test("ignores other `=` keys") {
+            let out = "Identifier=com.example.foo=confusing\nTeamIdentifier=ZZ9999WW99"
+            assertEqual(teamIdentifier(fromCodesignOutput: out), "ZZ9999WW99", "doesn't confuse with other = fields")
+        }
+    }
+}
+
+// MARK: - Widget Push Heartbeat Tests
+
+func runWidgetHeartbeatTests() {
+    suite("shouldPushWidget") {
+        let usage = UsageData(
+            fiveHour: UsageWindow(utilization: 25, remaining: nil, resetsAt: nil),
+            sevenDay: UsageWindow(utilization: 10, remaining: nil, resetsAt: nil)
+        )
+        let changedUsage = UsageData(
+            fiveHour: UsageWindow(utilization: 40, remaining: nil, resetsAt: nil),
+            sevenDay: UsageWindow(utilization: 10, remaining: nil, resetsAt: nil)
+        )
+
+        test("first push (no prior state) pushes") {
+            let widget = buildWidgetData(usage)
+            check(shouldPushWidget(now: Date(), current: widget, lastPushed: nil, lastPushedAt: nil),
+                  "no prior state must push")
+        }
+
+        test("unchanged values within heartbeat window skip") {
+            let now = Date()
+            let a = buildWidgetData(usage)
+            let b = buildWidgetData(usage)
+            check(!shouldPushWidget(now: now, current: b, lastPushed: a, lastPushedAt: now.addingTimeInterval(-60)),
+                  "60s old identical push must be skipped under 300s heartbeat")
+        }
+
+        test("unchanged values past heartbeat interval push") {
+            let now = Date()
+            let a = buildWidgetData(usage)
+            let b = buildWidgetData(usage)
+            check(shouldPushWidget(now: now, current: b, lastPushed: a, lastPushedAt: now.addingTimeInterval(-600)),
+                  "10 min since last push must trigger heartbeat")
+        }
+
+        test("changed values push immediately even within heartbeat") {
+            let now = Date()
+            let a = buildWidgetData(usage)
+            let b = buildWidgetData(changedUsage)
+            check(shouldPushWidget(now: now, current: b, lastPushed: a, lastPushedAt: now.addingTimeInterval(-10)),
+                  "value change must push without waiting")
+        }
+
+        test("custom heartbeat interval honored") {
+            let now = Date()
+            let a = buildWidgetData(usage)
+            let b = buildWidgetData(usage)
+            check(shouldPushWidget(now: now, current: b, lastPushed: a, lastPushedAt: now.addingTimeInterval(-30), heartbeatInterval: 15),
+                  "custom short heartbeat triggers earlier")
+            check(!shouldPushWidget(now: now, current: b, lastPushed: a, lastPushedAt: now.addingTimeInterval(-5), heartbeatInterval: 15),
+                  "custom short heartbeat still skips when fresh")
+        }
+    }
+
+    suite("buildWidgetData session ordering") {
+        test("sessions deterministically sorted by project") {
+            // Synthesize two TrackedSessions whose project names parse to "alpha" and "bravo"
+            let home = NSHomeDirectory()
+            let encodedHome = home.replacingOccurrences(of: "/", with: "-")
+            let bravoLine = Data("""
+            {"type":"assistant","message":{"usage":{"input_tokens":100,"output_tokens":50,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}
+            """.utf8)
+            let alphaLine = Data("""
+            {"type":"assistant","message":{"usage":{"input_tokens":80,"output_tokens":40,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}
+            """.utf8)
+            var s1 = TrackedSession(path: "\(home)/.claude/projects/\(encodedHome)-Projects-bravo/s1.jsonl")
+            _ = s1.processNewData(bravoLine)
+            s1.lastFileModification = Date()
+            var s2 = TrackedSession(path: "\(home)/.claude/projects/\(encodedHome)-Projects-alpha/s2.jsonl")
+            _ = s2.processNewData(alphaLine)
+            s2.lastFileModification = Date()
+
+            let usage = UsageData(
+                fiveHour: UsageWindow(utilization: 10, remaining: nil, resetsAt: nil),
+                sevenDay: UsageWindow(utilization: 5, remaining: nil, resetsAt: nil)
+            )
+            let widgetA = buildWidgetData(usage, activeSessions: [s1, s2])
+            let widgetB = buildWidgetData(usage, activeSessions: [s2, s1])
+            assertEqual(widgetA.sessions?.first?.project, "alpha", "first entry is alpha (sorted)")
+            assertEqual(widgetB.sessions?.first?.project, "alpha", "order stable across input order")
+            check(widgetA.hasSameValues(as: widgetB),
+                  "hasSameValues must be stable across input session order")
+        }
+    }
+}
+
 // MARK: - Test Runner
 
 func runAllTests() {
@@ -3717,6 +3835,8 @@ func runAllTests() {
     runFormatUnifiedSessionsTests()
     runDailyCostTests()
     runExtendedWidgetDataTests()
+    runCodesignParsingTests()
+    runWidgetHeartbeatTests()
 
     print("\n=== Results: \(passedTests)/\(totalTests) passed ===")
     if !failedTests.isEmpty {
