@@ -1437,6 +1437,10 @@ func buildCodexSummary(from threads: [CodexThread], now: Date = Date()) -> Codex
 class CodexTracker {
     private let dbPath: String
     private(set) var lastSummary: CodexSummary?
+    /// Skip the SQLite round-trip when the DB file hasn't been modified since the last poll.
+    /// Codex writes to `state_5.sqlite` whenever a thread is added / updated; if mtime hasn't
+    /// changed we know the summary is still correct and we can re-serve the cached one.
+    private var lastDBModification: Date?
 
     init(dbPath: String? = nil) {
         self.dbPath = dbPath ?? (NSHomeDirectory() + "/.codex/state_5.sqlite")
@@ -1446,7 +1450,15 @@ class CodexTracker {
     func poll() -> CodexSummary? {
         guard FileManager.default.fileExists(atPath: dbPath) else {
             lastSummary = nil
+            lastDBModification = nil
             return nil
+        }
+
+        // Cheap mtime check: avoid opening + querying SQLite when nothing has changed.
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: dbPath),
+           let modified = attrs[.modificationDate] as? Date,
+           let last = lastDBModification, modified == last {
+            return lastSummary
         }
 
         var db: OpaquePointer?
@@ -1497,6 +1509,12 @@ class CodexTracker {
 
         let summary = buildCodexSummary(from: threads)
         lastSummary = summary
+        // Record mtime AFTER successful read so the next poll can short-circuit.
+        // On read failure we leave `lastDBModification` untouched so the next poll retries.
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: dbPath),
+           let modified = attrs[.modificationDate] as? Date {
+            lastDBModification = modified
+        }
         return summary
     }
 }
@@ -2069,6 +2087,89 @@ func isNewerVersion(_ remote: String, than local: String) -> Bool {
     return false
 }
 
+// MARK: - Codesign Verification (auto-update)
+
+/// Parse the `TeamIdentifier=XXXX` line from `codesign -dvvv` stderr output.
+/// Returned nil for unsigned bundles or if the field is absent.
+func teamIdentifier(fromCodesignOutput output: String) -> String? {
+    for line in output.split(whereSeparator: { $0 == "\n" || $0 == "\r" }) {
+        let s = String(line)
+        guard let eq = s.range(of: "=") else { continue }
+        let key = s[..<eq.lowerBound]
+        if key == "TeamIdentifier" {
+            let value = s[eq.upperBound...].trimmingCharacters(in: .whitespaces)
+            return value.isEmpty || value == "not set" ? nil : value
+        }
+    }
+    return nil
+}
+
+#if !TESTING
+/// Run a process and capture combined stdout + stderr. Returns (exitCode, combinedOutput).
+private func runAndCapture(executable: String, arguments: [String], timeout: TimeInterval = 30) throws -> (Int32, String) {
+    let proc = Process()
+    proc.executableURL = URL(fileURLWithPath: executable)
+    proc.arguments = arguments
+    let outPipe = Pipe()
+    let errPipe = Pipe()
+    proc.standardOutput = outPipe
+    proc.standardError = errPipe
+    try proc.run()
+    let deadline = Date().addingTimeInterval(timeout)
+    while proc.isRunning && Date() < deadline {
+        Thread.sleep(forTimeInterval: 0.1)
+    }
+    if proc.isRunning {
+        proc.terminate()
+        throw NSError(domain: "CCUsage", code: 10, userInfo: [NSLocalizedDescriptionKey: "\(executable) timed out"])
+    }
+    let out = String(data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    let err = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    return (proc.terminationStatus, out + err)
+}
+
+/// Verify a downloaded .app bundle before installing it:
+///   1. `codesign --verify --deep --strict` succeeds.
+///   2. TeamIdentifier matches the currently running bundle.
+/// Throws on any failure. Blocks MITM / ad-hoc-signed attacker bundles.
+func verifyDownloadedBundleSignature(at bundleURL: URL) throws {
+    // 1. Signature integrity check.
+    let verify = try runAndCapture(
+        executable: "/usr/bin/codesign",
+        arguments: ["--verify", "--deep", "--strict", bundleURL.path]
+    )
+    guard verify.0 == 0 else {
+        throw NSError(domain: "CCUsage", code: 11, userInfo: [NSLocalizedDescriptionKey: "codesign --verify failed: \(verify.1)"])
+    }
+    // 2. Team Identifier pinning: downloaded bundle must share the running app's team.
+    let currentInfo = try runAndCapture(
+        executable: "/usr/bin/codesign",
+        arguments: ["-dvvv", Bundle.main.bundlePath]
+    )
+    let newInfo = try runAndCapture(
+        executable: "/usr/bin/codesign",
+        arguments: ["-dvvv", bundleURL.path]
+    )
+    let currentTeam = teamIdentifier(fromCodesignOutput: currentInfo.1)
+    let newTeam = teamIdentifier(fromCodesignOutput: newInfo.1)
+    // If the running app has no Team ID (e.g. local dev build) skip the pinning check —
+    // otherwise we'd lock users out of their own builds — but still require the verify pass above.
+    if let currentTeam {
+        guard currentTeam == newTeam else {
+            throw NSError(
+                domain: "CCUsage",
+                code: 12,
+                userInfo: [NSLocalizedDescriptionKey: "Team Identifier mismatch: current=\(currentTeam) new=\(newTeam ?? "<none>")"]
+            )
+        }
+    }
+}
+#else
+// Tests cannot spawn codesign; this is a no-op stub. Pure parsing of codesign output
+// is tested directly via `teamIdentifier(fromCodesignOutput:)`.
+func verifyDownloadedBundleSignature(at bundleURL: URL) throws {}
+#endif
+
 // MARK: - Sentry Error Reporting
 
 #if !TESTING
@@ -2143,6 +2244,25 @@ struct FetchSchedule {
 
 // MARK: - Widget Data
 
+/// Heartbeat push threshold: force a widget push this often even when values are unchanged.
+/// Without heartbeats the iOS widget's `updatedAt` timestamp freezes during idle periods
+/// and users perceive the widget as stale.
+let widgetHeartbeatInterval: TimeInterval = 300
+
+/// Decide whether to push widget data now. Returns true if metrics changed OR enough time
+/// has passed since the last successful push to warrant a heartbeat. Pure logic for testability.
+func shouldPushWidget(
+    now: Date,
+    current: WidgetData,
+    lastPushed: WidgetData?,
+    lastPushedAt: Date?,
+    heartbeatInterval: TimeInterval = widgetHeartbeatInterval
+) -> Bool {
+    guard let lastPushed, let lastPushedAt else { return true }
+    if !lastPushed.hasSameValues(as: current) { return true }
+    return now.timeIntervalSince(lastPushedAt) >= heartbeatInterval
+}
+
 func buildWidgetData(_ usage: UsageData, todayCost: Double = 0, activeSessionCount: Int = 0, dailyEntries: [DailyEntry]? = nil, dailyCosts: [DailyCostEntry]? = nil, activeSessions: [TrackedSession]? = nil) -> WidgetData {
     let h5Pace = calculatePace(utilization: usage.fiveHour.utilization, resetsAt: usage.fiveHour.resetsAt, windowDuration: 5 * 3600)
     let d7Pace = calculatePace(utilization: usage.sevenDay.utilization, resetsAt: usage.sevenDay.resetsAt, windowDuration: 7 * 86400)
@@ -2170,9 +2290,9 @@ func buildWidgetData(_ usage: UsageData, todayCost: Double = 0, activeSessionCou
     let entryData = dailyEntries?.map { DailyEntryData(date: $0.date, usage: $0.usage) }
     // Daily costs
     let costData = dailyCosts?.map { DailyCostData(date: $0.date, cost: $0.cost) }
-    // Sessions
+    // Sessions (sorted by project for deterministic comparison; underlying storage may be a Set)
     let sessionData: [SessionData]? = activeSessions.flatMap { sessions in
-        let list = sessions.filter { $0.hasDisplayableData }.map { s in
+        let list = sessions.filter { $0.hasDisplayableData }.map { s -> SessionData in
             let project = s.projectName ?? "unknown"
             let model = s.currentModel
             let tokens = s.sessionTokens.totalTokens > 0 ? s.sessionTokens.totalTokens : nil
@@ -2181,6 +2301,9 @@ func buildWidgetData(_ usage: UsageData, todayCost: Double = 0, activeSessionCou
                 return secs > 0 && secs < 86400 ? secs : nil
             }
             return SessionData(project: project, model: model, tokens: tokens, durationSeconds: duration)
+        }.sorted { lhs, rhs in
+            if lhs.project != rhs.project { return lhs.project < rhs.project }
+            return (lhs.model ?? "") < (rhs.model ?? "")
         }
         return list.isEmpty ? nil : list
     }
@@ -2228,6 +2351,12 @@ class StatusBarController: NSObject, UNUserNotificationCenterDelegate {
     private var widgetKey: String?  // Canonical key from Worker (SHA-256 of org ID)
     private var widgetKeyVerified = false  // True after first successful push confirms the key
     private var lastPushedWidgetData: WidgetData?
+    private var lastWidgetPushAt: Date?
+    /// Byte-identical comparison of the last saved payload. `Data.hashValue` was intentionally
+    /// avoided here — it uses a per-process randomized seed, which is correct for Dictionary
+    /// hashing but fragile as a "did the value change" check if this were ever persisted across
+    /// launches. Holding the full bytes is cheap (tens of KB) and unambiguous.
+    private var lastDailyStoreBytes: Data?
     private var qrWindow: NSWindow?
     private let lastRefreshItem = NSMenuItem(title: "Last refresh: never", action: nil, keyEquivalent: "")
     private var sessionStartDate = Date()
@@ -2442,9 +2571,13 @@ class StatusBarController: NSObject, UNUserNotificationCenterDelegate {
         // Snapshot session state into the store before saving
         dailyStore.historyEntries = history.entries
         dailyStore.usageIncreases = usageIncreases
-        if let data = try? JSONEncoder().encode(dailyStore) {
-            FileManager.default.createFile(atPath: dailyStorePath, contents: data)
-        }
+        guard let data = try? JSONEncoder().encode(dailyStore) else { return }
+        // Dedup: this is called on every refresh (60s) — most of the time nothing changed.
+        // Writing JSON + fsync unconditionally churns the disk for no gain. Compare the encoded
+        // bytes and skip the write when identical to the previous save.
+        if let last = lastDailyStoreBytes, last == data { return }
+        lastDailyStoreBytes = data
+        FileManager.default.createFile(atPath: dailyStorePath, contents: data)
     }
 
     // MARK: - Widget Sync
@@ -2461,7 +2594,13 @@ class StatusBarController: NSObject, UNUserNotificationCenterDelegate {
             dailyCosts: dailyStore.dailyCosts,
             activeSessions: Array(agentTracker.activeSessions)
         )
-        if let last = lastPushedWidgetData, last.hasSameValues(as: widgetData) { return }
+        // Heartbeat: push unchanged data periodically so iOS widget's updatedAt keeps advancing.
+        guard shouldPushWidget(
+            now: Date(),
+            current: widgetData,
+            lastPushed: lastPushedWidgetData,
+            lastPushedAt: lastWidgetPushAt
+        ) else { return }
         let body = WidgetPushBody(data: widgetData)
         guard let bodyData = try? JSONEncoder().encode(body) else { return }
         var request = URLRequest(url: url)
@@ -2477,6 +2616,7 @@ class StatusBarController: NSObject, UNUserNotificationCenterDelegate {
                 self?.widgetKey = key
                 self?.widgetKeyVerified = true
                 self?.lastPushedWidgetData = widgetData
+                self?.lastWidgetPushAt = Date()
                 if self?.dailyStore.widgetKey != key {
                     self?.dailyStore.widgetKey = key
                     self?.saveDailyStore()
@@ -2630,9 +2770,19 @@ class StatusBarController: NSObject, UNUserNotificationCenterDelegate {
 
     /// Write updated credentials back to `~/.claude/.credentials.json`.
     @discardableResult
+    /// Write updated credentials back to `~/.claude/.credentials.json` with owner-only (0600) permissions.
     private func writeCredentialsFile(_ data: Data) -> Bool {
         let credPath = (NSHomeDirectory() as NSString).appendingPathComponent(".claude/.credentials.json")
-        return FileManager.default.createFile(atPath: credPath, contents: data)
+        // Create with 0600 up front; any process must be unable to read the OAuth refresh token.
+        let attrs: [FileAttributeKey: Any] = [.posixPermissions: NSNumber(value: Int16(0o600))]
+        let created = FileManager.default.createFile(atPath: credPath, contents: data, attributes: attrs)
+        // `createFile` replaces existing files but behavior around re-applying permissions on
+        // overwrite is historically filesystem-dependent. Force-apply 0600 on every successful
+        // write so a file that was previously stored with looser perms gets tightened here.
+        if created {
+            try? FileManager.default.setAttributes(attrs, ofItemAtPath: credPath)
+        }
+        return created
     }
 
     /// Refresh the OAuth token and update the keychain. Returns the new access token on success.
@@ -3099,6 +3249,10 @@ class StatusBarController: NSObject, UNUserNotificationCenterDelegate {
                       newBundle.bundleIdentifier == "com.local.CCUsage" else {
                     throw NSError(domain: "CCUsage", code: 3, userInfo: [NSLocalizedDescriptionKey: "Bundle ID mismatch"])
                 }
+
+                // Verify code signature is intact + Team ID matches currently running bundle.
+                // This blocks tampered/MITM'd archives from being installed.
+                try verifyDownloadedBundleSignature(at: newApp)
 
                 // Replace current app (with rollback on failure)
                 let backup = URL(fileURLWithPath: appBundle + ".backup")
