@@ -19,6 +19,15 @@ build: generate-icon
 	/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $(VERSION)" $(CONTENTS)/Info.plist
 	cp $(APP_NAME).icns $(CONTENTS)/Resources/$(APP_NAME).icns
 	swiftc -O -o $(MACOS)/$(APP_NAME) main.swift -framework Cocoa -framework UserNotifications
+	# Ad-hoc sign the full bundle so _CodeSignature/CodeResources exists.
+	# Without this step `codesign --verify --deep --strict` fails with
+	# "code has no resources but signature indicates they must be present",
+	# which breaks auto-update's pre-install signature check (shipped in v1.25.14)
+	# and bricked update for every user on v1.25.14/15/16.
+	codesign --force --deep --sign - $(APP_DIR)
+	# Fail the build immediately if the signature we just produced isn't valid —
+	# catches regressions that would re-introduce the same bug.
+	codesign --verify --deep --strict $(APP_DIR)
 
 test:
 	swiftc -DTESTING -o /tmp/$(APP_NAME)Tests main.swift CCUsageTests.swift -framework Cocoa -framework UserNotifications
