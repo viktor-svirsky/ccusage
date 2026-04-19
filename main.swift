@@ -158,12 +158,22 @@ struct NotificationState: Equatable {
     var sevenDayZone: UsageZone = .green
     var fiveHourPaceAlerted: Bool = false
     var sevenDayPaceAlerted: Bool = false
+    /// Last observed window-end timestamp. A change (past → new future) means the window reset.
+    var lastFiveHourResetsAt: Date?
+    var lastSevenDayResetsAt: Date?
+    /// Utilization recorded alongside the last `resetsAt`. Used to avoid firing a reset alert
+    /// when the user hadn't actually consumed anything in the previous window.
+    var lastFiveHourUtilization: Double = 0
+    var lastSevenDayUtilization: Double = 0
 }
 
 enum UsageNotification: Equatable {
     case zoneTransition(window: String, zone: UsageZone, utilization: Double)
     case depleted(window: String)
     case paceOverBudget(window: String, pace: Double)
+    /// A usage window boundary crossed — the previous window ended and quota refreshed.
+    /// `previousUtilization` is what the user consumed in the window that just closed.
+    case windowReset(window: String, previousUtilization: Double)
 
     var identifier: String {
         switch self {
@@ -173,6 +183,8 @@ enum UsageNotification: Equatable {
             return "depleted-\(window)"
         case .paceOverBudget(let window, _):
             return "pace-\(window)"
+        case .windowReset(let window, _):
+            return "reset-\(window)"
         }
     }
 }
@@ -181,7 +193,8 @@ func determineNotifications(
     oldState: NotificationState,
     newUsage: UsageData,
     fiveHourPace: Double?,
-    sevenDayPace: Double?
+    sevenDayPace: Double?,
+    now: Date = Date()
 ) -> ([UsageNotification], NotificationState) {
     var notifications: [UsageNotification] = []
     var newState = oldState
@@ -191,6 +204,39 @@ func determineNotifications(
 
     newState.fiveHourZone = h5Zone
     newState.sevenDayZone = d7Zone
+
+    // Window-reset detection: a tracked `resetsAt` advanced to a later timestamp = window rolled
+    // over. We require the previous window had non-trivial usage so fresh installs and idle
+    // accounts don't get spammed. `> prior + 60` tolerates minor API jitter.
+    func detectReset(
+        windowName: String,
+        oldReset: Date?,
+        newReset: Date?,
+        priorUtilization: Double
+    ) -> UsageNotification? {
+        guard let oldReset, let newReset,
+              newReset.timeIntervalSince(oldReset) > 60,
+              priorUtilization >= 1.0
+        else { return nil }
+        return .windowReset(window: windowName, previousUtilization: priorUtilization)
+    }
+    if let reset = detectReset(
+        windowName: "5-hour",
+        oldReset: oldState.lastFiveHourResetsAt,
+        newReset: newUsage.fiveHour.resetsAt,
+        priorUtilization: oldState.lastFiveHourUtilization
+    ) { notifications.append(reset) }
+    if let reset = detectReset(
+        windowName: "7-day",
+        oldReset: oldState.lastSevenDayResetsAt,
+        newReset: newUsage.sevenDay.resetsAt,
+        priorUtilization: oldState.lastSevenDayUtilization
+    ) { notifications.append(reset) }
+    newState.lastFiveHourResetsAt = newUsage.fiveHour.resetsAt
+    newState.lastSevenDayResetsAt = newUsage.sevenDay.resetsAt
+    newState.lastFiveHourUtilization = newUsage.fiveHour.utilization
+    newState.lastSevenDayUtilization = newUsage.sevenDay.utilization
+    _ = now // reserved for future time-based rules; avoids unused-param warning
 
     // Reset pace tracking when dropping to green or leaving depleted
     if h5Zone == .green || (oldState.fiveHourZone == .depleted && h5Zone != .depleted) {
@@ -1855,6 +1901,9 @@ func deliverNotification(_ notification: UsageNotification) {
     case .paceOverBudget(let window, let pace):
         content.title = "CCUsage: \(window) Over Budget"
         content.body = "\(window) window is at \(String(format: "%.1f", pace))x pace — usage rate exceeds budget"
+    case .windowReset(let window, let previousUtilization):
+        content.title = "CCUsage: \(window) Reset"
+        content.body = "\(window) window reset — previous cycle ended at \(formatValue(previousUtilization))% utilization"
     }
 
     content.sound = .default
