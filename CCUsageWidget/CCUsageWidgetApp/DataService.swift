@@ -23,8 +23,16 @@ class BackgroundSessionDelegate: NSObject, URLSessionDownloadDelegate {
     }
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
-        guard let data = try? Data(contentsOf: location),
-              let _ = try? JSONDecoder().decode(WidgetData.self, from: data) else { return }
+        guard let data = try? Data(contentsOf: location) else {
+            WidgetSentry.capture(type: "WidgetBackgroundReadError", message: "could not read downloaded temp file")
+            return
+        }
+        do {
+            _ = try JSONDecoder().decode(WidgetData.self, from: data)
+        } catch {
+            WidgetSentry.capture(type: "WidgetBackgroundDecodeError", message: String(describing: error))
+            return
+        }
         defaults?.set(data, forKey: "cachedWidgetData")
         defaults?.set(Date().timeIntervalSince1970, forKey: "cachedWidgetDataTimestamp")
         DispatchQueue.main.async {
@@ -151,7 +159,22 @@ class DataService: ObservableObject {
 
         do {
             let (responseData, response) = try await URLSession.shared.data(from: url)
-            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return }
+            guard let http = response as? HTTPURLResponse else {
+                #if !TESTING
+                WidgetSentry.capture(type: "WidgetFetchInvalidResponse", message: "non-HTTP response")
+                #endif
+                return
+            }
+            guard http.statusCode == 200 else {
+                #if !TESTING
+                WidgetSentry.capture(
+                    type: "WidgetFetchHTTPError",
+                    message: "HTTP \(http.statusCode)",
+                    context: ["url": urlString]
+                )
+                #endif
+                return
+            }
             let decoded = try JSONDecoder().decode(WidgetData.self, from: responseData)
             self.data = decoded
             self.isConnected = true
@@ -164,8 +187,18 @@ class DataService: ObservableObject {
             scheduleBackgroundDownload()
             NotificationService.shared.evaluate(decoded)
             #endif
+        } catch let decodingError as DecodingError {
+            // Payload parse failures are actionable server-side. Network errors are expected
+            // and noisy — don't report them unless they become chronic.
+            #if !TESTING
+            WidgetSentry.capture(
+                type: "WidgetDecodeError",
+                message: String(describing: decodingError),
+                context: ["url": urlString]
+            )
+            #endif
         } catch {
-            // Keep existing data on failure
+            // Keep existing data on network failure (offline / transient).
         }
     }
 

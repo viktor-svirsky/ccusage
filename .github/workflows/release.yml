@@ -95,7 +95,8 @@ jobs:
 
       - name: Build app
         if: steps.version.outputs.bump != 'none' && env.SKIP_RELEASE != 'true'
-        run: make build VERSION=${{ env.VERSION }}
+        # PRODUCTION=1 tags Sentry events from this build as environment=production.
+        run: make build VERSION=${{ env.VERSION }} PRODUCTION=1
 
       - name: Create release archive
         if: steps.version.outputs.bump != 'none' && env.SKIP_RELEASE != 'true'

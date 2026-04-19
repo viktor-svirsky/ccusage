@@ -2269,6 +2269,14 @@ private let sentryKey = "e775413587228219897ba908e29d5901"
 private let sentryProjectId = "4511105650720769"
 private let sentryHost = "o4510977201995776.ingest.us.sentry.io"
 
+// PRODUCTION flag is set by the release workflow via `make build PRODUCTION=1`.
+// Dev-machine `make install` builds report as `development`, keeping prod signal clean.
+#if PRODUCTION
+private let sentryEnvironment = "production"
+#else
+private let sentryEnvironment = "development"
+#endif
+
 private func sentryCapture(type: String, message: String, context: [String: String] = [:]) {
     guard let url = URL(string: "https://\(sentryHost)/api/\(sentryProjectId)/store/?sentry_version=7&sentry_key=\(sentryKey)") else { return }
     var request = URLRequest(url: url)
@@ -2287,7 +2295,7 @@ private func sentryCapture(type: String, message: String, context: [String: Stri
         "platform": "cocoa",
         "logger": "ccusage",
         "release": "ccusage@\(currentVersion)",
-        "environment": currentVersion.contains("dev") ? "development" : "production",
+        "environment": sentryEnvironment,
         "tags": ["os.version": osVersion, "app.version": currentVersion],
         "exception": ["values": [["type": type, "value": message]]]
     ]

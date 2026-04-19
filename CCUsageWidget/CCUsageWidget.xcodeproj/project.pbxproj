@@ -23,6 +23,8 @@
 		AA0000000000000000000017 /* KeychainHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE0000000000000000000017 /* KeychainHelper.swift */; };
 		AA0000000000000000000018 /* WidgetProjection.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE0000000000000000000018 /* WidgetProjection.swift */; };
 		AA0000000000000000000019 /* WidgetProjection.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE0000000000000000000018 /* WidgetProjection.swift */; };
+		AA000000000000000000001A /* WidgetSentry.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE0000000000000000000019 /* WidgetSentry.swift */; };
+		AA000000000000000000001B /* WidgetSentry.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE0000000000000000000019 /* WidgetSentry.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -64,6 +66,7 @@
 		EE0000000000000000000016 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		EE0000000000000000000017 /* KeychainHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainHelper.swift; sourceTree = "<group>"; };
 		EE0000000000000000000018 /* WidgetProjection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WidgetProjection.swift; sourceTree = "<group>"; };
+		EE0000000000000000000019 /* WidgetSentry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WidgetSentry.swift; sourceTree = "<group>"; };
 		FF0000000000000000000001 /* CCUsageExtension.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CCUsageExtension.swift; sourceTree = "<group>"; };
 		FF0000000000000000000002 /* CCUsageExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = CCUsageExtension.entitlements; sourceTree = "<group>"; };
 		FF0000000000000000000003 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -121,6 +124,7 @@
 				EE0000000000000000000016 /* SettingsView.swift */,
 				EE0000000000000000000017 /* KeychainHelper.swift */,
 				EE0000000000000000000018 /* WidgetProjection.swift */,
+				EE0000000000000000000019 /* WidgetSentry.swift */,
 				EE0000000000000000000003 /* CCUsageWidgetApp.entitlements */,
 				EE0000000000000000000004 /* Assets.xcassets */,
 			);
@@ -249,6 +253,7 @@
 				AA0000000000000000000016 /* SettingsView.swift in Sources */,
 				AA0000000000000000000017 /* KeychainHelper.swift in Sources */,
 				AA0000000000000000000018 /* WidgetProjection.swift in Sources */,
+				AA000000000000000000001A /* WidgetSentry.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -258,6 +263,7 @@
 			files = (
 				AA0000000000000000000004 /* CCUsageExtension.swift in Sources */,
 				AA0000000000000000000019 /* WidgetProjection.swift in Sources */,
+				AA000000000000000000001B /* WidgetSentry.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
