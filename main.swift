@@ -2141,20 +2141,40 @@ private func runAndCapture(executable: String, arguments: [String], timeout: Tim
     return (proc.terminationStatus, out + err)
 }
 
-/// Verify a downloaded .app bundle before installing it:
-///   1. `codesign --verify --deep --strict` succeeds.
-///   2. TeamIdentifier matches the currently running bundle.
-/// Throws on any failure. Blocks MITM / ad-hoc-signed attacker bundles.
+/// Verify a downloaded .app bundle before installing it. The check is *symmetric*: we only
+/// enforce signature integrity + Team-ID pinning if the currently running bundle itself passes
+/// `codesign --verify --deep --strict`. When the running bundle is ad-hoc signed (as our CI
+/// release builds are — no Developer ID cert) its own `--verify` fails with errors like
+/// "code has no resources but signature indicates they must be present". Demanding that the
+/// downloaded bundle pass a check the current bundle can't pass bricks auto-update for every
+/// user. Falling open in that case matches the existing Team-ID dev-build policy.
+///
+/// Properly Developer-ID-signed + notarized releases get the full check. Ad-hoc releases get
+/// no signature check — same trust model as before PR #87, but with the Team-ID pin layered
+/// on top whenever it's available.
 func verifyDownloadedBundleSignature(at bundleURL: URL) throws {
-    // 1. Signature integrity check.
-    let verify = try runAndCapture(
+    // 1. Check the currently running bundle first. If it itself can't pass --verify, we're
+    //    running an ad-hoc / dev / unsigned build — enforcing integrity on the downloaded
+    //    bundle would lock the user out of any update. Fall open to match Team-ID policy.
+    let currentVerify = try runAndCapture(
         executable: "/usr/bin/codesign",
-        arguments: ["--verify", "--deep", "--strict", bundleURL.path]
+        arguments: ["--verify", "--deep", "--strict", Bundle.main.bundlePath]
     )
-    guard verify.0 == 0 else {
-        throw NSError(domain: "CCUsage", code: 11, userInfo: [NSLocalizedDescriptionKey: "codesign --verify failed: \(verify.1)"])
+    let enforceIntegrity = currentVerify.0 == 0
+
+    if enforceIntegrity {
+        let verify = try runAndCapture(
+            executable: "/usr/bin/codesign",
+            arguments: ["--verify", "--deep", "--strict", bundleURL.path]
+        )
+        guard verify.0 == 0 else {
+            throw NSError(domain: "CCUsage", code: 11, userInfo: [NSLocalizedDescriptionKey: "codesign --verify failed: \(verify.1)"])
+        }
     }
+
     // 2. Team Identifier pinning: downloaded bundle must share the running app's team.
+    //    We still probe here whether or not integrity was enforced, so an ad-hoc → Team-ID
+    //    downgrade attack still fails at the Team-ID step below.
     let currentInfo = try runAndCapture(
         executable: "/usr/bin/codesign",
         arguments: ["-dvvv", Bundle.main.bundlePath]
@@ -2163,18 +2183,20 @@ func verifyDownloadedBundleSignature(at bundleURL: URL) throws {
         executable: "/usr/bin/codesign",
         arguments: ["-dvvv", bundleURL.path]
     )
-    // Fail closed if we couldn't probe either bundle. A probe failure means we can't distinguish
-    // "unsigned dev build" from "attacker-supplied bundle missing signature metadata".
-    guard currentInfo.0 == 0 else {
-        throw NSError(domain: "CCUsage", code: 13, userInfo: [NSLocalizedDescriptionKey: "codesign probe of current bundle failed: \(currentInfo.1)"])
-    }
-    guard newInfo.0 == 0 else {
-        throw NSError(domain: "CCUsage", code: 14, userInfo: [NSLocalizedDescriptionKey: "codesign probe of new bundle failed: \(newInfo.1)"])
+    // Probe failure is only fatal when we're also enforcing integrity — otherwise we've
+    // already decided the trust floor is "whatever the current bundle is".
+    if enforceIntegrity {
+        guard currentInfo.0 == 0 else {
+            throw NSError(domain: "CCUsage", code: 13, userInfo: [NSLocalizedDescriptionKey: "codesign probe of current bundle failed: \(currentInfo.1)"])
+        }
+        guard newInfo.0 == 0 else {
+            throw NSError(domain: "CCUsage", code: 14, userInfo: [NSLocalizedDescriptionKey: "codesign probe of new bundle failed: \(newInfo.1)"])
+        }
     }
     let currentTeam = teamIdentifier(fromCodesignOutput: currentInfo.1)
     let newTeam = teamIdentifier(fromCodesignOutput: newInfo.1)
-    // If the running app has no Team ID (e.g. local dev build) skip the pinning check —
-    // otherwise we'd lock users out of their own builds — but still require the verify pass above.
+    // If the running app has no Team ID (e.g. local dev build / ad-hoc CI build) skip the
+    // pinning check — otherwise we'd lock users out of their own builds.
     if let currentTeam {
         guard currentTeam == newTeam else {
             throw NSError(
