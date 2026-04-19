@@ -22,6 +22,13 @@
       },
       "versions": [
         {
+          "version": "1.27.0",
+          "date": "2026-04-19",
+          "downloadURL": "https://github.com/viktor-svirsky/ccusage/releases/download/v1.27.0/CCUsageWidgetApp.ipa",
+          "size": 1501017,
+          "localizedDescription": "Update to v1.27.0"
+        },
+        {
           "version": "1.26.0",
           "date": "2026-04-19",
           "downloadURL": "https://github.com/viktor-svirsky/ccusage/releases/download/v1.26.0/CCUsageWidgetApp.ipa",
@@ -48,97 +55,6 @@
           "downloadURL": "https://github.com/viktor-svirsky/ccusage/releases/download/v1.25.15/CCUsageWidgetApp.ipa",
           "size": 1497068,
           "localizedDescription": "Update to v1.25.15"
-        },
-        {
-          "version": "1.25.14",
-          "date": "2026-04-19",
-          "downloadURL": "https://github.com/viktor-svirsky/ccusage/releases/download/v1.25.14/CCUsageWidgetApp.ipa",
-          "size": 1497074,
-          "localizedDescription": "Update to v1.25.14"
-        },
-        {
-          "version": "1.25.12",
-          "date": "2026-04-13",
-          "downloadURL": "https://github.com/viktor-svirsky/ccusage/releases/download/v1.25.12/CCUsageWidgetApp.ipa",
-          "size": 1486817,
-          "localizedDescription": "Persist widget URL across app updates"
-        },
-        {
-          "version": "1.25.11",
-          "date": "2026-04-13",
-          "downloadURL": "https://github.com/viktor-svirsky/ccusage/releases/download/v1.25.11/CCUsageWidgetApp.ipa",
-          "size": 1486817,
-          "localizedDescription": "Fix widget data: prioritize intent URL over broken Keychain/App Group"
-        },
-        {
-          "version": "1.25.10",
-          "date": "2026-04-13",
-          "downloadURL": "https://github.com/viktor-svirsky/ccusage/releases/download/v1.25.10/CCUsageWidgetApp.ipa",
-          "size": 1486817,
-          "localizedDescription": "Fix widget showing stale data \u2014 always fetch fresh from server"
-        },
-        {
-          "version": "1.25.9",
-          "date": "2026-04-13",
-          "downloadURL": "https://github.com/viktor-svirsky/ccusage/releases/download/v1.25.9/CCUsageWidgetApp.ipa",
-          "size": 1490323,
-          "localizedDescription": "Fix widget extension Keychain lookup under AltStore, extend worker data TTL to 24h"
-        },
-        {
-          "version": "1.25.8",
-          "date": "2026-04-13",
-          "downloadURL": "https://github.com/viktor-svirsky/ccusage/releases/download/v1.25.8/CCUsageWidgetApp.ipa",
-          "size": 1490323,
-          "localizedDescription": "Fix notifications, persist widget sync URL across restarts"
-        },
-        {
-          "version": "1.25.7",
-          "date": "2026-04-13",
-          "downloadURL": "https://github.com/viktor-svirsky/ccusage/releases/download/v1.25.7/CCUsageWidgetApp.ipa",
-          "size": 1490331,
-          "localizedDescription": "Fix notifications not showing, persist widget sync URL across restarts"
-        },
-        {
-          "version": "1.25.6",
-          "date": "2026-04-13",
-          "downloadURL": "https://github.com/viktor-svirsky/ccusage/releases/download/v1.25.6/CCUsageWidgetApp.ipa",
-          "size": 1490340,
-          "localizedDescription": "Update to v1.25.6"
-        },
-        {
-          "version": "1.25.5",
-          "date": "2026-04-13",
-          "downloadURL": "https://github.com/viktor-svirsky/ccusage/releases/download/v1.25.5/CCUsageWidgetApp.ipa",
-          "size": 1485278,
-          "localizedDescription": "Update to v1.25.5"
-        },
-        {
-          "version": "1.25.4",
-          "date": "2026-04-13",
-          "downloadURL": "https://github.com/viktor-svirsky/ccusage/releases/download/v1.25.4/CCUsageWidgetApp.ipa",
-          "size": 1479684,
-          "localizedDescription": "Update to v1.25.4"
-        },
-        {
-          "version": "1.25.3",
-          "date": "2026-04-13",
-          "downloadURL": "https://github.com/viktor-svirsky/ccusage/releases/download/v1.25.3/CCUsageWidgetApp.ipa",
-          "size": 1479689,
-          "localizedDescription": "Update to v1.25.3"
-        },
-        {
-          "version": "1.25.2",
-          "date": "2026-04-13",
-          "downloadURL": "https://github.com/viktor-svirsky/ccusage/releases/download/v1.25.2/CCUsageWidgetApp.ipa",
-          "size": 1477394,
-          "localizedDescription": "Update to v1.25.2"
-        },
-        {
-          "version": "1.25.0",
-          "date": "2026-04-12",
-          "downloadURL": "https://github.com/viktor-svirsky/ccusage/releases/download/v1.25.0/CCUsageWidgetApp.ipa",
-          "size": 1474475,
-          "localizedDescription": "Initial AltStore release \u2014 large widget, stale data indicators, pull-to-refresh"
         }
       ]
     }
