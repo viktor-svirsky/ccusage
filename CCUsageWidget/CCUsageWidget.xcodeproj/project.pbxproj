@@ -21,6 +21,8 @@
 		AA0000000000000000000015 /* HistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE0000000000000000000015 /* HistoryView.swift */; };
 		AA0000000000000000000016 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE0000000000000000000016 /* SettingsView.swift */; };
 		AA0000000000000000000017 /* KeychainHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE0000000000000000000017 /* KeychainHelper.swift */; };
+		AA0000000000000000000018 /* WidgetProjection.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE0000000000000000000018 /* WidgetProjection.swift */; };
+		AA0000000000000000000019 /* WidgetProjection.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE0000000000000000000018 /* WidgetProjection.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -61,6 +63,7 @@
 		EE0000000000000000000015 /* HistoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryView.swift; sourceTree = "<group>"; };
 		EE0000000000000000000016 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		EE0000000000000000000017 /* KeychainHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainHelper.swift; sourceTree = "<group>"; };
+		EE0000000000000000000018 /* WidgetProjection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WidgetProjection.swift; sourceTree = "<group>"; };
 		FF0000000000000000000001 /* CCUsageExtension.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CCUsageExtension.swift; sourceTree = "<group>"; };
 		FF0000000000000000000002 /* CCUsageExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = CCUsageExtension.entitlements; sourceTree = "<group>"; };
 		FF0000000000000000000003 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -117,6 +120,7 @@
 				EE0000000000000000000015 /* HistoryView.swift */,
 				EE0000000000000000000016 /* SettingsView.swift */,
 				EE0000000000000000000017 /* KeychainHelper.swift */,
+				EE0000000000000000000018 /* WidgetProjection.swift */,
 				EE0000000000000000000003 /* CCUsageWidgetApp.entitlements */,
 				EE0000000000000000000004 /* Assets.xcassets */,
 			);
@@ -244,6 +248,7 @@
 				AA0000000000000000000015 /* HistoryView.swift in Sources */,
 				AA0000000000000000000016 /* SettingsView.swift in Sources */,
 				AA0000000000000000000017 /* KeychainHelper.swift in Sources */,
+				AA0000000000000000000018 /* WidgetProjection.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -252,6 +257,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				AA0000000000000000000004 /* CCUsageExtension.swift in Sources */,
+				AA0000000000000000000019 /* WidgetProjection.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -322,7 +328,7 @@
 				CODE_SIGN_ENTITLEMENTS = CCUsageWidgetApp/CCUsageWidgetApp.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 14;
 				DEVELOPMENT_TEAM = 33TVZ53MZ2;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
@@ -336,7 +342,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.25.14;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.viktorsvirsky.ccusage-widget";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -353,7 +359,7 @@
 				CODE_SIGN_ENTITLEMENTS = CCUsageWidgetApp/CCUsageWidgetApp.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 14;
 				DEVELOPMENT_TEAM = 33TVZ53MZ2;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
@@ -367,7 +373,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.25.14;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.viktorsvirsky.ccusage-widget";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -383,7 +389,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = CCUsageExtension/CCUsageExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 14;
 				DEVELOPMENT_TEAM = 33TVZ53MZ2;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = CCUsageExtension/Info.plist;
@@ -393,7 +399,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.25.14;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.viktorsvirsky.ccusage-widget.extension";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -409,7 +415,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = CCUsageExtension/CCUsageExtension.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 14;
 				DEVELOPMENT_TEAM = 33TVZ53MZ2;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = CCUsageExtension/Info.plist;
@@ -419,7 +425,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.25.14;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.viktorsvirsky.ccusage-widget.extension";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;

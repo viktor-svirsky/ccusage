@@ -459,8 +459,8 @@ func runProjectionTests() {
             check(projected.fiveHourUtilization <= 100, "5h clamped to 100")
             check(projected.sevenDayUtilization > 20, "7d should increase with positive pace")
 
-            assertEqual(projected.fiveHourResetsAt!, base.fiveHourResetsAt! - 600, "5h reset decremented")
-            assertEqual(projected.sevenDayResetsAt!, base.sevenDayResetsAt! - 600, "7d reset decremented")
+            assertEqual(projected.fiveHourResetsAt!, base.fiveHourResetsAt!, "5h reset is absolute epoch and must not shift")
+            assertEqual(projected.sevenDayResetsAt!, base.sevenDayResetsAt!, "7d reset is absolute epoch and must not shift")
             assertEqual(projected.updatedAt, now, "updatedAt unchanged")
             assertEqual(projected.todayCost!, 2.50, "cost unchanged")
             assertEqual(projected.activeSessionCount!, 1, "sessions unchanged")

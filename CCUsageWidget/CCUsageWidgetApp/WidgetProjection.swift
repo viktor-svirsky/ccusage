@@ -28,8 +28,12 @@ func projectWidgetData(_ base: WidgetData, secondsAhead: TimeInterval) -> Widget
         ),
         fiveHourPace: base.fiveHourPace,
         sevenDayPace: base.sevenDayPace,
-        fiveHourResetsAt: base.fiveHourResetsAt.map { $0 - secondsAhead },
-        sevenDayResetsAt: base.sevenDayResetsAt.map { $0 - secondsAhead },
+        // Reset timestamps are absolute epoch seconds — the wall-clock moment the window
+        // resets. They MUST stay fixed across projected timeline entries; subtracting
+        // `secondsAhead` would make the widget's "reset in Xh Ym" countdown drift earlier
+        // on every future entry.
+        fiveHourResetsAt: base.fiveHourResetsAt,
+        sevenDayResetsAt: base.sevenDayResetsAt,
         updatedAt: base.updatedAt,
         extraUsageEnabled: base.extraUsageEnabled,
         depletionSeconds: base.depletionSeconds.map { max(0, $0 - secondsAhead) },

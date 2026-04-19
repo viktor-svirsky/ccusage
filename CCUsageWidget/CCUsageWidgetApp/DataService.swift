@@ -15,10 +15,11 @@ private let fetchInterval: TimeInterval = 120
 #if !TESTING
 class BackgroundSessionDelegate: NSObject, URLSessionDownloadDelegate {
     let defaults: UserDefaults?
-    var backgroundCompletionHandler: (() -> Void)?
+    let sessionIdentifier: String
 
-    init(defaults: UserDefaults?) {
+    init(defaults: UserDefaults?, sessionIdentifier: String) {
         self.defaults = defaults
+        self.sessionIdentifier = sessionIdentifier
     }
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
@@ -36,9 +37,10 @@ class BackgroundSessionDelegate: NSObject, URLSessionDownloadDelegate {
     }
 
     func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
-        DispatchQueue.main.async { [weak self] in
-            self?.backgroundCompletionHandler?()
-            self?.backgroundCompletionHandler = nil
+        // Only now is it safe to tell the system we're done handling the background launch.
+        let identifier = sessionIdentifier
+        DispatchQueue.main.async {
+            BackgroundSessionHandlerStore.take(for: identifier)?()
         }
     }
 }
@@ -60,7 +62,7 @@ class DataService: ObservableObject {
     init() {
         self.defaults = UserDefaults(suiteName: appGroupID)
         #if !TESTING
-        let delegate = BackgroundSessionDelegate(defaults: self.defaults)
+        let delegate = BackgroundSessionDelegate(defaults: self.defaults, sessionIdentifier: Self.backgroundSessionID)
         self.backgroundDelegate = delegate
         let config = URLSessionConfiguration.background(withIdentifier: Self.backgroundSessionID)
         config.sessionSendsLaunchEvents = true
@@ -175,10 +177,6 @@ class DataService: ObservableObject {
             guard tasks.isEmpty else { return }
             self?.backgroundSession?.downloadTask(with: url).resume()
         }
-    }
-
-    func handleBackgroundSessionCompletion(_ completionHandler: @escaping () -> Void) {
-        backgroundDelegate?.backgroundCompletionHandler = completionHandler
     }
     #endif
 
