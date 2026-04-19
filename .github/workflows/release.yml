@@ -188,14 +188,14 @@ jobs:
           git add VERSION altstore-source.json
           git commit -m "chore: release v${{ env.VERSION }} — bump VERSION + update AltStore"
           git push origin "$BRANCH" --force
-          gh pr create \
+          PR_URL=$(gh pr create \
             --title "chore: release v${{ env.VERSION }}" \
             --body "Auto-generated from merged PR: **${{ github.event.pull_request.title || inputs.version }}**
 
           - [x] GitHub Release created: ${{ env.TAG }}
           - [x] Homebrew tap updated
-          - [ ] Merge this PR to bump VERSION + update AltStore on main" \
-            --base main --head "$BRANCH"
+          - [x] Auto-merge enabled — will squash as soon as required checks pass" \
+            --base main --head "$BRANCH")
 
           # Report check runs on PR branch so branch protection is satisfied.
           # Tests already passed earlier in this workflow — just report the results.
@@ -209,3 +209,13 @@ jobs:
               -f "output[title]=Passed (from release workflow)" \
               -f "output[summary]=Tests passed during release v${{ env.VERSION }} build."
           done
+
+          # Auto-merge: squash as soon as required checks pass. Keeps releases hands-off.
+          # If mergeStateStatus is already CLEAN we merge immediately; otherwise we enable
+          # auto-merge so GitHub does it the moment checks clear.
+          STATE=$(gh pr view "$PR_URL" --json mergeStateStatus --jq .mergeStateStatus)
+          if [ "$STATE" = "CLEAN" ]; then
+            gh pr merge "$PR_URL" --squash --delete-branch
+          else
+            gh pr merge "$PR_URL" --squash --auto --delete-branch
+          fi
