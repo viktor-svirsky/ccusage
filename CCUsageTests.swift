@@ -1550,6 +1550,83 @@ func runNotificationTests() {
     }
 }
 
+// MARK: - Window Reset Notification Tests
+
+func runWindowResetNotificationTests() {
+    suite("window reset notifications") {
+        let t0 = Date(timeIntervalSince1970: 1_700_000_000)
+        func usage(h5: Double, d7: Double, h5Reset: Date?, d7Reset: Date?) -> UsageData {
+            UsageData(
+                fiveHour: UsageWindow(utilization: h5, remaining: nil, resetsAt: h5Reset),
+                sevenDay: UsageWindow(utilization: d7, remaining: nil, resetsAt: d7Reset)
+            )
+        }
+
+        test("first observation seeds state but does not fire") {
+            let state = NotificationState()
+            let u = usage(h5: 20, d7: 10, h5Reset: t0.addingTimeInterval(3600), d7Reset: t0.addingTimeInterval(86400))
+            let (notifs, newState) = determineNotifications(oldState: state, newUsage: u, fiveHourPace: nil, sevenDayPace: nil, now: t0)
+            check(!notifs.contains(where: {
+                if case .windowReset = $0 { return true } else { return false }
+            }), "no reset on first observation")
+            assertNotNil(newState.lastFiveHourResetsAt, "seeded 5h reset")
+            assertNotNil(newState.lastSevenDayResetsAt, "seeded 7d reset")
+        }
+
+        test("resetsAt moving forward fires reset notification") {
+            var state = NotificationState()
+            state.lastFiveHourResetsAt = t0
+            state.lastFiveHourUtilization = 42
+            state.lastSevenDayResetsAt = t0.addingTimeInterval(86400)
+            state.lastSevenDayUtilization = 15
+            let u = usage(
+                h5: 0, d7: 15,
+                h5Reset: t0.addingTimeInterval(5 * 3600),
+                d7Reset: t0.addingTimeInterval(86400)
+            )
+            let (notifs, newState) = determineNotifications(oldState: state, newUsage: u, fiveHourPace: nil, sevenDayPace: nil, now: t0)
+            check(notifs.contains(.windowReset(window: "5-hour", previousUtilization: 42)), "5h reset fires")
+            check(!notifs.contains(where: {
+                if case .windowReset(let w, _) = $0, w == "7-day" { return true } else { return false }
+            }), "7d reset does not fire when timestamp unchanged")
+            assertEqual(newState.lastFiveHourResetsAt, t0.addingTimeInterval(5 * 3600), "5h reset advanced")
+        }
+
+        test("zero prior utilization suppresses reset alert") {
+            var state = NotificationState()
+            state.lastFiveHourResetsAt = t0
+            state.lastFiveHourUtilization = 0
+            let u = usage(h5: 0, d7: 0, h5Reset: t0.addingTimeInterval(5 * 3600), d7Reset: nil)
+            let (notifs, _) = determineNotifications(oldState: state, newUsage: u, fiveHourPace: nil, sevenDayPace: nil, now: t0)
+            check(!notifs.contains(where: {
+                if case .windowReset = $0 { return true } else { return false }
+            }), "idle account must not fire reset")
+        }
+
+        test("nil new resetsAt does not fire") {
+            var state = NotificationState()
+            state.lastFiveHourResetsAt = t0
+            state.lastFiveHourUtilization = 50
+            let u = usage(h5: 0, d7: 0, h5Reset: nil, d7Reset: nil)
+            let (notifs, _) = determineNotifications(oldState: state, newUsage: u, fiveHourPace: nil, sevenDayPace: nil, now: t0)
+            check(!notifs.contains(where: {
+                if case .windowReset = $0 { return true } else { return false }
+            }), "missing reset timestamp suppresses alert")
+        }
+
+        test("60s jitter does not fire") {
+            var state = NotificationState()
+            state.lastFiveHourResetsAt = t0
+            state.lastFiveHourUtilization = 50
+            let u = usage(h5: 50, d7: 0, h5Reset: t0.addingTimeInterval(30), d7Reset: nil)
+            let (notifs, _) = determineNotifications(oldState: state, newUsage: u, fiveHourPace: nil, sevenDayPace: nil, now: t0)
+            check(!notifs.contains(where: {
+                if case .windowReset = $0 { return true } else { return false }
+            }), "small drift tolerated")
+        }
+    }
+}
+
 // MARK: - Depletion Estimate Tests
 
 func runDepletionEstimateTests() {
@@ -3806,6 +3883,7 @@ func runAllTests() {
     runPacingTests()
     runZoneTests()
     runNotificationTests()
+    runWindowResetNotificationTests()
     runDepletionEstimateTests()
     runDailyBreakdownTests()
     runPeakHoursTests()
