@@ -33,7 +33,10 @@ async function sha256hex(input: string): Promise<string> {
 	return [...new Uint8Array(hash)].map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-/** Fixed-window-per-minute rate limiter. Returns true if request allowed, false if over limit. */
+/** Fixed-window-per-minute rate limiter. Returns true if request allowed, false if over limit.
+ *  Uses `RETURNING count` so the increment and read happen in a single atomic statement —
+ *  a separate SELECT could read a count that includes other concurrent requests' increments,
+ *  producing spurious 429s near the limit. */
 async function checkRateLimit(
 	env: Env,
 	bucketId: string,
@@ -42,14 +45,11 @@ async function checkRateLimit(
 	const nowSec = Math.floor(Date.now() / 1000);
 	const windowStart = nowSec - (nowSec % 60); // bucket per minute
 	const key = `${bucketId}:${windowStart}`;
-	// UPSERT: set count=1 on insert, count+1 on conflict.
-	await env.DB.prepare(
-		'INSERT INTO rate_limit (bucket_key, count, window_start) VALUES (?, 1, ?) ' +
-		'ON CONFLICT(bucket_key) DO UPDATE SET count = count + 1',
-	).bind(key, windowStart).run();
 	const row = await env.DB.prepare(
-		'SELECT count FROM rate_limit WHERE bucket_key = ?'
-	).bind(key).first<{ count: number }>();
+		'INSERT INTO rate_limit (bucket_key, count, window_start) VALUES (?, 1, ?) ' +
+		'ON CONFLICT(bucket_key) DO UPDATE SET count = count + 1 ' +
+		'RETURNING count',
+	).bind(key, windowStart).first<{ count: number }>();
 	return (row?.count ?? 0) <= limitPerMinute;
 }
 
@@ -72,7 +72,7 @@ async function validateToken(accessToken: string): Promise<string | null> {
 	return resp.headers.get('anthropic-organization-id');
 }
 
-async function handlePut(request: Request, env: Env): Promise<Response> {
+async function handlePut(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
 	const auth = request.headers.get('Authorization');
 	if (!auth?.startsWith('Bearer ')) {
 		return new Response('Missing Authorization header', { status: 401 });
@@ -133,18 +133,20 @@ async function handlePut(request: Request, env: Env): Promise<Response> {
 		'INSERT OR REPLACE INTO widget_data (key, data, expires_at) VALUES (?, ?, ?)'
 	).bind(canonicalKey, newValue, now + ttl).run();
 
-	// Opportunistic cleanup of expired rows (~1% of requests)
+	// Opportunistic cleanup of expired rows (~1% of requests). `waitUntil` keeps the worker
+	// alive until these finish — without it the response resolves first and Workers may drop
+	// the pending promises, so the rate_limit / auth_cache / widget_data tables grow unbounded.
 	if (Math.random() < 0.01) {
-		env.DB.prepare('DELETE FROM auth_cache WHERE expires_at < ?').bind(now).run();
-		env.DB.prepare('DELETE FROM widget_data WHERE expires_at < ?').bind(now).run();
+		ctx.waitUntil(env.DB.prepare('DELETE FROM auth_cache WHERE expires_at < ?').bind(now).run());
+		ctx.waitUntil(env.DB.prepare('DELETE FROM widget_data WHERE expires_at < ?').bind(now).run());
 		// Rate limit buckets are one minute wide; anything more than 2 minutes old is useless.
-		env.DB.prepare('DELETE FROM rate_limit WHERE window_start < ?').bind(now - 120).run();
+		ctx.waitUntil(env.DB.prepare('DELETE FROM rate_limit WHERE window_start < ?').bind(now - 120).run());
 	}
 
 	return Response.json({ key: canonicalKey });
 }
 
-async function handleGet(key: string, env: Env, request: Request): Promise<Response> {
+async function handleGet(key: string, env: Env, ctx: ExecutionContext, request: Request): Promise<Response> {
 	// Rate limit: 120 GET/min per IP. Legitimate widgets refresh every ~2min; this is generous
 	// for a shared NAT but cheap enough to blunt brute-force enumeration.
 	const ip = clientIp(request);
@@ -156,10 +158,10 @@ async function handleGet(key: string, env: Env, request: Request): Promise<Respo
 
 	// Opportunistic cleanup of expired rows (~1% of requests). The GET path is polled far more
 	// frequently than PUT by the iOS widget, so without this the rate_limit table accumulates
-	// one row per IP per minute indefinitely.
+	// one row per IP per minute indefinitely. `waitUntil` ensures these run to completion.
 	if (Math.random() < 0.01) {
-		env.DB.prepare('DELETE FROM rate_limit WHERE window_start < ?').bind(now - 120).run();
-		env.DB.prepare('DELETE FROM widget_data WHERE expires_at < ?').bind(now).run();
+		ctx.waitUntil(env.DB.prepare('DELETE FROM rate_limit WHERE window_start < ?').bind(now - 120).run());
+		ctx.waitUntil(env.DB.prepare('DELETE FROM widget_data WHERE expires_at < ?').bind(now).run());
 	}
 	const row = await env.DB.prepare(
 		'SELECT data FROM widget_data WHERE key = ? AND expires_at > ?'
@@ -179,7 +181,7 @@ async function handleGet(key: string, env: Env, request: Request): Promise<Respo
 }
 
 export default {
-	async fetch(request: Request, env: Env): Promise<Response> {
+	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
 		const url = new URL(request.url);
 		const path = url.pathname;
 
@@ -188,12 +190,12 @@ export default {
 		}
 
 		if (path === '/widget' && request.method === 'PUT') {
-			return handlePut(request, env);
+			return handlePut(request, env, ctx);
 		}
 
 		const match = path.match(/^\/widget\/([a-f0-9]{64})$/);
 		if (match && request.method === 'GET') {
-			return handleGet(match[1], env, request);
+			return handleGet(match[1], env, ctx, request);
 		}
 
 		return new Response('Not found', { status: 404 });

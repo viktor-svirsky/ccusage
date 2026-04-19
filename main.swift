@@ -1437,10 +1437,27 @@ func buildCodexSummary(from threads: [CodexThread], now: Date = Date()) -> Codex
 class CodexTracker {
     private let dbPath: String
     private(set) var lastSummary: CodexSummary?
-    /// Skip the SQLite round-trip when the DB file hasn't been modified since the last poll.
-    /// Codex writes to `state_5.sqlite` whenever a thread is added / updated; if mtime hasn't
-    /// changed we know the summary is still correct and we can re-serve the cached one.
+    /// Skip the SQLite round-trip when neither the DB file nor its WAL sidecar has been modified
+    /// since the last poll. SQLite in WAL mode writes to `state_5.sqlite-wal` while the main DB
+    /// mtime stays frozen until checkpoint, so we must watch both files to avoid stale summaries.
     private var lastDBModification: Date?
+
+    /// Return the most recent modification timestamp across the main DB and its WAL sidecar
+    /// (if present). nil means the file is missing or attrs couldn't be read.
+    private func currentDBModification() -> Date? {
+        let paths = [dbPath, dbPath + "-wal"]
+        var latest: Date?
+        for path in paths {
+            guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+                  let modified = attrs[.modificationDate] as? Date else { continue }
+            if let cur = latest {
+                latest = modified > cur ? modified : cur
+            } else {
+                latest = modified
+            }
+        }
+        return latest
+    }
 
     init(dbPath: String? = nil) {
         self.dbPath = dbPath ?? (NSHomeDirectory() + "/.codex/state_5.sqlite")
@@ -1455,8 +1472,7 @@ class CodexTracker {
         }
 
         // Cheap mtime check: avoid opening + querying SQLite when nothing has changed.
-        if let attrs = try? FileManager.default.attributesOfItem(atPath: dbPath),
-           let modified = attrs[.modificationDate] as? Date,
+        if let modified = currentDBModification(),
            let last = lastDBModification, modified == last {
             return lastSummary
         }
@@ -1511,10 +1527,7 @@ class CodexTracker {
         lastSummary = summary
         // Record mtime AFTER successful read so the next poll can short-circuit.
         // On read failure we leave `lastDBModification` untouched so the next poll retries.
-        if let attrs = try? FileManager.default.attributesOfItem(atPath: dbPath),
-           let modified = attrs[.modificationDate] as? Date {
-            lastDBModification = modified
-        }
+        lastDBModification = currentDBModification()
         return summary
     }
 }
@@ -2150,6 +2163,14 @@ func verifyDownloadedBundleSignature(at bundleURL: URL) throws {
         executable: "/usr/bin/codesign",
         arguments: ["-dvvv", bundleURL.path]
     )
+    // Fail closed if we couldn't probe either bundle. A probe failure means we can't distinguish
+    // "unsigned dev build" from "attacker-supplied bundle missing signature metadata".
+    guard currentInfo.0 == 0 else {
+        throw NSError(domain: "CCUsage", code: 13, userInfo: [NSLocalizedDescriptionKey: "codesign probe of current bundle failed: \(currentInfo.1)"])
+    }
+    guard newInfo.0 == 0 else {
+        throw NSError(domain: "CCUsage", code: 14, userInfo: [NSLocalizedDescriptionKey: "codesign probe of new bundle failed: \(newInfo.1)"])
+    }
     let currentTeam = teamIdentifier(fromCodesignOutput: currentInfo.1)
     let newTeam = teamIdentifier(fromCodesignOutput: newInfo.1)
     // If the running app has no Team ID (e.g. local dev build) skip the pinning check —
@@ -2303,7 +2324,11 @@ func buildWidgetData(_ usage: UsageData, todayCost: Double = 0, activeSessionCou
             return SessionData(project: project, model: model, tokens: tokens, durationSeconds: duration)
         }.sorted { lhs, rhs in
             if lhs.project != rhs.project { return lhs.project < rhs.project }
-            return (lhs.model ?? "") < (rhs.model ?? "")
+            if (lhs.model ?? "") != (rhs.model ?? "") { return (lhs.model ?? "") < (rhs.model ?? "") }
+            // Tiebreakers keep the sort total — otherwise two sessions with identical
+            // (project, model) can flip ordering between pushes and re-trigger `hasSameValues`.
+            if (lhs.tokens ?? -1) != (rhs.tokens ?? -1) { return (lhs.tokens ?? -1) < (rhs.tokens ?? -1) }
+            return (lhs.durationSeconds ?? -1) < (rhs.durationSeconds ?? -1)
         }
         return list.isEmpty ? nil : list
     }
@@ -2776,13 +2801,19 @@ class StatusBarController: NSObject, UNUserNotificationCenterDelegate {
         // Create with 0600 up front; any process must be unable to read the OAuth refresh token.
         let attrs: [FileAttributeKey: Any] = [.posixPermissions: NSNumber(value: Int16(0o600))]
         let created = FileManager.default.createFile(atPath: credPath, contents: data, attributes: attrs)
+        guard created else { return false }
         // `createFile` replaces existing files but behavior around re-applying permissions on
-        // overwrite is historically filesystem-dependent. Force-apply 0600 on every successful
-        // write so a file that was previously stored with looser perms gets tightened here.
-        if created {
-            try? FileManager.default.setAttributes(attrs, ofItemAtPath: credPath)
+        // overwrite is historically filesystem-dependent. Force-apply 0600 so a file that was
+        // previously stored with looser perms gets tightened here. If this fails we must NOT
+        // tell the caller the write succeeded — a refresh token sitting at 0644 is worse than
+        // one not written at all (we can retry, Keychain is still authoritative).
+        do {
+            try FileManager.default.setAttributes(attrs, ofItemAtPath: credPath)
+            return true
+        } catch {
+            try? FileManager.default.removeItem(atPath: credPath)
+            return false
         }
-        return created
     }
 
     /// Refresh the OAuth token and update the keychain. Returns the new access token on success.
