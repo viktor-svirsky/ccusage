@@ -11,6 +11,8 @@ struct SettingsView: View {
     @State private var highUsage: Bool = NotificationService.shared.highUsageEnabled
     @State private var critical: Bool = NotificationService.shared.criticalEnabled
     @State private var depletion: Bool = NotificationService.shared.depletionEnabled
+    @State private var pace: Bool = NotificationService.shared.paceEnabled
+    @State private var windowReset: Bool = NotificationService.shared.windowResetEnabled
 
     var body: some View {
         ScrollView {
@@ -195,6 +197,46 @@ struct SettingsView: View {
                         }
                     } else {
                         NotificationService.shared.depletionEnabled = false
+                    }
+                }
+
+                Divider().overlay(Theme.cardBorder)
+
+                notificationToggle(
+                    label: "Over Pace (>1.2x)",
+                    icon: "speedometer",
+                    isOn: $pace
+                ) { newVal in
+                    if newVal {
+                        NotificationService.shared.requestPermission { granted in
+                            if granted {
+                                NotificationService.shared.paceEnabled = true
+                            } else {
+                                pace = false
+                            }
+                        }
+                    } else {
+                        NotificationService.shared.paceEnabled = false
+                    }
+                }
+
+                Divider().overlay(Theme.cardBorder)
+
+                notificationToggle(
+                    label: "Window Reset",
+                    icon: "arrow.clockwise.circle",
+                    isOn: $windowReset
+                ) { newVal in
+                    if newVal {
+                        NotificationService.shared.requestPermission { granted in
+                            if granted {
+                                NotificationService.shared.windowResetEnabled = true
+                            } else {
+                                windowReset = false
+                            }
+                        }
+                    } else {
+                        NotificationService.shared.windowResetEnabled = false
                     }
                 }
             }

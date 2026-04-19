@@ -593,6 +593,79 @@ func runProjectionTests() {
     }
 }
 
+// MARK: - Notification Decide Tests
+
+func runNotificationTests() {
+    suite("shouldFireWindowReset") {
+        test("fires when newReset advances past prior by >60s and prior usage ≥1%") {
+            let prior: TimeInterval = 1_700_000_000
+            let new = prior + 120
+            check(shouldFireWindowReset(
+                priorResetsAt: prior, newResetsAt: new, priorUtilization: 42.0
+            ), "advanced reset with real usage fires")
+        }
+
+        test("does not fire on fresh install (prior nil)") {
+            check(!shouldFireWindowReset(
+                priorResetsAt: nil, newResetsAt: 1_700_000_000, priorUtilization: 80.0
+            ), "nil prior suppresses")
+        }
+
+        test("does not fire when prior is zero (default UserDefaults)") {
+            check(!shouldFireWindowReset(
+                priorResetsAt: 0, newResetsAt: 1_700_000_000, priorUtilization: 80.0
+            ), "zero prior suppresses")
+        }
+
+        test("does not fire when advancement < 60s (api jitter)") {
+            let prior: TimeInterval = 1_700_000_000
+            check(!shouldFireWindowReset(
+                priorResetsAt: prior, newResetsAt: prior + 30, priorUtilization: 50.0
+            ), "small jitter suppresses")
+        }
+
+        test("does not fire when prior utilization below 1% (idle window)") {
+            let prior: TimeInterval = 1_700_000_000
+            check(!shouldFireWindowReset(
+                priorResetsAt: prior, newResetsAt: prior + 18000, priorUtilization: 0.5
+            ), "idle window suppresses")
+        }
+
+        test("does not fire when newReset nil") {
+            check(!shouldFireWindowReset(
+                priorResetsAt: 1_700_000_000, newResetsAt: nil, priorUtilization: 50.0
+            ), "nil newReset suppresses")
+        }
+    }
+
+    suite("decidePace") {
+        test("fires once when pace crosses above 1.2 and not yet alerted") {
+            assertEqual(decidePace(pace: 1.3, alreadyAlerted: false), .fire)
+        }
+
+        test("unchanged when already alerted and still over") {
+            assertEqual(decidePace(pace: 1.5, alreadyAlerted: true), .unchanged)
+        }
+
+        test("clears alerted flag when pace drops back under 1.2") {
+            assertEqual(decidePace(pace: 1.0, alreadyAlerted: true), .clear)
+        }
+
+        test("unchanged when under threshold and not alerted") {
+            assertEqual(decidePace(pace: 0.8, alreadyAlerted: false), .unchanged)
+        }
+
+        test("unchanged when pace nil (no data)") {
+            assertEqual(decidePace(pace: nil, alreadyAlerted: false), .unchanged)
+            assertEqual(decidePace(pace: nil, alreadyAlerted: true), .unchanged)
+        }
+
+        test("1.2 exactly does not fire (strict >)") {
+            assertEqual(decidePace(pace: 1.2, alreadyAlerted: false), .unchanged)
+        }
+    }
+}
+
 // MARK: - Run All Tests
 
 @main
@@ -604,6 +677,7 @@ struct WidgetTestRunner {
         runCacheLoadTests()
         runDataSharingTests()
         runProjectionTests()
+        runNotificationTests()
 
         print("\n=== Widget Tests: \(passedTests)/\(totalTests) passed ===")
         if !failedTests.isEmpty {
