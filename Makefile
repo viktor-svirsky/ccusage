@@ -51,6 +51,7 @@ widget-test:
 		CCUsageWidget/CCUsageWidgetApp/WidgetProjection.swift \
 		CCUsageWidget/CCUsageWidgetApp/WidgetSentry.swift \
 		CCUsageWidget/CCUsageWidgetApp/DataService.swift \
+		CCUsageWidget/CCUsageWidgetApp/NotificationService.swift \
 		CCUsageWidget/WidgetTests.swift
 	/tmp/CCUsageWidgetTests
 
