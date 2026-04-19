@@ -4,6 +4,10 @@ CONTENTS = $(APP_DIR)/Contents
 MACOS = $(CONTENTS)/MacOS
 INSTALL_DIR = /Applications
 VERSION ?= $(shell cat VERSION 2>/dev/null || echo 0.0.0-dev)
+# Set PRODUCTION=1 to compile with `-D PRODUCTION`, which tags Sentry events as
+# environment=production. The release workflow passes it; local `make build` / `make install`
+# leaves it unset so dev-machine errors don't pollute production alert rules.
+SWIFT_FLAGS = $(if $(PRODUCTION),-D PRODUCTION,)
 
 .PHONY: build test install uninstall clean generate-icon widget widget-test
 
@@ -18,7 +22,7 @@ build: generate-icon
 	cp Info.plist $(CONTENTS)/Info.plist
 	/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $(VERSION)" $(CONTENTS)/Info.plist
 	cp $(APP_NAME).icns $(CONTENTS)/Resources/$(APP_NAME).icns
-	swiftc -O -o $(MACOS)/$(APP_NAME) main.swift -framework Cocoa -framework UserNotifications
+	swiftc -O $(SWIFT_FLAGS) -o $(MACOS)/$(APP_NAME) main.swift -framework Cocoa -framework UserNotifications
 	# Ad-hoc sign the full bundle so _CodeSignature/CodeResources exists.
 	# Without this step `codesign --verify --deep --strict` fails with
 	# "code has no resources but signature indicates they must be present",
@@ -45,6 +49,7 @@ widget-test:
 	swiftc -DTESTING -o /tmp/CCUsageWidgetTests \
 		CCUsageWidget/CCUsageWidgetApp/SharedModels.swift \
 		CCUsageWidget/CCUsageWidgetApp/WidgetProjection.swift \
+		CCUsageWidget/CCUsageWidgetApp/WidgetSentry.swift \
 		CCUsageWidget/CCUsageWidgetApp/DataService.swift \
 		CCUsageWidget/WidgetTests.swift
 	/tmp/CCUsageWidgetTests
@@ -59,7 +64,8 @@ widget:
 		CODE_SIGN_IDENTITY=- \
 		CODE_SIGNING_ALLOWED=NO \
 		MARKETING_VERSION=$(VERSION) \
-		CURRENT_PROJECT_VERSION=$(VERSION)
+		CURRENT_PROJECT_VERSION=$(VERSION) \
+		SWIFT_ACTIVE_COMPILATION_CONDITIONS='$$(inherited) PRODUCTION'
 	mkdir -p /tmp/CCUsageIPA/Payload
 	cp -r /tmp/CCUsageWidget.xcarchive/Products/Applications/CCUsageWidgetApp.app /tmp/CCUsageIPA/Payload/
 	cd /tmp/CCUsageIPA && zip -r /tmp/CCUsageWidgetApp.ipa Payload/
