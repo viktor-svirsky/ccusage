@@ -108,6 +108,19 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # xcodebuild archive is the heaviest step in the pipeline. Cache Xcode DerivedData so
+      # incremental compiles + module artifacts survive across runs. Key busts on project /
+      # entitlements / Info.plist / widget source churn.
+      - name: Cache Xcode DerivedData
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Developer/Xcode/DerivedData
+            ~/Library/Caches/org.swift.swiftpm
+          key: xcode-${{ runner.os }}-${{ hashFiles('CCUsageWidget/**/*.pbxproj', 'CCUsageWidget/**/*.entitlements', 'CCUsageWidget/**/Info.plist', 'CCUsageWidget/**/*.swift') }}
+          restore-keys: |
+            xcode-${{ runner.os }}-
+
       - name: Build iOS widget IPA
         run: make widget VERSION=$(cat VERSION)
 

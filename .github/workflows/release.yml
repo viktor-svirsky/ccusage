@@ -31,6 +31,18 @@ jobs:
           ref: main
           fetch-depth: 0
 
+      # Cache Xcode DerivedData so the widget archive (~45-60s cold) is incremental on
+      # consecutive releases. Key busts when widget target files change.
+      - name: Cache Xcode DerivedData
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Developer/Xcode/DerivedData
+            ~/Library/Caches/org.swift.swiftpm
+          key: xcode-${{ runner.os }}-${{ hashFiles('CCUsageWidget/**/*.pbxproj', 'CCUsageWidget/**/*.entitlements', 'CCUsageWidget/**/Info.plist', 'CCUsageWidget/**/*.swift') }}
+          restore-keys: |
+            xcode-${{ runner.os }}-
+
       - name: Determine version
         id: version
         run: |
@@ -112,6 +124,40 @@ jobs:
             CCUsageWidgetApp.ipa
           generate_release_notes: true
 
+      # Belt-and-suspenders: download the published zip and re-run codesign --verify
+      # on it. The Makefile already runs this pre-upload but CDN/upload could corrupt
+      # the artifact. Failing here aborts before Homebrew + AltStore point at the asset.
+      # This is the check that would have caught the v1.25.14 bundle before it shipped.
+      - name: Verify published bundle
+        if: steps.version.outputs.bump != 'none' && env.SKIP_RELEASE != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p /tmp/release-verify
+          gh release download "${{ env.TAG }}" -D /tmp/release-verify -p CCUsage.zip --clobber
+          unzip -q -o /tmp/release-verify/CCUsage.zip -d /tmp/release-verify/
+          codesign --verify --deep --strict /tmp/release-verify/CCUsage.app
+
+      # Associate this release with the Sentry project so issues surface "introduced in vX"
+      # and unresolved errors tagged to prior releases auto-resolve when fixed. Skips silently
+      # if SENTRY_AUTH_TOKEN isn't configured — can't reference secrets in `if:` directly,
+      # so we gate in the shell.
+      - name: Sentry release
+        if: steps.version.outputs.bump != 'none' && env.SKIP_RELEASE != 'true'
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: viktor-svirskyi
+          SENTRY_PROJECT: ccusage
+        run: |
+          if [ -z "$SENTRY_AUTH_TOKEN" ]; then
+            echo "::notice::SENTRY_AUTH_TOKEN not set — skipping Sentry release association"
+            exit 0
+          fi
+          curl -sL https://sentry.io/get-cli/ | sh
+          sentry-cli releases new "ccusage@${{ env.VERSION }}"
+          sentry-cli releases set-commits --auto "ccusage@${{ env.VERSION }}" || true
+          sentry-cli releases finalize "ccusage@${{ env.VERSION }}"
+
       - name: Update Homebrew tap
         if: steps.version.outputs.bump != 'none' && env.SKIP_RELEASE != 'true'
         env:
@@ -172,6 +218,9 @@ jobs:
           versions = source['apps'][0]['versions']
           versions = [v for v in versions if v['version'] != '${{ env.VERSION }}']
           versions.insert(0, new_version)
+          # Cap history: AltStore only needs the recent tail. Older entries just bloat
+          # the JSON that every client downloads on refresh.
+          versions = versions[:5]
           source['apps'][0]['versions'] = versions
           with open('altstore-source.json', 'w') as f:
               json.dump(source, f, indent=2)
