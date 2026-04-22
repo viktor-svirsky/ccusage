@@ -3593,6 +3593,82 @@ func runDailyCostTests() {
             assertNotNil(store.dailyCosts, "initialized after recording")
         }
     }
+
+    suite("backfillDailyCosts") {
+        test("overwrites stale $0 entries with tracker data") {
+            var store = DailyUsageData()
+            let cal = Calendar.current
+            let now = Date()
+            let yesterday = cal.date(byAdding: .day, value: -1, to: now)!
+            let twoDaysAgo = cal.date(byAdding: .day, value: -2, to: now)!
+            store.dailyCosts = [
+                DailyCostEntry(date: dailyDateString(twoDaysAgo), cost: 0),
+                DailyCostEntry(date: dailyDateString(yesterday), cost: 0),
+                DailyCostEntry(date: dailyDateString(now), cost: 0),
+            ]
+            let map: [String: Double] = [
+                dailyDateString(twoDaysAgo): 5.0,
+                dailyDateString(yesterday): 3.5,
+                dailyDateString(now): 1.25,
+            ]
+            backfillDailyCosts(&store, costsByDate: map, now: now)
+            assertEqual(store.dailyCosts?.count, 3, "3 entries")
+            let byDate = Dictionary(uniqueKeysWithValues: (store.dailyCosts ?? []).map { ($0.date, $0.cost) })
+            assertEqual(byDate[dailyDateString(twoDaysAgo)], 5.0, "two days ago updated")
+            assertEqual(byDate[dailyDateString(yesterday)], 3.5, "yesterday updated")
+            assertEqual(byDate[dailyDateString(now)], 1.25, "today updated")
+        }
+
+        test("does not overwrite real data with zero from tracker gap") {
+            var store = DailyUsageData()
+            let now = Date()
+            let yesterday = Calendar.current.date(byAdding: .day, value: -1, to: now)!
+            store.dailyCosts = [DailyCostEntry(date: dailyDateString(yesterday), cost: 7.50)]
+            // Tracker returned nothing for yesterday — map is empty
+            backfillDailyCosts(&store, costsByDate: [:], now: now)
+            assertEqual(store.dailyCosts?.count, 1, "entry preserved")
+            assertEqual(store.dailyCosts?[0].cost, 7.50, "value untouched")
+        }
+
+        test("appends missing past days from tracker") {
+            var store = DailyUsageData()
+            let now = Date()
+            let yesterday = Calendar.current.date(byAdding: .day, value: -1, to: now)!
+            store.dailyCosts = [DailyCostEntry(date: dailyDateString(now), cost: 2.0)]
+            let map = [dailyDateString(yesterday): 4.0]
+            backfillDailyCosts(&store, costsByDate: map, now: now)
+            assertEqual(store.dailyCosts?.count, 2, "yesterday added")
+            let byDate = Dictionary(uniqueKeysWithValues: (store.dailyCosts ?? []).map { ($0.date, $0.cost) })
+            assertEqual(byDate[dailyDateString(yesterday)], 4.0, "yesterday value")
+            assertEqual(byDate[dailyDateString(now)], 2.0, "today preserved")
+        }
+
+        test("prunes entries older than 7 days") {
+            var store = DailyUsageData()
+            let now = Date()
+            let oldDate = Calendar.current.date(byAdding: .day, value: -8, to: now)!
+            store.dailyCosts = [DailyCostEntry(date: dailyDateString(oldDate), cost: 9.0)]
+            backfillDailyCosts(&store, costsByDate: [dailyDateString(now): 1.0], now: now)
+            check(!(store.dailyCosts ?? []).contains(where: { $0.date == dailyDateString(oldDate) }), "old entry pruned")
+        }
+
+        test("sorts entries chronologically") {
+            var store = DailyUsageData()
+            let now = Date()
+            let cal = Calendar.current
+            let d1 = cal.date(byAdding: .day, value: -1, to: now)!
+            let d3 = cal.date(byAdding: .day, value: -3, to: now)!
+            let d2 = cal.date(byAdding: .day, value: -2, to: now)!
+            let map: [String: Double] = [
+                dailyDateString(d1): 1.0,
+                dailyDateString(d3): 3.0,
+                dailyDateString(d2): 2.0,
+            ]
+            backfillDailyCosts(&store, costsByDate: map, now: now)
+            let dates = (store.dailyCosts ?? []).map(\.date)
+            assertEqual(dates, dates.sorted(), "chronological order")
+        }
+    }
 }
 
 // MARK: - Extended Widget Data Tests

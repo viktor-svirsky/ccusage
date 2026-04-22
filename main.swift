@@ -790,6 +790,23 @@ func recordDailyCost(_ store: inout DailyUsageData, todayCost: Double, now: Date
     }
 }
 
+/// Overwrite stale $0 entries with fresh tracker data for past 7 days. Only non-zero
+/// tracker values overwrite — avoids wiping real costs when tracker has no JSONL yet
+/// (fresh app start, or day hasn't been polled).
+func backfillDailyCosts(_ store: inout DailyUsageData, costsByDate: [String: Double], now: Date = Date()) {
+    var costs = store.dailyCosts ?? []
+    for (date, cost) in costsByDate where cost > 0 {
+        if let idx = costs.firstIndex(where: { $0.date == date }) {
+            costs[idx] = DailyCostEntry(date: date, cost: cost)
+        } else {
+            costs.append(DailyCostEntry(date: date, cost: cost))
+        }
+    }
+    let cutoff = Calendar.current.date(byAdding: .day, value: -7, to: now)!
+    let cutoffStr = dailyDateString(cutoff)
+    store.dailyCosts = costs.filter { $0.date > cutoffStr }.sorted { $0.date < $1.date }
+}
+
 func weeklyChart(_ days: [DailyEntry], now: Date = Date()) -> String? {
     guard days.contains(where: { $0.usage > 0 }) else { return nil }
     let blocks: [Character] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
@@ -3078,7 +3095,20 @@ class StatusBarController: NSObject, UNUserNotificationCenterDelegate {
         lastUsage = usage
         history.record(usage)
         recordDailyUsage(&dailyStore, sevenDayUtilization: usage.sevenDay.utilization)
+        tokenCostTracker.poll()
         recordDailyCost(&dailyStore, todayCost: tokenCostTracker.todayCost.totalCost)
+        // Backfill past 7 days from tracker — fixes stale $0 entries recorded at
+        // rollover or before JSONL scan completed.
+        var costsByDate: [String: Double] = [:]
+        let cal = Calendar.current
+        for i in 0..<8 {
+            guard let d = cal.date(byAdding: .day, value: -i, to: Date()) else { continue }
+            let key = dailyDateString(d)
+            if let entry = tokenCostTracker.costForDate(key) {
+                costsByDate[key] = entry.totalCost
+            }
+        }
+        backfillDailyCosts(&dailyStore, costsByDate: costsByDate)
         saveDailyStore()
         #if !TESTING
         pushWidgetData(usage)
