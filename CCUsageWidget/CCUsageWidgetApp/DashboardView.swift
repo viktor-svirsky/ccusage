@@ -13,6 +13,7 @@ struct DashboardView: View {
                     depletionBanner(data)
                     modelBreakdown(data)
                     quickStats(data)
+                    weeklyActivityCard(data)
                     activeSessions(data)
                 } else {
                     noDataView
@@ -254,6 +255,133 @@ struct DashboardView: View {
                     .foregroundStyle(Theme.textTertiary)
             }
             .frame(maxWidth: .infinity)
+        }
+    }
+
+    // MARK: - Weekly Activity (Usage % + Cost $)
+
+    @ViewBuilder
+    private func weeklyActivityCard(_ data: WidgetData) -> some View {
+        let entries = data.dailyEntries ?? []
+        let costs = data.dailyCosts ?? []
+        let hasData = !entries.isEmpty || !costs.isEmpty
+        if hasData {
+            let costByDate: [String: Double] = Dictionary(uniqueKeysWithValues: costs.map { ($0.date, $0.cost) })
+            let dates = mergedDates(entries: entries, costs: costs)
+            let maxUsage = max(entries.map(\.usage).max() ?? 1, 1)
+            let maxCost = max(costs.map(\.cost).max() ?? 0.01, 0.01)
+            let weekCost = costs.map(\.cost).reduce(0, +)
+            let barHeight: CGFloat = 90
+
+            GlassCard {
+                VStack(alignment: .leading, spacing: 14) {
+                    HStack {
+                        Text("WEEKLY ACTIVITY")
+                            .font(.caption2).fontWeight(.semibold)
+                            .foregroundStyle(Theme.textTertiary)
+                        Spacer()
+                        if weekCost > 0 {
+                            Text(String(format: "$%.2f", weekCost))
+                                .font(.caption).fontWeight(.semibold)
+                                .foregroundStyle(Theme.costPurple)
+                        }
+                    }
+
+                    HStack(alignment: .bottom, spacing: 6) {
+                        ForEach(Array(dates.enumerated()), id: \.offset) { _, date in
+                            let usage = entries.first(where: { $0.date == date })?.usage ?? 0
+                            let cost = costByDate[date] ?? 0
+                            VStack(spacing: 3) {
+                                HStack(spacing: 2) {
+                                    Text(usage > 0 ? "\(Int(usage.rounded()))%" : "")
+                                        .font(.system(size: 9, weight: .medium, design: .rounded))
+                                        .foregroundStyle(Theme.textSecondary)
+                                        .frame(maxWidth: .infinity)
+                                    Text(cost > 0 ? (cost >= 1 ? String(format: "$%.0f", cost) : String(format: "$%.2f", cost)) : "")
+                                        .font(.system(size: 9, weight: .medium, design: .rounded))
+                                        .foregroundStyle(Theme.costPurple.opacity(0.85))
+                                        .frame(maxWidth: .infinity)
+                                }
+                                HStack(alignment: .bottom, spacing: 2) {
+                                    RoundedRectangle(cornerRadius: 3)
+                                        .fill(Self.barColor(usage))
+                                        .frame(height: usage > 0 ? max(2, barHeight * CGFloat(usage / maxUsage)) : 2)
+                                        .frame(maxWidth: .infinity)
+                                    RoundedRectangle(cornerRadius: 3)
+                                        .fill(Theme.costPurple.opacity(0.65))
+                                        .frame(height: cost > 0 ? max(2, barHeight * CGFloat(cost / maxCost)) : 2)
+                                        .frame(maxWidth: .infinity)
+                                }
+                                .frame(height: barHeight, alignment: .bottom)
+                                Text(Self.dayLabel(date))
+                                    .font(.system(size: 9))
+                                    .foregroundStyle(Theme.textTertiary)
+                            }
+                            .frame(maxWidth: .infinity)
+                        }
+                    }
+
+                    Divider().overlay(Theme.cardBorder)
+
+                    HStack {
+                        miniStat(label: "Active", value: "\(entries.filter { $0.usage > 0 }.count)/\(dates.count)")
+                        Spacer()
+                        miniStat(
+                            label: "Daily Avg",
+                            value: entries.isEmpty
+                                ? "--"
+                                : "\(Int((entries.map(\.usage).reduce(0, +) / Double(entries.count)).rounded()))%"
+                        )
+                        Spacer()
+                        miniStat(label: "Peak", value: peakDay(entries))
+                    }
+                }
+            }
+        }
+    }
+
+    private func mergedDates(entries: [DailyEntryData], costs: [DailyCostData]) -> [String] {
+        var set = Set<String>()
+        entries.forEach { set.insert($0.date) }
+        costs.forEach { set.insert($0.date) }
+        return set.sorted()
+    }
+
+    private static let dateParser: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        f.locale = Locale(identifier: "en_US_POSIX")
+        return f
+    }()
+
+    private static let dayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "EEE"
+        return f
+    }()
+
+    private static func dayLabel(_ s: String) -> String {
+        guard let d = dateParser.date(from: s) else { return String(s.suffix(2)) }
+        return dayFormatter.string(from: d)
+    }
+
+    private static func barColor(_ usage: Double) -> Color {
+        if usage >= 80 { return Theme.red }
+        if usage >= 50 { return Theme.orange }
+        return Theme.green
+    }
+
+    private func peakDay(_ entries: [DailyEntryData]) -> String {
+        guard let peak = entries.max(by: { $0.usage < $1.usage }), peak.usage > 0 else { return "--" }
+        return Self.dayLabel(peak.date)
+    }
+
+    private func miniStat(label: String, value: String) -> some View {
+        VStack(spacing: 2) {
+            Text(value).font(.caption).fontWeight(.semibold)
+                .foregroundStyle(Theme.textPrimary)
+            Text(label).font(.system(size: 9))
+                .foregroundStyle(Theme.textTertiary)
         }
     }
 
