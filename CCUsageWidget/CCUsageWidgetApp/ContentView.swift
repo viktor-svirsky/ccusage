@@ -13,10 +13,6 @@ struct ContentView: View {
                         .tabItem {
                             Label("Dashboard", systemImage: "gauge.with.dots.needle.33percent")
                         }
-                    HistoryView()
-                        .tabItem {
-                            Label("History", systemImage: "chart.bar.fill")
-                        }
                     SettingsView()
                         .tabItem {
                             Label("Settings", systemImage: "gearshape.fill")
