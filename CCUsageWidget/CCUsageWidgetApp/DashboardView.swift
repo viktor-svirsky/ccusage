@@ -292,27 +292,29 @@ struct DashboardView: View {
                             let usage = entries.first(where: { $0.date == date })?.usage ?? 0
                             let cost = costByDate[date] ?? 0
                             VStack(spacing: 3) {
-                                HStack(spacing: 2) {
-                                    Text(usage > 0 ? "\(Int(usage.rounded()))%" : "")
-                                        .font(.system(size: 9, weight: .medium, design: .rounded))
-                                        .foregroundStyle(Theme.textSecondary)
-                                        .frame(maxWidth: .infinity)
-                                    Text(cost > 0 ? (cost >= 1 ? String(format: "$%.0f", cost) : String(format: "$%.2f", cost)) : "")
-                                        .font(.system(size: 9, weight: .medium, design: .rounded))
-                                        .foregroundStyle(Theme.costPurple.opacity(0.85))
-                                        .frame(maxWidth: .infinity)
-                                }
+                                // Stack labels vertically so each gets full column width — side-by-side
+                                // HStack caused "$389" to wrap into "$38 / 9" on narrow 7-day layout.
+                                Text(usage > 0 ? "\(Int(usage.rounded()))%" : " ")
+                                    .font(.system(size: 9, weight: .medium, design: .rounded))
+                                    .foregroundStyle(Theme.textSecondary)
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.7)
+                                    .frame(maxWidth: .infinity)
+                                Text(cost > 0 ? Self.costLabel(cost) : " ")
+                                    .font(.system(size: 9, weight: .medium, design: .rounded))
+                                    .foregroundStyle(Theme.costPurple.opacity(0.85))
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.7)
+                                    .frame(maxWidth: .infinity)
                                 HStack(alignment: .bottom, spacing: 2) {
                                     RoundedRectangle(cornerRadius: 3)
                                         .fill(Self.barColor(usage))
-                                        .frame(height: usage > 0 ? max(2, barHeight * CGFloat(usage / maxUsage)) : 2)
-                                        .frame(maxWidth: .infinity)
+                                        .frame(width: 8, height: usage > 0 ? max(2, barHeight * CGFloat(usage / maxUsage)) : 2)
                                     RoundedRectangle(cornerRadius: 3)
                                         .fill(Theme.costPurple.opacity(0.65))
-                                        .frame(height: cost > 0 ? max(2, barHeight * CGFloat(cost / maxCost)) : 2)
-                                        .frame(maxWidth: .infinity)
+                                        .frame(width: 8, height: cost > 0 ? max(2, barHeight * CGFloat(cost / maxCost)) : 2)
                                 }
-                                .frame(height: barHeight, alignment: .bottom)
+                                .frame(maxWidth: .infinity, minHeight: barHeight, alignment: .bottom)
                                 Text(Self.dayLabel(date))
                                     .font(.system(size: 9))
                                     .foregroundStyle(Theme.textTertiary)
@@ -363,6 +365,12 @@ struct DashboardView: View {
     private static func dayLabel(_ s: String) -> String {
         guard let d = dateParser.date(from: s) else { return String(s.suffix(2)) }
         return dayFormatter.string(from: d)
+    }
+
+    private static func costLabel(_ cost: Double) -> String {
+        if cost >= 1000 { return String(format: "$%.1fk", cost / 1000) }
+        if cost >= 1 { return String(format: "$%.0f", cost) }
+        return String(format: "$%.2f", cost)
     }
 
     private static func barColor(_ usage: Double) -> Color {
