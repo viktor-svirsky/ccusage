@@ -119,12 +119,15 @@ private func paceSymbol(_ pace: Double?) -> String {
 
 /// Projected end-of-window utilization. pace × 100 = where you'll land at reset
 /// if you continue consuming at the current rate.
-/// "→ 125%" warns of overrun before it happens. Caps at 999%+ for runaway days.
+/// Uses a warning glyph "⚠" prefix when projected to overrun so the signal
+/// survives tinted/monochrome widget rendering on iOS 18 home screens.
+/// Caps at 999%+ for runaway days.
 private func trajectoryLabel(_ pace: Double?) -> String? {
     guard let p = pace, p > 0 else { return nil }
     let projected = p * 100
-    if projected > 999 { return "→ 999%+" }
-    return "→ \(Int(projected.rounded()))%"
+    let prefix = projected >= 110 ? "\u{26A0}\u{FE0F}" : "\u{2192}"  // ⚠ vs →
+    if projected > 999 { return "\(prefix) 999%+" }
+    return "\(prefix) \(Int(projected.rounded()))%"
 }
 
 private func resetLabel(_ ts: TimeInterval?) -> String {
@@ -442,7 +445,8 @@ private struct MediumView: View {
                 Text("\(Int(pct.rounded()))%")
                     .font(.headline).fontWeight(.bold)
                     .foregroundStyle(usageColor(pct, pace: pace))
-                    .frame(width: 46, alignment: .leading)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
                 ProgressView(value: min(pct / 100, 1))
                     .tint(usageColor(pct, pace: pace))
                 Text(paceSymbol(pace))

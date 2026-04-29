@@ -104,11 +104,13 @@ enum Theme {
     }
 
     /// Format projected end-of-window utilization for display.
-    /// "→ 41%" / "→ 125%" / "→ 999%+" for runaway projections.
+    /// "→ 41%" stays neutral; "⚠️ 125%" flags an overrun so the signal survives
+    /// tinted/monochrome widget rendering modes that strip our color hints.
     static func trajectoryLabel(_ pace: Double?) -> String? {
         guard let projected = projectedEndPct(pace) else { return nil }
-        if projected > 999 { return "→ 999%+" }
-        return "→ \(Int(projected.rounded()))%"
+        let prefix = projected >= 110 ? "\u{26A0}\u{FE0F}" : "\u{2192}"
+        if projected > 999 { return "\(prefix) 999%+" }
+        return "\(prefix) \(Int(projected.rounded()))%"
     }
 
     // MARK: - Reset Label

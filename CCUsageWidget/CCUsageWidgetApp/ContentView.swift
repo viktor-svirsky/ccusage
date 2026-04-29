@@ -15,8 +15,10 @@ struct ContentView: View {
                             ToolbarItem(placement: .topBarTrailing) {
                                 Button { showSettings = true } label: {
                                     Image(systemName: "gearshape.fill")
+                                        .font(.system(size: 18))
                                         .foregroundStyle(Theme.textSecondary)
                                 }
+                                .buttonStyle(.plain)
                             }
                         }
                         .toolbarBackground(.hidden, for: .navigationBar)

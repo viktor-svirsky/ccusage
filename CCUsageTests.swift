@@ -3503,6 +3503,65 @@ func runWidgetHeartbeatTests() {
     }
 }
 
+func runFormatTokenRateTests() {
+    suite("formatTokenRate") {
+        test("under 1k shows raw") {
+            assertEqual(formatTokenRate(0), "0/min")
+            assertEqual(formatTokenRate(50), "50/min")
+            assertEqual(formatTokenRate(999), "999/min")
+        }
+        test("1k–999k uses K") {
+            assertEqual(formatTokenRate(1_000), "1K/min")
+            assertEqual(formatTokenRate(12_345), "12K/min")
+            assertEqual(formatTokenRate(999_999), "1000K/min")
+        }
+        test("1M+ uses M with one decimal") {
+            assertEqual(formatTokenRate(1_000_000), "1.0M/min")
+            assertEqual(formatTokenRate(2_893_519), "2.9M/min")
+            assertEqual(formatTokenRate(15_500_000), "15.5M/min")
+        }
+    }
+}
+
+func runFormatDepletionETATests() {
+    suite("formatDepletionETA") {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+
+        test("nil pace returns nil") {
+            assertNil(formatDepletionETA(utilization: 50, pace: nil, resetsAt: now.addingTimeInterval(3600), now: now))
+        }
+        test("nil resetsAt returns nil") {
+            assertNil(formatDepletionETA(utilization: 50, pace: 2.0, resetsAt: nil, now: now))
+        }
+        test("pace ≤ 1.0 returns nil — not depleting") {
+            assertNil(formatDepletionETA(utilization: 50, pace: 1.0, resetsAt: now.addingTimeInterval(3600), now: now))
+            assertNil(formatDepletionETA(utilization: 50, pace: 0.5, resetsAt: now.addingTimeInterval(3600), now: now))
+        }
+        test("already depleted (pct ≥ 100) returns nil") {
+            assertNil(formatDepletionETA(utilization: 100, pace: 2.0, resetsAt: now.addingTimeInterval(3600), now: now))
+            assertNil(formatDepletionETA(utilization: 105, pace: 2.0, resetsAt: now.addingTimeInterval(3600), now: now))
+        }
+        test("reset already past returns nil") {
+            assertNil(formatDepletionETA(utilization: 50, pace: 2.0, resetsAt: now.addingTimeInterval(-100), now: now))
+        }
+        test("pace 2.0 from 50% in 1h window depletes in ~30m") {
+            // pct=50 pace=2 → projected=200. (100-50)*3600/(200-50) = 1200s = 20m
+            let result = formatDepletionETA(utilization: 50, pace: 2.0, resetsAt: now.addingTimeInterval(3600), now: now)
+            assertEqual(result, "in ~20m")
+        }
+        test("multi-hour ETA formats with hours") {
+            // pct=20 pace=1.5 remaining=10800s → (80*10800)/(150-20) = 6646s ≈ 1h 50m
+            let result = formatDepletionETA(utilization: 20, pace: 1.5, resetsAt: now.addingTimeInterval(10800), now: now)
+            assertEqual(result, "in ~1h 50m")
+        }
+        test("pace 1.05 — barely over budget, ETA exists but very long") {
+            let result = formatDepletionETA(utilization: 10, pace: 1.05, resetsAt: now.addingTimeInterval(86400), now: now)
+            // remaining 24h, pct=10, projected=105. (90*86400)/(105-10) = 81853s ≈ 22h 44m
+            assertEqual(result, "in ~22h 44m")
+        }
+    }
+}
+
 // MARK: - Test Runner
 
 func runAllTests() {
@@ -3557,6 +3616,8 @@ func runAllTests() {
     runExtendedWidgetDataTests()
     runCodesignParsingTests()
     runWidgetHeartbeatTests()
+    runFormatTokenRateTests()
+    runFormatDepletionETATests()
 
     print("\n=== Results: \(passedTests)/\(totalTests) passed ===")
     if !failedTests.isEmpty {

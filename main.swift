@@ -686,6 +686,27 @@ func formatDepletionTime(secsToFull: Double) -> String {
     return "\(minutes)m"
 }
 
+/// Compact token rate label: "1.2M/min" / "850K/min". Mirrors iOS rateLabel.
+func formatTokenRate(_ rate: Int) -> String {
+    if rate >= 1_000_000 { return String(format: "%.1fM/min", Double(rate) / 1_000_000) }
+    if rate >= 1_000 { return String(format: "%.0fK/min", Double(rate) / 1_000) }
+    return "\(rate)/min"
+}
+
+/// "in ~Xh Ym" if continuing at this pace will deplete the budget before the
+/// window resets. Returns nil otherwise — caller falls back to reset time.
+/// Mirrors iOS DashboardView.depletionETA so both surfaces speak the same language.
+func formatDepletionETA(utilization pct: Double, pace: Double?, resetsAt: Date?, now: Date = Date()) -> String? {
+    guard pct < 100, let pace, pace > 1.0, let resetsAt else { return nil }
+    let remaining = resetsAt.timeIntervalSince(now)
+    guard remaining > 0 else { return nil }
+    let projected = pace * 100
+    guard projected > pct else { return nil }
+    let secsToFull = remaining * (100 - pct) / (projected - pct)
+    guard secsToFull > 0, secsToFull < remaining else { return nil }
+    return "in ~\(formatDepletionTime(secsToFull: secsToFull))"
+}
+
 func formatAdaptiveStatusLine(usage: UsageData, history: UsageHistory = UsageHistory(), now: Date = Date()) -> String {
     let d7 = usage.sevenDay.utilization
     if d7 >= 100 {
@@ -1262,8 +1283,13 @@ func formatUnifiedSessions(claudeSessions: [TrackedSession], codex: CodexSummary
 
     var lines: [String] = []
 
+    // Sort by burner first — same heuristic as iOS so the leader is at the top.
+    let sortedClaudeSessions = claudeSessions.sorted {
+        ($0.tokenRatePerMinute ?? -1) > ($1.tokenRatePerMinute ?? -1)
+    }
+
     // Claude sessions — each as a direct line
-    for session in claudeSessions {
+    for session in sortedClaudeSessions {
         var parts: [String] = []
         parts.append(session.projectName ?? "unknown")
         if let model = session.currentModel { parts.append(modelDisplayName(model)) }
@@ -1272,6 +1298,9 @@ func formatUnifiedSessions(claudeSessions: [TrackedSession], codex: CodexSummary
         }
         if session.contextWindowMax > 0 {
             parts.append("\(formatTokenCount(session.lastContextTokens))/\(formatTokenCount(session.contextWindowMax)) ctx")
+        }
+        if let rate = session.tokenRatePerMinute, rate > 0 {
+            parts.append("\(formatTokenRate(rate))")
         }
         if session.isStale { parts.append("idle") }
         lines.append(parts.joined(separator: " \u{00B7} "))
@@ -1308,8 +1337,13 @@ func formatAttributedUnifiedSessions(claudeSessions: [TrackedSession], codex: Co
 
     var isFirst = true
 
+    // Sort by burner first so the velocity leader sits at the top of the list.
+    let sortedClaudeSessions = claudeSessions.sorted {
+        ($0.tokenRatePerMinute ?? -1) > ($1.tokenRatePerMinute ?? -1)
+    }
+
     // Claude sessions — each as a direct line
-    for session in claudeSessions {
+    for session in sortedClaudeSessions {
         let name = session.projectName ?? "unknown"
         if !isFirst { result.append(NSAttributedString(string: "\n", attributes: [.font: smallFont])) }
         isFirst = false
@@ -1322,6 +1356,10 @@ func formatAttributedUnifiedSessions(claudeSessions: [TrackedSession], codex: Co
         }
         if session.contextWindowMax > 0 {
             result.append(NSAttributedString(string: " \u{00B7} \(formatTokenCount(session.lastContextTokens))/\(formatTokenCount(session.contextWindowMax)) ctx", attributes: [.font: monoFont, .foregroundColor: darkDim]))
+        }
+        if let rate = session.tokenRatePerMinute, rate > 0 {
+            let rateColor: NSColor = rate >= 5_000_000 ? colorRed : (rate >= 1_000_000 ? colorOrange : colorGreen)
+            result.append(NSAttributedString(string: " \u{00B7} \(formatTokenRate(rate))", attributes: [.font: monoFont, .foregroundColor: rateColor]))
         }
         if session.isStale {
             result.append(NSAttributedString(string: " \u{00B7} idle", attributes: [.font: smallFont, .foregroundColor: darkDim]))
@@ -1468,6 +1506,9 @@ struct TrackedSession {
     }
 }
 
+/// Main-thread only. The `sessions` dictionary and TrackedSession mutations
+/// (recordTokenSample, processNewData) are not synchronized — callers must
+/// invoke poll/access from the main thread (UI timers do this implicitly).
 class AgentTracker {
     private(set) var sessions: [String: TrackedSession] = [:]
     private let claudeDir: String
@@ -1679,13 +1720,22 @@ func formatAttributedCompactFiveHour(window: UsageWindow, sparkline: String?, ex
     // percentage bold + color-coded
     result.append(NSAttributedString(string: "\(formatValue(window.utilization))%", attributes: [.font: boldFont, .foregroundColor: color]))
 
-    // pace
-    if let pace = calculatePace(utilization: window.utilization, resetsAt: window.resetsAt, windowDuration: 5 * 3600, now: now) {
-        result.append(NSAttributedString(string: String(format: " \u{00B7} %.1fx", pace), attributes: [.font: font, .foregroundColor: paceColor(pace)]))
+    // pace → projected end (matches iOS "→ X%" format for cross-surface consistency).
+    // No separator dot — the trajectory is conceptually attached to the percentage,
+    // not a peer field; chaining 4-5 dot-separated fields read as visual clutter.
+    let pace = calculatePace(utilization: window.utilization, resetsAt: window.resetsAt, windowDuration: 5 * 3600, now: now)
+    if let pace {
+        let projected = Int((pace * 100).rounded())
+        let glyph = projected >= 110 ? "\u{26A0}" : "\u{2192}"  // ⚠ vs →
+        let projStr = projected > 999 ? "999%+" : "\(projected)%"
+        result.append(NSAttributedString(string: " \(glyph) \(projStr)", attributes: [.font: font, .foregroundColor: paceColor(pace)]))
     }
 
-    // reset time
-    if let resetStr = compactResetTime(window.resetsAt, relativeTo: now) {
+    // depletion ETA when projected to overrun within window, otherwise reset time
+    let depletionStr = formatDepletionETA(utilization: window.utilization, pace: pace, resetsAt: window.resetsAt, now: now)
+    if let depletionStr {
+        result.append(NSAttributedString(string: " \u{00B7} depletes \(depletionStr)", attributes: [.font: font, .foregroundColor: colorOrange]))
+    } else if let resetStr = compactResetTime(window.resetsAt, relativeTo: now) {
         result.append(NSAttributedString(string: " \u{00B7} resets \(resetStr)", attributes: [.font: font, .foregroundColor: dim]))
     }
 
@@ -1718,8 +1768,12 @@ func formatAttributedSevenDay(usage: UsageData, forecast: String?, dailyDays: [D
     // percentage bold + color-coded
     result.append(NSAttributedString(string: "\(formatValue(pct))%", attributes: [.font: boldFont, .foregroundColor: color]))
 
-    if let pace = calculatePace(utilization: pct, resetsAt: usage.sevenDay.resetsAt, windowDuration: 7 * 86400, now: now) {
-        result.append(NSAttributedString(string: String(format: " \u{00B7} %.1fx", pace), attributes: [.font: font, .foregroundColor: paceColor(pace)]))
+    let pace = calculatePace(utilization: pct, resetsAt: usage.sevenDay.resetsAt, windowDuration: 7 * 86400, now: now)
+    if let pace {
+        let projected = Int((pace * 100).rounded())
+        let glyph = projected >= 110 ? "\u{26A0}" : "\u{2192}"
+        let projStr = projected > 999 ? "999%+" : "\(projected)%"
+        result.append(NSAttributedString(string: " \(glyph) \(projStr)", attributes: [.font: font, .foregroundColor: paceColor(pace)]))
     }
 
     if let resetStr = compactResetTime(usage.sevenDay.resetsAt, relativeTo: now) {

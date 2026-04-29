@@ -133,7 +133,7 @@ struct DashboardView: View {
                         .foregroundStyle(Theme.textSecondary)
                 }
 
-                HStack(spacing: 6) {
+                HStack(spacing: 8) {
                     Text(Theme.paceLabel(pace))
                         .font(.caption2)
                         .foregroundStyle(Theme.textSecondary)
@@ -367,30 +367,34 @@ struct DashboardView: View {
                 ($0.tokenRatePerMinute ?? -1) > ($1.tokenRatePerMinute ?? -1)
             }
 
+            // Aggregate burn rate across all sessions. When total > 1M/min, surface
+            // it inline next to the section title so multi-session users see the
+            // combined damage without summing in their head.
+            let totalRate = sessions.compactMap(\.tokenRatePerMinute).reduce(0, +)
+
             VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 6) {
-                    Text("ACTIVE SESSIONS")
+                HStack(spacing: 8) {
+                    Text(sessions.count == 1 ? "ACTIVE SESSION" : "ACTIVE SESSIONS · \(sessions.count)")
                         .font(.caption2).fontWeight(.semibold)
                         .foregroundStyle(Theme.textTertiary)
-                    Text("·")
-                        .font(.caption2)
-                        .foregroundStyle(Theme.textTertiary)
-                    Text("\(sessions.count)")
-                        .font(.caption2).fontWeight(.semibold)
-                        .foregroundStyle(Theme.textSecondary)
+                    if sessions.count > 1, totalRate >= 1_000_000 {
+                        Text("Total \(rateLabel(totalRate))")
+                            .font(.caption2).fontWeight(.semibold)
+                            .foregroundStyle(rateColor(totalRate))
+                    }
                     Spacer()
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-                ForEach(Array(sorted.enumerated()), id: \.offset) { idx, session in
-                    sessionCard(session, showModel: showModel, isTopBurner: idx == 0 && (session.tokenRatePerMinute ?? 0) > 0)
+                ForEach(Array(sorted.enumerated()), id: \.offset) { _, session in
+                    sessionCard(session, showModel: showModel)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
-    private func sessionCard(_ session: SessionData, showModel: Bool, isTopBurner: Bool) -> some View {
+    private func sessionCard(_ session: SessionData, showModel: Bool) -> some View {
         GlassCard {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 6) {
@@ -425,7 +429,7 @@ struct DashboardView: View {
                             .font(.caption2)
                             .foregroundStyle(Theme.textSecondary)
                     }
-                    if let dur = session.durationSeconds {
+                    if let dur = session.durationSeconds, dur >= 60 {
                         Label(formatDuration(dur), systemImage: "clock")
                             .font(.caption2)
                             .foregroundStyle(Theme.textTertiary)
@@ -434,15 +438,6 @@ struct DashboardView: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .overlay(alignment: .leading) {
-                // Subtle 2px left-edge accent on the top burner so the eye lands there first.
-                if isTopBurner {
-                    Rectangle()
-                        .fill(Theme.orange)
-                        .frame(width: 2)
-                        .padding(.vertical, 4)
-                }
-            }
         }
     }
 
