@@ -81,6 +81,10 @@ struct SessionData: Codable, Equatable {
     let durationSeconds: Int?
     let contextTokens: Int?
     let contextWindowMax: Int?
+    /// Tokens-per-minute over the most recent ~5min window. Lets the iPhone
+    /// answer "which session is burning the budget right now?" rather than
+    /// only showing cumulative totals.
+    let tokenRatePerMinute: Int?
 }
 
 struct WidgetData: Codable {
@@ -1364,11 +1368,28 @@ struct TrackedSession {
     var shellRequestCount: Int = 0
     var lastContextTokens: Int = 0
     var contextWindowMax: Int = 0
+    /// Rolling samples of (timestamp, totalTokens) used to compute recent token velocity.
+    /// Capped to a 5-minute window so the rate reflects current activity, not session lifetime.
+    var tokenSamples: [(Date, Int)] = []
     private let staleThreshold: TimeInterval = 300
+    private let velocityWindow: TimeInterval = 300
 
     init(path: String) {
         self.path = path
         self.projectName = projectNameFromSessionPath(path)
+    }
+
+    /// Tokens consumed per minute over the most recent ~5min window.
+    /// Returns nil unless we have at least 30s of samples to project from — short windows
+    /// produce wildly volatile rates that mislead the eye.
+    var tokenRatePerMinute: Int? {
+        guard let oldest = tokenSamples.first, let newest = tokenSamples.last else { return nil }
+        let elapsed = newest.0.timeIntervalSince(oldest.0)
+        guard elapsed >= 30 else { return nil }
+        let delta = newest.1 - oldest.1
+        guard delta > 0 else { return nil }
+        let perMinute = Double(delta) / elapsed * 60
+        return Int(perMinute.rounded())
     }
 
     var isStale: Bool {
@@ -1425,7 +1446,20 @@ struct TrackedSession {
                 changed = true
             }
         }
+        if changed && sessionTokens.totalTokens > 0 {
+            recordTokenSample(now: Date())
+        }
         return changed
+    }
+
+    /// Append a rolling sample and prune anything outside the velocity window.
+    /// Called whenever processNewData detected a change so the rate reflects current activity.
+    mutating func recordTokenSample(now: Date) {
+        tokenSamples.append((now, sessionTokens.totalTokens))
+        let cutoff = now.addingTimeInterval(-velocityWindow)
+        if let firstKeepIdx = tokenSamples.firstIndex(where: { $0.0 >= cutoff }), firstKeepIdx > 0 {
+            tokenSamples.removeFirst(firstKeepIdx)
+        }
     }
 
     mutating func pruneCompleted(olderThan interval: TimeInterval = 300) {
@@ -2056,7 +2090,7 @@ func buildWidgetData(_ usage: UsageData, activeSessionCount: Int = 0, dailyEntri
             }
             let ctxTokens = s.lastContextTokens > 0 ? s.lastContextTokens : nil
             let ctxMax = s.contextWindowMax > 0 ? s.contextWindowMax : nil
-            return SessionData(project: project, model: model, tokens: tokens, durationSeconds: duration, contextTokens: ctxTokens, contextWindowMax: ctxMax)
+            return SessionData(project: project, model: model, tokens: tokens, durationSeconds: duration, contextTokens: ctxTokens, contextWindowMax: ctxMax, tokenRatePerMinute: s.tokenRatePerMinute)
         }.sorted { lhs, rhs in
             if lhs.project != rhs.project { return lhs.project < rhs.project }
             if (lhs.model ?? "") != (rhs.model ?? "") { return (lhs.model ?? "") < (rhs.model ?? "") }

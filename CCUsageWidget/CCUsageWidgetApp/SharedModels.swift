@@ -43,4 +43,5 @@ struct SessionData: Codable {
     let durationSeconds: Int?
     let contextTokens: Int?
     let contextWindowMax: Int?
+    let tokenRatePerMinute: Int?
 }

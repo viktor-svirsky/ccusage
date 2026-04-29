@@ -126,10 +126,10 @@ struct DashboardView: View {
 
                 HStack(alignment: .firstTextBaseline, spacing: 4) {
                     Text("\(Int(pct.rounded()))%")
-                        .font(.system(size: 32, weight: .bold, design: .rounded))
+                        .font(.system(size: 40, weight: .bold, design: .rounded))
                         .foregroundStyle(Theme.usageColor(pct, pace: pace))
                     Text(Theme.paceSymbol(pace))
-                        .font(.caption)
+                        .font(.caption2)
                         .foregroundStyle(Theme.textSecondary)
                 }
 
@@ -139,22 +139,54 @@ struct DashboardView: View {
                         .foregroundStyle(Theme.textSecondary)
                     if let trajectory = Theme.trajectoryLabel(pace) {
                         Text(trajectory)
-                            .font(.caption2).fontWeight(.medium)
-                            .foregroundStyle(Theme.usageColor(pct, pace: pace))
+                            .font(.system(size: 10, weight: .regular))
+                            .foregroundStyle(Theme.usageColor(pct, pace: pace).opacity(0.85))
                     }
                 }
 
                 ProgressView(value: min(pct / 100, 1))
                     .tint(Theme.usageColor(pct, pace: pace))
 
-                let reset = Theme.resetLabel(resetsAt)
-                if !reset.isEmpty {
-                    Text("Resets in \(reset)")
-                        .font(.caption2)
-                        .foregroundStyle(Theme.textTertiary)
-                }
+                bottomLabel(pct: pct, pace: pace, resetsAt: resetsAt)
             }
         }
+    }
+
+    /// Switch between "Resets in Xh" and "Depletes in ~Xm" depending on whether
+    /// the user is on track to deplete before reset. Acts as the "now what" line.
+    @ViewBuilder
+    private func bottomLabel(pct: Double, pace: Double?, resetsAt: TimeInterval?) -> some View {
+        let reset = Theme.resetLabel(resetsAt)
+        if let depletion = depletionETA(pct: pct, pace: pace, resetsAt: resetsAt) {
+            Text("Depletes in \(depletion)")
+                .font(.caption2).fontWeight(.semibold)
+                .foregroundStyle(Theme.usageColor(pct, pace: pace))
+        } else if !reset.isEmpty {
+            Text("Resets in \(reset)")
+                .font(.caption2)
+                .foregroundStyle(Theme.textTertiary)
+        }
+    }
+
+    /// Returns "~25m" if continuing at this pace will deplete the budget before
+    /// the window resets. Returns nil otherwise — caller falls back to reset time.
+    private func depletionETA(pct: Double, pace: Double?, resetsAt: TimeInterval?) -> String? {
+        guard pct < 100, let pace, pace > 1.0, let resetsAt else { return nil }
+        let now = Date().timeIntervalSince1970
+        let remaining = resetsAt - now
+        guard remaining > 0 else { return nil }
+        // pace = pct / expectedPctElapsed → projected end = pace × 100.
+        // Time to deplete from current pct: (100 - pct) / (pct / elapsed) = remaining × (100 - pct) / (pace × 100 - pct)
+        // Equivalently, given projection: time-to-100 = remaining × (100 - pct) / (projected - pct).
+        let projected = pace * 100
+        guard projected > pct else { return nil }
+        let secsToFull = remaining * (100 - pct) / (projected - pct)
+        guard secsToFull > 0, secsToFull < remaining else { return nil }
+        let total = Int(secsToFull)
+        let h = total / 3600
+        let m = (total % 3600) / 60
+        if h >= 1 { return m > 0 ? "~\(h)h \(m)m" : "~\(h)h" }
+        return "~\(m)m"
     }
 
     // MARK: - Depletion Banner
@@ -329,6 +361,12 @@ struct DashboardView: View {
             let uniqueModels = Set(sessions.compactMap { $0.model?.lowercased() })
             let showModel = uniqueModels.count > 1
 
+            // Sort by burner first: highest token velocity at the top so the user
+            // immediately sees which session is consuming the budget.
+            let sorted = sessions.sorted {
+                ($0.tokenRatePerMinute ?? -1) > ($1.tokenRatePerMinute ?? -1)
+            }
+
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 6) {
                     Text("ACTIVE SESSIONS")
@@ -344,21 +382,33 @@ struct DashboardView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-                ForEach(Array(sessions.enumerated()), id: \.offset) { _, session in
-                    sessionCard(session, showModel: showModel)
+                ForEach(Array(sorted.enumerated()), id: \.offset) { idx, session in
+                    sessionCard(session, showModel: showModel, isTopBurner: idx == 0 && (session.tokenRatePerMinute ?? 0) > 0)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
-    private func sessionCard(_ session: SessionData, showModel: Bool) -> some View {
+    private func sessionCard(_ session: SessionData, showModel: Bool, isTopBurner: Bool) -> some View {
         GlassCard {
             VStack(alignment: .leading, spacing: 8) {
-                Text(session.project)
-                    .font(.subheadline).fontWeight(.medium)
-                    .foregroundStyle(Theme.textPrimary)
-                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(session.project)
+                        .font(.subheadline).fontWeight(.medium)
+                        .foregroundStyle(Theme.textPrimary)
+                        .lineLimit(1)
+                    if let rate = session.tokenRatePerMinute, rate > 0 {
+                        Text(rateLabel(rate))
+                            .font(.caption2).fontWeight(.semibold)
+                            .foregroundStyle(rateColor(rate))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(rateColor(rate).opacity(0.15))
+                            .clipShape(Capsule())
+                    }
+                    Spacer()
+                }
                 HStack(spacing: 14) {
                     if showModel, let model = session.model {
                         Label(modelDisplayName(model), systemImage: "cpu")
@@ -384,7 +434,31 @@ struct DashboardView: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            .overlay(alignment: .leading) {
+                // Subtle 2px left-edge accent on the top burner so the eye lands there first.
+                if isTopBurner {
+                    Rectangle()
+                        .fill(Theme.orange)
+                        .frame(width: 2)
+                        .padding(.vertical, 4)
+                }
+            }
         }
+    }
+
+    private func rateLabel(_ rate: Int) -> String {
+        if rate >= 1_000_000 { return String(format: "%.1fM/min", Double(rate) / 1_000_000) }
+        if rate >= 1_000 { return String(format: "%.0fK/min", Double(rate) / 1_000) }
+        return "\(rate)/min"
+    }
+
+    private func rateColor(_ rate: Int) -> Color {
+        // Calibrated for prompt-cache-heavy Claude Code usage: cache_read inflates
+        // raw token counts. Typical active session lands at 1–3M tok/min on Opus
+        // with a warm cache. Anything above 5M is heavy / parallel-agent burst.
+        if rate >= 5_000_000 { return Theme.red }
+        if rate >= 1_000_000 { return Theme.orange }
+        return Theme.green
     }
 
     private func modelDisplayName(_ model: String) -> String {

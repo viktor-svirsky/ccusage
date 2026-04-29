@@ -87,7 +87,7 @@ func runWidgetDataTests() {
                 sonnetUtilization: 25,
                 haikuUtilization: 15,
                 dailyEntries: [DailyEntryData(date: "2026-04-13", usage: 40)],
-                sessions: [SessionData(project: "test-proj", model: "opus", tokens: 5000, durationSeconds: 600, contextTokens: 60_000, contextWindowMax: 200_000)],
+                sessions: [SessionData(project: "test-proj", model: "opus", tokens: 5000, durationSeconds: 600, contextTokens: 60_000, contextWindowMax: 200_000, tokenRatePerMinute: 800)],
                 extraUsageUtilization: 12
             )
             let data = try! JSONEncoder().encode(original)

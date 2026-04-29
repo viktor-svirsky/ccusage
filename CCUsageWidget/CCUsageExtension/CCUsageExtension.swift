@@ -40,8 +40,8 @@ struct WidgetData: Codable {
         haikuUtilization: 15,
         dailyEntries: nil,
         sessions: [
-            SessionData(project: "my-project", model: "opus", tokens: 5200, durationSeconds: 720, contextTokens: 60_000, contextWindowMax: 200_000),
-            SessionData(project: "other-proj", model: "sonnet", tokens: 1100, durationSeconds: 180, contextTokens: 30_000, contextWindowMax: 200_000)
+            SessionData(project: "my-project", model: "opus", tokens: 5200, durationSeconds: 720, contextTokens: 60_000, contextWindowMax: 200_000, tokenRatePerMinute: 1200),
+            SessionData(project: "other-proj", model: "sonnet", tokens: 1100, durationSeconds: 180, contextTokens: 30_000, contextWindowMax: 200_000, tokenRatePerMinute: 400)
         ],
         extraUsageUtilization: 12
     )
@@ -59,6 +59,7 @@ struct SessionData: Codable {
     let durationSeconds: Int?
     let contextTokens: Int?
     let contextWindowMax: Int?
+    let tokenRatePerMinute: Int?
 }
 
 // MARK: - Shared Config
