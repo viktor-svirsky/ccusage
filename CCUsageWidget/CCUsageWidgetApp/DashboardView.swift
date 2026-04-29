@@ -12,7 +12,6 @@ struct DashboardView: View {
                     utilizationCards(data)
                     depletionBanner(data)
                     modelBreakdown(data)
-                    quickStats(data)
                     weeklyActivityCard(data)
                     activeSessions(data)
                 } else {
@@ -81,24 +80,49 @@ struct DashboardView: View {
                 label: "5-Hour",
                 pct: data.fiveHourUtilization,
                 pace: data.fiveHourPace,
-                resetsAt: data.fiveHourResetsAt
+                resetsAt: data.fiveHourResetsAt,
+                extraChip: nil
             )
             utilizationCard(
                 label: "7-Day",
                 pct: data.sevenDayUtilization,
                 pace: data.sevenDayPace,
-                resetsAt: data.sevenDayResetsAt
+                resetsAt: data.sevenDayResetsAt,
+                extraChip: extraChipText(data)
             )
         }
         .opacity(Theme.isStale(data.updatedAt) ? 0.6 : 1.0)
     }
 
-    private func utilizationCard(label: String, pct: Double, pace: Double?, resetsAt: TimeInterval?) -> some View {
+    /// Extra usage is a 7-day-window concept (it kicks in once the 7d budget is exhausted),
+    /// so its indicator lives inside the 7-Day card rather than as a top-level stat.
+    /// Hidden when the user hasn't enabled extra usage at all.
+    private func extraChipText(_ data: WidgetData) -> String? {
+        guard data.extraUsageEnabled == true else { return nil }
+        if let pct = data.extraUsageUtilization, pct > 0 {
+            return "Extra \(Int(pct.rounded()))%"
+        }
+        return "Extra"
+    }
+
+    private func utilizationCard(label: String, pct: Double, pace: Double?, resetsAt: TimeInterval?, extraChip: String?) -> some View {
         GlassCard {
             VStack(alignment: .leading, spacing: 10) {
-                Text(label.uppercased())
-                    .font(.caption2).fontWeight(.semibold)
-                    .foregroundStyle(Theme.textTertiary)
+                HStack {
+                    Text(label.uppercased())
+                        .font(.caption2).fontWeight(.semibold)
+                        .foregroundStyle(Theme.textTertiary)
+                    Spacer()
+                    if let extraChip {
+                        Text(extraChip)
+                            .font(.caption2).fontWeight(.semibold)
+                            .foregroundStyle(Theme.extraPurple)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Theme.extraPurple.opacity(0.15))
+                            .clipShape(Capsule())
+                    }
+                }
 
                 HStack(alignment: .firstTextBaseline, spacing: 4) {
                     Text("\(Int(pct.rounded()))%")
@@ -222,49 +246,6 @@ struct DashboardView: View {
 
     // MARK: - Quick Stats
 
-    @ViewBuilder
-    private func quickStats(_ data: WidgetData) -> some View {
-        let sessionCount = data.activeSessionCount ?? data.sessions?.count ?? 0
-        let extraOn = data.extraUsageEnabled == true
-        let extraPct = data.extraUsageUtilization
-
-        HStack(spacing: 18) {
-            // Sessions
-            HStack(spacing: 6) {
-                Image(systemName: "bolt.fill")
-                    .font(.caption)
-                    .foregroundStyle(sessionCount > 0 ? Theme.green : Theme.textTertiary)
-                Text("\(sessionCount)")
-                    .font(.subheadline).fontWeight(.semibold)
-                    .foregroundStyle(Theme.textPrimary)
-                Text(sessionCount == 1 ? "session" : "sessions")
-                    .font(.caption)
-                    .foregroundStyle(Theme.textSecondary)
-            }
-
-            // Extra usage
-            HStack(spacing: 6) {
-                Image(systemName: "arrow.up.right")
-                    .font(.caption)
-                    .foregroundStyle(extraOn ? Theme.green : Theme.textTertiary)
-                Text("Extra")
-                    .font(.caption)
-                    .foregroundStyle(Theme.textSecondary)
-                if let pct = extraPct, pct > 0 {
-                    Text("\(Int(pct.rounded()))%")
-                        .font(.subheadline).fontWeight(.semibold)
-                        .foregroundStyle(Theme.textPrimary)
-                } else {
-                    Text(extraOn ? "On" : "Off")
-                        .font(.subheadline).fontWeight(.semibold)
-                        .foregroundStyle(Theme.textPrimary)
-                }
-            }
-
-            Spacer()
-        }
-        .padding(.horizontal, 4)
-    }
 
     // MARK: - Weekly Activity (Usage %)
 
@@ -349,10 +330,19 @@ struct DashboardView: View {
             let showModel = uniqueModels.count > 1
 
             VStack(alignment: .leading, spacing: 10) {
-                Text("ACTIVE SESSIONS")
-                    .font(.caption2).fontWeight(.semibold)
-                    .foregroundStyle(Theme.textTertiary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                HStack(spacing: 6) {
+                    Text("ACTIVE SESSIONS")
+                        .font(.caption2).fontWeight(.semibold)
+                        .foregroundStyle(Theme.textTertiary)
+                    Text("·")
+                        .font(.caption2)
+                        .foregroundStyle(Theme.textTertiary)
+                    Text("\(sessions.count)")
+                        .font(.caption2).fontWeight(.semibold)
+                        .foregroundStyle(Theme.textSecondary)
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
 
                 ForEach(Array(sessions.enumerated()), id: \.offset) { _, session in
                     sessionCard(session, showModel: showModel)

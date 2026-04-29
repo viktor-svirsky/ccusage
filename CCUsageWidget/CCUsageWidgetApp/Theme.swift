@@ -22,6 +22,7 @@ enum Theme {
     static let green = Color(red: 74 / 255, green: 222 / 255, blue: 128 / 255)       // #4ade80
     static let orange = Color(red: 251 / 255, green: 146 / 255, blue: 60 / 255)       // #fb923c
     static let red = Color(red: 244 / 255, green: 62 / 255, blue: 94 / 255)           // #f43e5e
+    static let extraPurple = Color(red: 168 / 255, green: 85 / 255, blue: 247 / 255) // #a855f7
 
     // MARK: - Model Colors
 
