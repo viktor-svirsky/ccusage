@@ -10,14 +10,12 @@ struct WidgetData: Codable {
     let updatedAt: TimeInterval
     let extraUsageEnabled: Bool?
     let depletionSeconds: Double?
-    let todayCost: Double?
     let activeSessionCount: Int?
     // v3 fields
     let opusUtilization: Double?
     let sonnetUtilization: Double?
     let haikuUtilization: Double?
     let dailyEntries: [DailyEntryData]?
-    let dailyCosts: [DailyCostData]?
     let sessions: [SessionData]?
     let extraUsageUtilization: Double?
 
@@ -27,9 +25,9 @@ struct WidgetData: Codable {
         fiveHourResetsAt: Date().addingTimeInterval(14400).timeIntervalSince1970,
         sevenDayResetsAt: Date().addingTimeInterval(4 * 86400).timeIntervalSince1970,
         updatedAt: Date().timeIntervalSince1970,
-        extraUsageEnabled: nil, depletionSeconds: nil, todayCost: nil, activeSessionCount: nil,
+        extraUsageEnabled: nil, depletionSeconds: nil, activeSessionCount: nil,
         opusUtilization: nil, sonnetUtilization: nil, haikuUtilization: nil,
-        dailyEntries: nil, dailyCosts: nil, sessions: nil, extraUsageUtilization: nil
+        dailyEntries: nil, sessions: nil, extraUsageUtilization: nil
     )
 }
 
@@ -38,14 +36,12 @@ struct DailyEntryData: Codable {
     let usage: Double
 }
 
-struct DailyCostData: Codable {
-    let date: String
-    let cost: Double
-}
-
 struct SessionData: Codable {
     let project: String
     let model: String?
     let tokens: Int?
     let durationSeconds: Int?
+    let contextTokens: Int?
+    let contextWindowMax: Int?
+    let tokenRatePerMinute: Int?
 }

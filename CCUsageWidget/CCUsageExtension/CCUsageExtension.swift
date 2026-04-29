@@ -15,14 +15,12 @@ struct WidgetData: Codable {
     // v2 fields — optional for backward compatibility
     let extraUsageEnabled: Bool?
     let depletionSeconds: Double?
-    let todayCost: Double?
     let activeSessionCount: Int?
     // v3 fields
     let opusUtilization: Double?
     let sonnetUtilization: Double?
     let haikuUtilization: Double?
     let dailyEntries: [DailyEntryData]?
-    let dailyCosts: [DailyCostData]?
     let sessions: [SessionData]?
     let extraUsageUtilization: Double?
 
@@ -36,16 +34,14 @@ struct WidgetData: Codable {
         updatedAt: Date().timeIntervalSince1970,
         extraUsageEnabled: true,
         depletionSeconds: nil,
-        todayCost: 2.50,
         activeSessionCount: 2,
         opusUtilization: 60,
         sonnetUtilization: 25,
         haikuUtilization: 15,
         dailyEntries: nil,
-        dailyCosts: nil,
         sessions: [
-            SessionData(project: "my-project", model: "opus", tokens: 5200, durationSeconds: 720),
-            SessionData(project: "other-proj", model: "sonnet", tokens: 1100, durationSeconds: 180)
+            SessionData(project: "my-project", model: "opus", tokens: 5200, durationSeconds: 720, contextTokens: 60_000, contextWindowMax: 200_000, tokenRatePerMinute: 1200),
+            SessionData(project: "other-proj", model: "sonnet", tokens: 1100, durationSeconds: 180, contextTokens: 30_000, contextWindowMax: 200_000, tokenRatePerMinute: 400)
         ],
         extraUsageUtilization: 12
     )
@@ -56,16 +52,14 @@ struct DailyEntryData: Codable {
     let usage: Double
 }
 
-struct DailyCostData: Codable {
-    let date: String
-    let cost: Double
-}
-
 struct SessionData: Codable {
     let project: String
     let model: String?
     let tokens: Int?
     let durationSeconds: Int?
+    let contextTokens: Int?
+    let contextWindowMax: Int?
+    let tokenRatePerMinute: Int?
 }
 
 // MARK: - Shared Config
@@ -104,9 +98,15 @@ private let veryStaleThreshold: TimeInterval = 3600 // 1 hour
 // MARK: - Helpers
 
 private func usageColor(_ pct: Double, pace: Double?) -> Color {
-    let effective = pace.map { max(pct, pct * $0) } ?? pct
-    if effective >= 80 { return .red }
-    if effective >= 50 { return Color(red: 1, green: 0.55, blue: 0) }
+    // Color follows the trajectory math (pace × 100 = projected end-of-window pct),
+    // matching the `→ X%` label so the eye reads them as one signal.
+    if pct >= 95 { return .red }
+    if pct >= 80 { return Color(red: 1, green: 0.55, blue: 0) }
+    if let p = pace, p > 0 {
+        let projected = p * 100
+        if projected >= 110 { return .red }
+        if projected >= 90 { return Color(red: 1, green: 0.55, blue: 0) }
+    }
     return .green
 }
 
@@ -117,14 +117,29 @@ private func paceSymbol(_ pace: Double?) -> String {
     return "●"
 }
 
+/// Projected end-of-window utilization. pace × 100 = where you'll land at reset
+/// if you continue consuming at the current rate.
+/// Uses a warning glyph "⚠" prefix when projected to overrun so the signal
+/// survives tinted/monochrome widget rendering on iOS 18 home screens.
+/// Caps at 999%+ for runaway days.
+private func trajectoryLabel(_ pace: Double?) -> String? {
+    guard let p = pace, p > 0 else { return nil }
+    let projected = p * 100
+    let prefix = projected >= 110 ? "\u{26A0}\u{FE0F}" : "\u{2192}"  // ⚠ vs →
+    if projected > 999 { return "\(prefix) 999%+" }
+    return "\(prefix) \(Int(projected.rounded()))%"
+}
+
 private func resetLabel(_ ts: TimeInterval?) -> String {
     guard let ts else { return "" }
     let secs = ts - Date().timeIntervalSince1970
     guard secs > 0 else { return "resetting" }
-    let h = Int(secs) / 3600
-    let m = (Int(secs) % 3600) / 60
-    if h >= 48 { return "\(h / 24)d" }
-    if h >= 1  { return "\(h)h \(m)m" }
+    let total = Int(secs)
+    let d = total / 86400
+    let h = (total % 86400) / 3600
+    let m = (total % 3600) / 60
+    if d >= 1 { return h > 0 ? "\(d)d \(h)h" : "\(d)d" }
+    if h >= 1 { return m > 0 ? "\(h)h \(m)m" : "\(h)h" }
     return "\(m)m"
 }
 
@@ -209,7 +224,10 @@ struct CCUsageProvider: AppIntentTimelineProvider {
 
     func timeline(for configuration: CCUsageIntent, in context: Context) async -> Timeline<CCUsageEntry> {
         let data = await fetchData(intentURL: configuration.widgetURL)
-        let predicted = buildPredictiveTimeline(base: data, from: Date(), count: 15, intervalSeconds: 120)
+        // Span 10 minutes with 1-minute projections. Tighter than 30min to keep predictive drift
+        // small (<10% utilization change between fetches in normal usage). After the last entry,
+        // iOS rebuilds the timeline → new network fetch → fresh data. Budget-safe at ~6 rebuilds/hr.
+        let predicted = buildPredictiveTimeline(base: data, from: Date(), count: 10, intervalSeconds: 60)
         let entries = predicted.map { CCUsageEntry(date: $0.date, data: $0.data) }
         return Timeline(entries: entries, policy: .atEnd)
     }
@@ -253,9 +271,10 @@ struct CCUsageProvider: AppIntentTimelineProvider {
     }
 
     private func decodeCached(_ defaults: UserDefaults) -> WidgetData? {
-        // Reject cache older than 1 hour — show "No Data" instead of stale numbers
+        // Reject cache older than 30 minutes — beyond this the predictive timeline drift
+        // can mislead. Showing "No Data" is more honest than confidently wrong numbers.
         let ts = defaults.double(forKey: Self.cachedDataTimestampKey)
-        if ts > 0, Date().timeIntervalSince1970 - ts > 3600 {
+        if ts > 0, Date().timeIntervalSince1970 - ts > 1800 {
             return nil
         }
         guard let data = defaults.data(forKey: Self.cachedDataKey),
@@ -328,6 +347,11 @@ private struct SmallView: View {
             ProgressView(value: min(pct / 100, 1))
                 .tint(usageColor(pct, pace: pace))
                 .scaleEffect(x: 1, y: 0.8, anchor: .center)
+            if let trajectory = trajectoryLabel(pace) {
+                Text(trajectory)
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(usageColor(pct, pace: pace))
+            }
         }
     }
 }
@@ -356,20 +380,9 @@ private struct MediumView: View {
                      pace: data.sevenDayPace,
                      reset: data.sevenDayResetsAt)
 
-            // Stats row: cost, sessions, extra usage
+            // Stats row: sessions, extra usage
             Divider()
             HStack(spacing: 0) {
-                // Today's cost
-                HStack(spacing: 3) {
-                    Image(systemName: "dollarsign.circle.fill")
-                        .font(.system(size: 10))
-                        .foregroundStyle(extraPurple)
-                    Text(data.todayCost.map { String(format: "$%.2f", $0) } ?? "--")
-                        .font(.caption2).fontWeight(.medium)
-                        .foregroundStyle(.primary)
-                }
-                .frame(maxWidth: .infinity)
-
                 // Active sessions
                 HStack(spacing: 3) {
                     Image(systemName: "bolt.fill")
@@ -417,6 +430,11 @@ private struct MediumView: View {
             HStack {
                 Text(label)
                     .font(.caption2).fontWeight(.semibold).foregroundStyle(.secondary)
+                if let trajectory = trajectoryLabel(pace) {
+                    Text(trajectory)
+                        .font(.caption2).fontWeight(.medium)
+                        .foregroundStyle(usageColor(pct, pace: pace))
+                }
                 Spacer()
                 if !resetStr.isEmpty {
                     Text(resetStr)
@@ -427,7 +445,8 @@ private struct MediumView: View {
                 Text("\(Int(pct.rounded()))%")
                     .font(.headline).fontWeight(.bold)
                     .foregroundStyle(usageColor(pct, pace: pace))
-                    .frame(width: 46, alignment: .leading)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
                 ProgressView(value: min(pct / 100, 1))
                     .tint(usageColor(pct, pace: pace))
                 Text(paceSymbol(pace))
@@ -503,6 +522,12 @@ private struct LargeView: View {
                     .foregroundStyle(usageColor(pct, pace: pace))
                 Text(paceSymbol(pace))
                     .font(.caption2).foregroundStyle(.secondary)
+                Spacer()
+                if let trajectory = trajectoryLabel(pace) {
+                    Text(trajectory)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(usageColor(pct, pace: pace))
+                }
             }
             ProgressView(value: min(pct / 100, 1))
                 .tint(usageColor(pct, pace: pace))
@@ -572,15 +597,6 @@ private struct LargeView: View {
 
     private var statsRow: some View {
         HStack(spacing: 0) {
-            HStack(spacing: 3) {
-                Image(systemName: "dollarsign.circle.fill")
-                    .font(.system(size: 10))
-                    .foregroundStyle(extraPurple)
-                Text(data.todayCost.map { String(format: "$%.2f", $0) } ?? "--")
-                    .font(.caption2).fontWeight(.medium)
-            }
-            .frame(maxWidth: .infinity)
-
             HStack(spacing: 3) {
                 Image(systemName: "bolt.fill")
                     .font(.system(size: 10))

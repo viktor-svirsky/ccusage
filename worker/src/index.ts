@@ -20,7 +20,7 @@ interface PutBody {
 		sonnetUtilization?: number | null;
 		haikuUtilization?: number | null;
 		dailyEntries?: { date: string; usage: number }[] | null;
-		sessions?: { project: string; model?: string | null; tokens?: number | null; durationSeconds?: number | null }[] | null;
+		sessions?: { project: string; model?: string | null; tokens?: number | null; durationSeconds?: number | null; contextTokens?: number | null; contextWindowMax?: number | null; tokenRatePerMinute?: number | null }[] | null;
 		extraUsageUtilization?: number | null;
 	};
 }

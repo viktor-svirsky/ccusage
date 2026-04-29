@@ -4,21 +4,35 @@ import WidgetKit
 struct ContentView: View {
     @StateObject private var dataService = DataService()
     @Environment(\.scenePhase) private var scenePhase
+    @State private var showSettings = false
 
     var body: some View {
         Group {
             if dataService.isConnected {
-                TabView {
+                NavigationStack {
                     DashboardView()
-                        .tabItem {
-                            Label("Dashboard", systemImage: "gauge.with.dots.needle.33percent")
+                        .toolbar {
+                            ToolbarItem(placement: .topBarTrailing) {
+                                Button { showSettings = true } label: {
+                                    Image(systemName: "gearshape.fill")
+                                        .font(.system(size: 18))
+                                        .foregroundStyle(Theme.textSecondary)
+                                }
+                                .buttonStyle(.plain)
+                            }
                         }
-                    SettingsView()
-                        .tabItem {
-                            Label("Settings", systemImage: "gearshape.fill")
-                        }
+                        .toolbarBackground(.hidden, for: .navigationBar)
                 }
-                .tint(.blue)
+                .sheet(isPresented: $showSettings) {
+                    NavigationStack {
+                        SettingsView()
+                            .toolbar {
+                                ToolbarItem(placement: .topBarTrailing) {
+                                    Button("Done") { showSettings = false }
+                                }
+                            }
+                    }
+                }
             } else {
                 OnboardingView()
             }

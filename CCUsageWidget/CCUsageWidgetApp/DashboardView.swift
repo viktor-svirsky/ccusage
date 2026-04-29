@@ -6,13 +6,12 @@ struct DashboardView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
-                header
                 if let data = dataService.data {
+                    syncRow(data)
                     staleBanner(data)
                     utilizationCards(data)
                     depletionBanner(data)
                     modelBreakdown(data)
-                    quickStats(data)
                     weeklyActivityCard(data)
                     activeSessions(data)
                 } else {
@@ -20,32 +19,29 @@ struct DashboardView: View {
                 }
             }
             .padding(.horizontal, 16)
+            .padding(.top, 4)
             .padding(.bottom, 24)
         }
         .background(Theme.backgroundGradient.ignoresSafeArea())
+        .navigationTitle("")
+        .navigationBarTitleDisplayMode(.inline)
         .refreshable { await dataService.fetch() }
     }
 
-    // MARK: - Header
-
-    private var header: some View {
-        HStack {
-            Text("Dashboard")
-                .font(.title2).fontWeight(.bold)
-                .foregroundStyle(Theme.textPrimary)
+    /// Inline sync indicator at the top of the scroll content. Kept out of the
+    /// toolbar because iOS wraps toolbar items in button chrome that truncated
+    /// "just now" to "ju…" and made the timestamp look like a tappable pill.
+    private func syncRow(_ data: WidgetData) -> some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(Theme.syncDotColor(data.updatedAt))
+                .frame(width: 7, height: 7)
+            Text(updatedLabel(data.updatedAt))
+                .font(.caption)
+                .foregroundStyle(Theme.textSecondary)
             Spacer()
-            if let data = dataService.data {
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(Theme.green)
-                        .frame(width: 8, height: 8)
-                    Text(updatedLabel(data.updatedAt))
-                        .font(.caption)
-                        .foregroundStyle(Theme.textSecondary)
-                }
-            }
         }
-        .padding(.top, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: - Stale Banner
@@ -84,49 +80,113 @@ struct DashboardView: View {
                 label: "5-Hour",
                 pct: data.fiveHourUtilization,
                 pace: data.fiveHourPace,
-                resetsAt: data.fiveHourResetsAt
+                resetsAt: data.fiveHourResetsAt,
+                extraChip: nil
             )
             utilizationCard(
                 label: "7-Day",
                 pct: data.sevenDayUtilization,
                 pace: data.sevenDayPace,
-                resetsAt: data.sevenDayResetsAt
+                resetsAt: data.sevenDayResetsAt,
+                extraChip: extraChipText(data)
             )
         }
         .opacity(Theme.isStale(data.updatedAt) ? 0.6 : 1.0)
     }
 
-    private func utilizationCard(label: String, pct: Double, pace: Double?, resetsAt: TimeInterval?) -> some View {
+    /// Extra usage is a 7-day-window concept (it kicks in once the 7d budget is exhausted),
+    /// so its indicator lives inside the 7-Day card rather than as a top-level stat.
+    /// Hidden when the user hasn't enabled extra usage at all.
+    private func extraChipText(_ data: WidgetData) -> String? {
+        guard data.extraUsageEnabled == true else { return nil }
+        if let pct = data.extraUsageUtilization, pct > 0 {
+            return "Extra \(Int(pct.rounded()))%"
+        }
+        return "Extra"
+    }
+
+    private func utilizationCard(label: String, pct: Double, pace: Double?, resetsAt: TimeInterval?, extraChip: String?) -> some View {
         GlassCard {
             VStack(alignment: .leading, spacing: 10) {
-                Text(label.uppercased())
-                    .font(.caption2).fontWeight(.semibold)
-                    .foregroundStyle(Theme.textTertiary)
+                HStack {
+                    Text(label.uppercased())
+                        .font(.caption2).fontWeight(.semibold)
+                        .foregroundStyle(Theme.textTertiary)
+                    Spacer()
+                    if let extraChip {
+                        Text(extraChip)
+                            .font(.caption2).fontWeight(.semibold)
+                            .foregroundStyle(Theme.extraPurple)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Theme.extraPurple.opacity(0.15))
+                            .clipShape(Capsule())
+                    }
+                }
 
                 HStack(alignment: .firstTextBaseline, spacing: 4) {
                     Text("\(Int(pct.rounded()))%")
-                        .font(.system(size: 32, weight: .bold, design: .rounded))
+                        .font(.system(size: 40, weight: .bold, design: .rounded))
                         .foregroundStyle(Theme.usageColor(pct, pace: pace))
                     Text(Theme.paceSymbol(pace))
-                        .font(.caption)
+                        .font(.caption2)
                         .foregroundStyle(Theme.textSecondary)
                 }
 
-                Text(Theme.paceLabel(pace))
-                    .font(.caption2)
-                    .foregroundStyle(Theme.textSecondary)
+                HStack(spacing: 8) {
+                    Text(Theme.paceLabel(pace))
+                        .font(.caption2)
+                        .foregroundStyle(Theme.textSecondary)
+                    if let trajectory = Theme.trajectoryLabel(pace) {
+                        Text(trajectory)
+                            .font(.system(size: 10, weight: .regular))
+                            .foregroundStyle(Theme.usageColor(pct, pace: pace).opacity(0.85))
+                    }
+                }
 
                 ProgressView(value: min(pct / 100, 1))
                     .tint(Theme.usageColor(pct, pace: pace))
 
-                let reset = Theme.resetLabel(resetsAt)
-                if !reset.isEmpty {
-                    Text("Resets in \(reset)")
-                        .font(.caption2)
-                        .foregroundStyle(Theme.textTertiary)
-                }
+                bottomLabel(pct: pct, pace: pace, resetsAt: resetsAt)
             }
         }
+    }
+
+    /// Switch between "Resets in Xh" and "Depletes in ~Xm" depending on whether
+    /// the user is on track to deplete before reset. Acts as the "now what" line.
+    @ViewBuilder
+    private func bottomLabel(pct: Double, pace: Double?, resetsAt: TimeInterval?) -> some View {
+        let reset = Theme.resetLabel(resetsAt)
+        if let depletion = depletionETA(pct: pct, pace: pace, resetsAt: resetsAt) {
+            Text("Depletes in \(depletion)")
+                .font(.caption2).fontWeight(.semibold)
+                .foregroundStyle(Theme.usageColor(pct, pace: pace))
+        } else if !reset.isEmpty {
+            Text("Resets in \(reset)")
+                .font(.caption2)
+                .foregroundStyle(Theme.textTertiary)
+        }
+    }
+
+    /// Returns "~25m" if continuing at this pace will deplete the budget before
+    /// the window resets. Returns nil otherwise — caller falls back to reset time.
+    private func depletionETA(pct: Double, pace: Double?, resetsAt: TimeInterval?) -> String? {
+        guard pct < 100, let pace, pace > 1.0, let resetsAt else { return nil }
+        let now = Date().timeIntervalSince1970
+        let remaining = resetsAt - now
+        guard remaining > 0 else { return nil }
+        // pace = pct / expectedPctElapsed → projected end = pace × 100.
+        // Time to deplete from current pct: (100 - pct) / (pct / elapsed) = remaining × (100 - pct) / (pace × 100 - pct)
+        // Equivalently, given projection: time-to-100 = remaining × (100 - pct) / (projected - pct).
+        let projected = pace * 100
+        guard projected > pct else { return nil }
+        let secsToFull = remaining * (100 - pct) / (projected - pct)
+        guard secsToFull > 0, secsToFull < remaining else { return nil }
+        let total = Int(secsToFull)
+        let h = total / 3600
+        let m = (total % 3600) / 60
+        if h >= 1 { return m > 0 ? "~\(h)h \(m)m" : "~\(h)h" }
+        return "~\(m)m"
     }
 
     // MARK: - Depletion Banner
@@ -218,60 +278,17 @@ struct DashboardView: View {
 
     // MARK: - Quick Stats
 
-    private func quickStats(_ data: WidgetData) -> some View {
-        HStack(spacing: 10) {
-            statCard(
-                icon: "dollarsign.circle.fill",
-                color: Theme.costPurple,
-                value: data.todayCost.map { String(format: "$%.2f", $0) } ?? "--",
-                label: "Today"
-            )
-            statCard(
-                icon: "bolt.fill",
-                color: Theme.green,
-                value: "\(data.activeSessionCount ?? data.sessions?.count ?? 0)",
-                label: "Sessions"
-            )
-            statCard(
-                icon: "arrow.up.right",
-                color: data.extraUsageEnabled == true ? Theme.green : Theme.textTertiary,
-                value: data.extraUsageEnabled == true ? "On" : "Off",
-                label: "Extra"
-            )
-        }
-    }
 
-    private func statCard(icon: String, color: Color, value: String, label: String) -> some View {
-        GlassCard {
-            VStack(spacing: 6) {
-                Image(systemName: icon)
-                    .font(.caption)
-                    .foregroundStyle(color)
-                Text(value)
-                    .font(.subheadline).fontWeight(.semibold)
-                    .foregroundStyle(Theme.textPrimary)
-                Text(label)
-                    .font(.caption2)
-                    .foregroundStyle(Theme.textTertiary)
-            }
-            .frame(maxWidth: .infinity)
-        }
-    }
-
-    // MARK: - Weekly Activity (Usage % + Cost $)
+    // MARK: - Weekly Activity (Usage %)
 
     @ViewBuilder
     private func weeklyActivityCard(_ data: WidgetData) -> some View {
         let entries = data.dailyEntries ?? []
-        let costs = data.dailyCosts ?? []
-        let hasData = !entries.isEmpty || !costs.isEmpty
-        if hasData {
-            let costByDate: [String: Double] = Dictionary(uniqueKeysWithValues: costs.map { ($0.date, $0.cost) })
-            let dates = mergedDates(entries: entries, costs: costs)
+        if !entries.isEmpty {
+            let dates = entries.map(\.date).sorted()
             let maxUsage = max(entries.map(\.usage).max() ?? 1, 1)
-            let maxCost = max(costs.map(\.cost).max() ?? 0.01, 0.01)
-            let weekCost = costs.map(\.cost).reduce(0, +)
-            let barHeight: CGFloat = 90
+            let barHeight: CGFloat = 96
+            let dailyAvg = entries.map(\.usage).reduce(0, +) / Double(entries.count)
 
             GlassCard {
                 VStack(alignment: .leading, spacing: 14) {
@@ -280,73 +297,35 @@ struct DashboardView: View {
                             .font(.caption2).fontWeight(.semibold)
                             .foregroundStyle(Theme.textTertiary)
                         Spacer()
-                        if weekCost > 0 {
-                            Text(String(format: "$%.2f", weekCost))
-                                .font(.caption).fontWeight(.semibold)
-                                .foregroundStyle(Theme.costPurple)
-                        }
+                        Text("Daily Avg \(Int(dailyAvg.rounded()))%")
+                            .font(.caption2)
+                            .foregroundStyle(Theme.textSecondary)
                     }
 
                     HStack(alignment: .bottom, spacing: 6) {
                         ForEach(Array(dates.enumerated()), id: \.offset) { _, date in
                             let usage = entries.first(where: { $0.date == date })?.usage ?? 0
-                            let cost = costByDate[date] ?? 0
-                            VStack(spacing: 3) {
-                                // Stack labels vertically so each gets full column width — side-by-side
-                                // HStack caused "$389" to wrap into "$38 / 9" on narrow 7-day layout.
+                            VStack(spacing: 6) {
                                 Text(usage > 0 ? "\(Int(usage.rounded()))%" : " ")
-                                    .font(.system(size: 9, weight: .medium, design: .rounded))
+                                    .font(.system(size: 10, weight: .medium, design: .rounded))
                                     .foregroundStyle(Theme.textSecondary)
                                     .lineLimit(1)
                                     .minimumScaleFactor(0.7)
                                     .frame(maxWidth: .infinity)
-                                Text(cost > 0 ? Self.costLabel(cost) : " ")
-                                    .font(.system(size: 9, weight: .medium, design: .rounded))
-                                    .foregroundStyle(Theme.costPurple.opacity(0.85))
-                                    .lineLimit(1)
-                                    .minimumScaleFactor(0.7)
-                                    .frame(maxWidth: .infinity)
-                                HStack(alignment: .bottom, spacing: 2) {
-                                    RoundedRectangle(cornerRadius: 3)
-                                        .fill(Self.barColor(usage))
-                                        .frame(width: 8, height: usage > 0 ? max(2, barHeight * CGFloat(usage / maxUsage)) : 2)
-                                    RoundedRectangle(cornerRadius: 3)
-                                        .fill(Theme.costPurple.opacity(0.65))
-                                        .frame(width: 8, height: cost > 0 ? max(2, barHeight * CGFloat(cost / maxCost)) : 2)
-                                }
-                                .frame(maxWidth: .infinity, minHeight: barHeight, alignment: .bottom)
+                                RoundedRectangle(cornerRadius: 4)
+                                    .fill(Self.barColor(usage))
+                                    .frame(width: 12, height: usage > 0 ? max(6, barHeight * CGFloat(usage / maxUsage)) : 4)
+                                    .frame(maxWidth: .infinity, minHeight: barHeight, alignment: .bottom)
                                 Text(Self.dayLabel(date))
-                                    .font(.system(size: 9))
+                                    .font(.system(size: 10))
                                     .foregroundStyle(Theme.textTertiary)
                             }
                             .frame(maxWidth: .infinity)
                         }
                     }
-
-                    Divider().overlay(Theme.cardBorder)
-
-                    HStack {
-                        miniStat(label: "Active", value: "\(entries.filter { $0.usage > 0 }.count)/\(dates.count)")
-                        Spacer()
-                        miniStat(
-                            label: "Daily Avg",
-                            value: entries.isEmpty
-                                ? "--"
-                                : "\(Int((entries.map(\.usage).reduce(0, +) / Double(entries.count)).rounded()))%"
-                        )
-                        Spacer()
-                        miniStat(label: "Peak", value: peakDay(entries))
-                    }
                 }
             }
         }
-    }
-
-    private func mergedDates(entries: [DailyEntryData], costs: [DailyCostData]) -> [String] {
-        var set = Set<String>()
-        entries.forEach { set.insert($0.date) }
-        costs.forEach { set.insert($0.date) }
-        return set.sorted()
     }
 
     private static let dateParser: DateFormatter = {
@@ -367,30 +346,10 @@ struct DashboardView: View {
         return dayFormatter.string(from: d)
     }
 
-    private static func costLabel(_ cost: Double) -> String {
-        if cost >= 1000 { return String(format: "$%.1fk", cost / 1000) }
-        if cost >= 1 { return String(format: "$%.0f", cost) }
-        return String(format: "$%.2f", cost)
-    }
-
     private static func barColor(_ usage: Double) -> Color {
         if usage >= 80 { return Theme.red }
         if usage >= 50 { return Theme.orange }
         return Theme.green
-    }
-
-    private func peakDay(_ entries: [DailyEntryData]) -> String {
-        guard let peak = entries.max(by: { $0.usage < $1.usage }), peak.usage > 0 else { return "--" }
-        return Self.dayLabel(peak.date)
-    }
-
-    private func miniStat(label: String, value: String) -> some View {
-        VStack(spacing: 2) {
-            Text(value).font(.caption).fontWeight(.semibold)
-                .foregroundStyle(Theme.textPrimary)
-            Text(label).font(.system(size: 9))
-                .foregroundStyle(Theme.textTertiary)
-        }
     }
 
     // MARK: - Active Sessions
@@ -398,54 +357,116 @@ struct DashboardView: View {
     @ViewBuilder
     private func activeSessions(_ data: WidgetData) -> some View {
         if let sessions = data.sessions, !sessions.isEmpty {
-            VStack(alignment: .leading, spacing: 10) {
-                Text("ACTIVE SESSIONS")
-                    .font(.caption2).fontWeight(.semibold)
-                    .foregroundStyle(Theme.textTertiary)
+            // Hide model chip when all sessions share one model — chip becomes noise.
+            let uniqueModels = Set(sessions.compactMap { $0.model?.lowercased() })
+            let showModel = uniqueModels.count > 1
 
-                ForEach(Array(sessions.enumerated()), id: \.offset) { _, session in
-                    sessionCard(session)
+            // Sort by burner first: highest token velocity at the top so the user
+            // immediately sees which session is consuming the budget.
+            let sorted = sessions.sorted {
+                ($0.tokenRatePerMinute ?? -1) > ($1.tokenRatePerMinute ?? -1)
+            }
+
+            // Aggregate burn rate across all sessions. When total > 1M/min, surface
+            // it inline next to the section title so multi-session users see the
+            // combined damage without summing in their head.
+            let totalRate = sessions.compactMap(\.tokenRatePerMinute).reduce(0, +)
+
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    Text(sessions.count == 1 ? "ACTIVE SESSION" : "ACTIVE SESSIONS · \(sessions.count)")
+                        .font(.caption2).fontWeight(.semibold)
+                        .foregroundStyle(Theme.textTertiary)
+                    if sessions.count > 1, totalRate >= 1_000_000 {
+                        Text("Total \(rateLabel(totalRate))")
+                            .font(.caption2).fontWeight(.semibold)
+                            .foregroundStyle(rateColor(totalRate))
+                    }
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                ForEach(Array(sorted.enumerated()), id: \.offset) { _, session in
+                    sessionCard(session, showModel: showModel)
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
-    private func sessionCard(_ session: SessionData) -> some View {
+    private func sessionCard(_ session: SessionData, showModel: Bool) -> some View {
         GlassCard {
             VStack(alignment: .leading, spacing: 8) {
-                HStack {
+                HStack(spacing: 6) {
                     Text(session.project)
                         .font(.subheadline).fontWeight(.medium)
                         .foregroundStyle(Theme.textPrimary)
                         .lineLimit(1)
+                    if let rate = session.tokenRatePerMinute, rate > 0 {
+                        Text(rateLabel(rate))
+                            .font(.caption2).fontWeight(.semibold)
+                            .foregroundStyle(rateColor(rate))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(rateColor(rate).opacity(0.15))
+                            .clipShape(Capsule())
+                    }
                     Spacer()
-                    Text("LIVE")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(Theme.green)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Theme.green.opacity(0.15))
-                        .clipShape(Capsule())
                 }
-                HStack(spacing: 12) {
-                    if let model = session.model {
-                        Label(model, systemImage: "cpu")
+                HStack(spacing: 14) {
+                    if showModel, let model = session.model {
+                        Label(modelDisplayName(model), systemImage: "cpu")
                             .font(.caption2)
                             .foregroundStyle(modelColor(model))
                     }
-                    if let tokens = session.tokens {
-                        Label(formatTokens(tokens), systemImage: "number")
+                    if let ctx = session.contextTokens, let ctxMax = session.contextWindowMax, ctxMax > 0 {
+                        Label("\(formatTokens(ctx))/\(formatTokens(ctxMax)) ctx", systemImage: "rectangle.compress.vertical")
                             .font(.caption2)
                             .foregroundStyle(Theme.textSecondary)
                     }
-                    if let dur = session.durationSeconds {
+                    if let tokens = session.tokens {
+                        Label("\(formatTokens(tokens)) tok", systemImage: "circle.grid.2x2")
+                            .font(.caption2)
+                            .foregroundStyle(Theme.textSecondary)
+                    }
+                    if let dur = session.durationSeconds, dur >= 60 {
                         Label(formatDuration(dur), systemImage: "clock")
                             .font(.caption2)
-                            .foregroundStyle(Theme.textSecondary)
+                            .foregroundStyle(Theme.textTertiary)
                     }
+                    Spacer()
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    private func rateLabel(_ rate: Int) -> String {
+        if rate >= 1_000_000 { return String(format: "%.1fM/min", Double(rate) / 1_000_000) }
+        if rate >= 1_000 { return String(format: "%.0fK/min", Double(rate) / 1_000) }
+        return "\(rate)/min"
+    }
+
+    private func rateColor(_ rate: Int) -> Color {
+        // Calibrated for prompt-cache-heavy Claude Code usage: cache_read inflates
+        // raw token counts. Typical active session lands at 1–3M tok/min on Opus
+        // with a warm cache. Anything above 5M is heavy / parallel-agent burst.
+        if rate >= 5_000_000 { return Theme.red }
+        if rate >= 1_000_000 { return Theme.orange }
+        return Theme.green
+    }
+
+    private func modelDisplayName(_ model: String) -> String {
+        // claude-opus-4-7 → Opus 4.7
+        let parts = model.lowercased().split(separator: "-")
+        let families = ["opus", "sonnet", "haiku"]
+        guard let idx = parts.firstIndex(where: { families.contains(String($0)) }) else { return model }
+        let family = String(parts[idx]).capitalized
+        let version = parts.dropFirst(idx + 1).prefix(2).compactMap { p -> String? in
+            let digits = p.prefix(while: { $0.isNumber })
+            return digits.isEmpty ? nil : String(digits)
+        }
+        return version.isEmpty ? family : "\(family) \(version.joined(separator: "."))"
     }
 
     // MARK: - No Data

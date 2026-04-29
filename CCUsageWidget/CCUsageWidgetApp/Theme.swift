@@ -22,16 +22,13 @@ enum Theme {
     static let green = Color(red: 74 / 255, green: 222 / 255, blue: 128 / 255)       // #4ade80
     static let orange = Color(red: 251 / 255, green: 146 / 255, blue: 60 / 255)       // #fb923c
     static let red = Color(red: 244 / 255, green: 62 / 255, blue: 94 / 255)           // #f43e5e
+    static let extraPurple = Color(red: 168 / 255, green: 85 / 255, blue: 247 / 255) // #a855f7
 
     // MARK: - Model Colors
 
     static let opus = Color(red: 167 / 255, green: 139 / 255, blue: 250 / 255)        // #a78bfa
     static let sonnet = Color(red: 34 / 255, green: 211 / 255, blue: 238 / 255)       // #22d3ee
     static let haiku = Color(red: 148 / 255, green: 163 / 255, blue: 184 / 255)       // #94a3b8
-
-    // MARK: - Cost
-
-    static let costPurple = Color(red: 168 / 255, green: 85 / 255, blue: 247 / 255)   // #a855f7
 
     // MARK: - Staleness
 
@@ -54,12 +51,31 @@ enum Theme {
     static let textQuaternary = Color(red: 71 / 255, green: 85 / 255, blue: 105 / 255)    // #475569
 
     // MARK: - Usage Color
+    //
+    // Color follows the same trajectory math as the displayed `→ X%` label:
+    // projected end-of-window utilization = pace × 100. If you'll land safely
+    // under 90%, green. Approaching depletion (90–110%), orange. Overrun (>110%),
+    // red. Raw pct ≥ 80 is also red regardless of pace — you're already deep.
 
     static func usageColor(_ pct: Double, pace: Double? = nil) -> Color {
-        let effective = pace.map { max(pct, pct * $0) } ?? pct
-        if effective >= 80 { return red }
-        if effective >= 50 { return orange }
+        if pct >= 95 { return red }
+        if pct >= 80 { return orange }
+        if let p = pace, p > 0 {
+            let projected = p * 100
+            if projected >= 110 { return red }
+            if projected >= 90 { return orange }
+        }
         return green
+    }
+
+    // MARK: - Sync Status Dot
+
+    /// Neutral grey when fresh; warning colors only when stale.
+    /// Keeps green reserved for "healthy usage" status, not "data arrived".
+    static func syncDotColor(_ updatedAt: TimeInterval) -> Color {
+        if isVeryStale(updatedAt) { return red }
+        if isStale(updatedAt) { return orange }
+        return textTertiary
     }
 
     // MARK: - Pace Helpers
@@ -78,16 +94,41 @@ enum Theme {
         return "●"
     }
 
+    /// Projected end-of-window utilization based on pace. Math: if user is at X%
+    /// after Y% of window has elapsed, continuing at the same rate they'll land at
+    /// X × (100/Y) by reset. That equals `pace × 100`.
+    /// Returns nil for unknown pace; caps display at 999%+ for sanity.
+    static func projectedEndPct(_ pace: Double?) -> Double? {
+        guard let p = pace, p > 0 else { return nil }
+        return p * 100
+    }
+
+    /// Format projected end-of-window utilization for display.
+    /// "→ 41%" stays neutral; "⚠️ 125%" flags an overrun so the signal survives
+    /// tinted/monochrome widget rendering modes that strip our color hints.
+    static func trajectoryLabel(_ pace: Double?) -> String? {
+        guard let projected = projectedEndPct(pace) else { return nil }
+        let prefix = projected >= 110 ? "\u{26A0}\u{FE0F}" : "\u{2192}"
+        if projected > 999 { return "\(prefix) 999%+" }
+        return "\(prefix) \(Int(projected.rounded()))%"
+    }
+
     // MARK: - Reset Label
 
     static func resetLabel(_ ts: TimeInterval?) -> String {
         guard let ts else { return "" }
         let secs = ts - Date().timeIntervalSince1970
         guard secs > 0 else { return "resetting" }
-        let h = Int(secs) / 3600
-        let m = (Int(secs) % 3600) / 60
-        if h >= 48 { return "\(h / 24)d" }
-        if h >= 1 { return "\(h)h \(m)m" }
+        let total = Int(secs)
+        let d = total / 86400
+        let h = (total % 86400) / 3600
+        let m = (total % 3600) / 60
+        if d >= 1 {
+            return h > 0 ? "\(d)d \(h)h" : "\(d)d"
+        }
+        if h >= 1 {
+            return m > 0 ? "\(h)h \(m)m" : "\(h)h"
+        }
         return "\(m)m"
     }
 
