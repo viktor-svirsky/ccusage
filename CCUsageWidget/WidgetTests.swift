@@ -82,14 +82,12 @@ func runWidgetDataTests() {
                 updatedAt: 1699999000,
                 extraUsageEnabled: true,
                 depletionSeconds: 300,
-                todayCost: 2.50,
                 activeSessionCount: 3,
                 opusUtilization: 60,
                 sonnetUtilization: 25,
                 haikuUtilization: 15,
                 dailyEntries: [DailyEntryData(date: "2026-04-13", usage: 40)],
-                dailyCosts: [DailyCostData(date: "2026-04-13", cost: 1.25)],
-                sessions: [SessionData(project: "test-proj", model: "opus", tokens: 5000, durationSeconds: 600)],
+                sessions: [SessionData(project: "test-proj", model: "opus", tokens: 5000, durationSeconds: 600, contextTokens: 60_000, contextWindowMax: 200_000)],
                 extraUsageUtilization: 12
             )
             let data = try! JSONEncoder().encode(original)
@@ -101,14 +99,12 @@ func runWidgetDataTests() {
             assertEqual(decoded.updatedAt, 1699999000, "updatedAt")
             assertEqual(decoded.extraUsageEnabled, true, "extraUsageEnabled")
             assertEqual(decoded.depletionSeconds, 300, "depletionSeconds")
-            assertEqual(decoded.todayCost, 2.50, "todayCost")
             assertEqual(decoded.activeSessionCount, 3, "activeSessionCount")
             assertEqual(decoded.opusUtilization, 60, "opusUtilization")
             assertEqual(decoded.sonnetUtilization, 25, "sonnetUtilization")
             assertEqual(decoded.haikuUtilization, 15, "haikuUtilization")
             assertEqual(decoded.extraUsageUtilization, 12, "extraUsageUtilization")
             assertEqual(decoded.dailyEntries?.count, 1, "dailyEntries count")
-            assertEqual(decoded.dailyCosts?.count, 1, "dailyCosts count")
             assertEqual(decoded.sessions?.count, 1, "sessions count")
             assertEqual(decoded.sessions?.first?.project, "test-proj", "session project")
             assertEqual(decoded.sessions?.first?.model, "opus", "session model")
@@ -272,9 +268,9 @@ func runWidgetDataTests() {
                 fiveHourResetsAt: nil, sevenDayResetsAt: nil,
                 updatedAt: Date().timeIntervalSince1970,
                 extraUsageEnabled: nil, depletionSeconds: nil,
-                todayCost: nil, activeSessionCount: nil,
+                activeSessionCount: nil,
                 opusUtilization: nil, sonnetUtilization: nil, haikuUtilization: nil,
-                dailyEntries: nil, dailyCosts: nil, sessions: nil, extraUsageUtilization: nil
+                dailyEntries: nil, sessions: nil, extraUsageUtilization: nil
             )
             let encoded = try! JSONEncoder().encode(widgetData)
             defaults.set(encoded, forKey: "cachedAppWidgetData")
@@ -342,9 +338,9 @@ func runWidgetDataTests() {
                 fiveHourResetsAt: nil, sevenDayResetsAt: nil,
                 updatedAt: Date().timeIntervalSince1970,
                 extraUsageEnabled: nil, depletionSeconds: nil,
-                todayCost: 3.00, activeSessionCount: 1,
+                activeSessionCount: 1,
                 opusUtilization: nil, sonnetUtilization: nil, haikuUtilization: nil,
-                dailyEntries: nil, dailyCosts: nil, sessions: nil, extraUsageUtilization: nil
+                dailyEntries: nil, sessions: nil, extraUsageUtilization: nil
             )
             let encoded = try! JSONEncoder().encode(widgetData)
 
@@ -359,7 +355,6 @@ func runWidgetDataTests() {
             let decoded = try? JSONDecoder().decode(WidgetData.self, from: sharedData!)
             assertNotNil(decoded, "widget data decodable")
             assertEqual(decoded?.fiveHourUtilization, 70, "shared utilization")
-            assertEqual(decoded?.todayCost, 3.00, "shared cost")
 
             let ts = defaults.double(forKey: "cachedWidgetDataTimestamp")
             check(ts > 0, "timestamp written")
@@ -385,9 +380,9 @@ func runWidgetDataTests() {
                 fiveHourResetsAt: nil, sevenDayResetsAt: nil,
                 updatedAt: Date().timeIntervalSince1970,
                 extraUsageEnabled: nil, depletionSeconds: nil,
-                todayCost: nil, activeSessionCount: nil,
+                activeSessionCount: nil,
                 opusUtilization: nil, sonnetUtilization: nil, haikuUtilization: nil,
-                dailyEntries: nil, dailyCosts: nil, sessions: nil, extraUsageUtilization: nil
+                dailyEntries: nil, sessions: nil, extraUsageUtilization: nil
             )
             let encoded = try! JSONEncoder().encode(widgetData)
             let now = Date().timeIntervalSince1970
@@ -442,13 +437,11 @@ func runProjectionTests() {
                 updatedAt: now,
                 extraUsageEnabled: nil,
                 depletionSeconds: nil,
-                todayCost: 2.50,
                 activeSessionCount: 1,
                 opusUtilization: nil,
                 sonnetUtilization: nil,
                 haikuUtilization: nil,
                 dailyEntries: nil,
-                dailyCosts: nil,
                 sessions: nil,
                 extraUsageUtilization: nil
             )
@@ -462,7 +455,6 @@ func runProjectionTests() {
             assertEqual(projected.fiveHourResetsAt!, base.fiveHourResetsAt!, "5h reset is absolute epoch and must not shift")
             assertEqual(projected.sevenDayResetsAt!, base.sevenDayResetsAt!, "7d reset is absolute epoch and must not shift")
             assertEqual(projected.updatedAt, now, "updatedAt unchanged")
-            assertEqual(projected.todayCost!, 2.50, "cost unchanged")
             assertEqual(projected.activeSessionCount!, 1, "sessions unchanged")
         }
 
@@ -476,9 +468,9 @@ func runProjectionTests() {
                 fiveHourResetsAt: now + 3600,
                 sevenDayResetsAt: now + 86400,
                 updatedAt: now,
-                extraUsageEnabled: nil, depletionSeconds: nil, todayCost: nil,
+                extraUsageEnabled: nil, depletionSeconds: nil,  
                 activeSessionCount: nil, opusUtilization: nil, sonnetUtilization: nil,
-                haikuUtilization: nil, dailyEntries: nil, dailyCosts: nil,
+                haikuUtilization: nil, dailyEntries: nil,
                 sessions: nil, extraUsageUtilization: nil
             )
 
@@ -497,9 +489,9 @@ func runProjectionTests() {
                 fiveHourResetsAt: now + 14400,
                 sevenDayResetsAt: now + 4 * 86400,
                 updatedAt: now,
-                extraUsageEnabled: nil, depletionSeconds: nil, todayCost: nil,
+                extraUsageEnabled: nil, depletionSeconds: nil,  
                 activeSessionCount: nil, opusUtilization: nil, sonnetUtilization: nil,
-                haikuUtilization: nil, dailyEntries: nil, dailyCosts: nil,
+                haikuUtilization: nil, dailyEntries: nil,
                 sessions: nil, extraUsageUtilization: nil
             )
 
@@ -518,9 +510,9 @@ func runProjectionTests() {
                 fiveHourResetsAt: now + 10000,
                 sevenDayResetsAt: now + 500000,
                 updatedAt: now,
-                extraUsageEnabled: nil, depletionSeconds: nil, todayCost: nil,
+                extraUsageEnabled: nil, depletionSeconds: nil,  
                 activeSessionCount: nil, opusUtilization: nil, sonnetUtilization: nil,
-                haikuUtilization: nil, dailyEntries: nil, dailyCosts: nil,
+                haikuUtilization: nil, dailyEntries: nil,
                 sessions: nil, extraUsageUtilization: nil
             )
 
@@ -539,9 +531,9 @@ func runProjectionTests() {
                 fiveHourResetsAt: now + 7200,
                 sevenDayResetsAt: now + 3 * 86400,
                 updatedAt: now,
-                extraUsageEnabled: nil, depletionSeconds: 300, todayCost: nil,
+                extraUsageEnabled: nil, depletionSeconds: 300,  
                 activeSessionCount: nil, opusUtilization: nil, sonnetUtilization: nil,
-                haikuUtilization: nil, dailyEntries: nil, dailyCosts: nil,
+                haikuUtilization: nil, dailyEntries: nil,
                 sessions: nil, extraUsageUtilization: nil
             )
 
@@ -559,9 +551,9 @@ func runProjectionTests() {
                 fiveHourResetsAt: now.addingTimeInterval(14400).timeIntervalSince1970,
                 sevenDayResetsAt: now.addingTimeInterval(4 * 86400).timeIntervalSince1970,
                 updatedAt: now.timeIntervalSince1970,
-                extraUsageEnabled: nil, depletionSeconds: nil, todayCost: nil,
+                extraUsageEnabled: nil, depletionSeconds: nil,  
                 activeSessionCount: nil, opusUtilization: nil, sonnetUtilization: nil,
-                haikuUtilization: nil, dailyEntries: nil, dailyCosts: nil,
+                haikuUtilization: nil, dailyEntries: nil,
                 sessions: nil, extraUsageUtilization: nil
             )
 

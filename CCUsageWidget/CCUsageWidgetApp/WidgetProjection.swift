@@ -9,8 +9,13 @@ func projectWidgetData(_ base: WidgetData, secondsAhead: TimeInterval) -> Widget
         guard remaining > 0 else { return current }
         let elapsed = windowDuration - remaining
         guard elapsed > 0 else { return current }
+        // Don't project past the window reset — beyond reset the value drops to 0,
+        // and we have no way to know that without a fresh fetch. Cap effective lookahead
+        // at remaining time so the widget freezes at the projected reset point rather than
+        // continuing to climb into post-reset territory.
+        let effectiveAhead = min(secondsAhead, remaining)
         let ratePerSecond = (current / elapsed) * pace
-        return min(current + ratePerSecond * secondsAhead, 100)
+        return min(current + ratePerSecond * effectiveAhead, 100)
     }
 
     return WidgetData(
@@ -37,13 +42,11 @@ func projectWidgetData(_ base: WidgetData, secondsAhead: TimeInterval) -> Widget
         updatedAt: base.updatedAt,
         extraUsageEnabled: base.extraUsageEnabled,
         depletionSeconds: base.depletionSeconds.map { max(0, $0 - secondsAhead) },
-        todayCost: base.todayCost,
         activeSessionCount: base.activeSessionCount,
         opusUtilization: base.opusUtilization,
         sonnetUtilization: base.sonnetUtilization,
         haikuUtilization: base.haikuUtilization,
         dailyEntries: base.dailyEntries,
-        dailyCosts: base.dailyCosts,
         sessions: base.sessions,
         extraUsageUtilization: base.extraUsageUtilization
     )

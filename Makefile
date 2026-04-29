@@ -38,6 +38,8 @@ test:
 	/tmp/$(APP_NAME)Tests
 
 install: build
+	pkill -9 -f "$(INSTALL_DIR)/$(APP_DIR)/Contents/MacOS/$(APP_NAME)" 2>/dev/null || true
+	rm -rf $(INSTALL_DIR)/$(APP_DIR)
 	cp -R $(APP_DIR) $(INSTALL_DIR)/$(APP_DIR)
 	open $(INSTALL_DIR)/$(APP_DIR)
 

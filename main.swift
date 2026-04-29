@@ -79,6 +79,8 @@ struct SessionData: Codable, Equatable {
     let model: String?
     let tokens: Int?
     let durationSeconds: Int?
+    let contextTokens: Int?
+    let contextWindowMax: Int?
 }
 
 struct WidgetData: Codable {
@@ -1488,8 +1490,11 @@ class AgentTracker {
             if isNew {
                 sessions[path] = TrackedSession(path: path)
                 // For newly discovered sessions, skip to near end to avoid parsing
-                // megabytes of history. Read only the last 64KB for recent state.
-                let tailSize: UInt64 = 65536
+                // megabytes of history. 256KB is enough to almost always include at
+                // least one assistant message with usage+context data — a smaller
+                // window (64KB) sometimes contained only output-only or tool-result
+                // lines, leaving lastContextTokens at 0 forever.
+                let tailSize: UInt64 = 262_144
                 if fileSize > tailSize {
                     sessions[path]!.lastFileOffset = fileSize - tailSize
                 }
@@ -2049,7 +2054,9 @@ func buildWidgetData(_ usage: UsageData, activeSessionCount: Int = 0, dailyEntri
                 let secs = Int(Date().timeIntervalSince(mod))
                 return secs > 0 && secs < 86400 ? secs : nil
             }
-            return SessionData(project: project, model: model, tokens: tokens, durationSeconds: duration)
+            let ctxTokens = s.lastContextTokens > 0 ? s.lastContextTokens : nil
+            let ctxMax = s.contextWindowMax > 0 ? s.contextWindowMax : nil
+            return SessionData(project: project, model: model, tokens: tokens, durationSeconds: duration, contextTokens: ctxTokens, contextWindowMax: ctxMax)
         }.sorted { lhs, rhs in
             if lhs.project != rhs.project { return lhs.project < rhs.project }
             if (lhs.model ?? "") != (rhs.model ?? "") { return (lhs.model ?? "") < (rhs.model ?? "") }
