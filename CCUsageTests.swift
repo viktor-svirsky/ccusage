@@ -2848,11 +2848,34 @@ func runTokenCostTests() {
             check(abs(entry.totalCost - expected) < 0.001, "accumulated cost: expected \(expected), got \(entry.totalCost)")
         }
 
-        test("unknown model uses opus pricing") {
+        test("unknown model accrues zero cost but still counts tokens/requests") {
+            // Prior behavior silently charged unknown lines at Opus rates, causing phantom
+            // multi-hundred-dollar spikes when `message.model` was missing. Fix: tokens still
+            // recorded for visibility, but cost accrual is skipped when family unrecognized.
             var entry = TokenCostEntry()
-            entry.add(model: "unknown-model", input: 1_000_000, output: 0, cacheWrite: 0, cacheRead: 0)
-            let expected = 15.0  // Opus input rate
-            check(abs(entry.totalCost - expected) < 0.01, "unknown model cost: expected \(expected), got \(entry.totalCost)")
+            entry.add(model: "unknown-model", input: 1_000_000, output: 500_000, cacheWrite: 0, cacheRead: 0)
+            assertEqual(entry.inputTokens, 1_000_000)
+            assertEqual(entry.outputTokens, 500_000)
+            assertEqual(entry.requests, 1)
+            check(abs(entry.totalCost - 0.0) < 0.0001, "unknown model cost: expected 0, got \(entry.totalCost)")
+        }
+
+        test("empty model string accrues zero cost") {
+            var entry = TokenCostEntry()
+            entry.add(model: "", input: 1_000_000, output: 0, cacheWrite: 0, cacheRead: 0)
+            check(abs(entry.totalCost - 0.0) < 0.0001, "empty model cost: expected 0, got \(entry.totalCost)")
+        }
+
+        test("pricingForModel returns nil for unrecognized family") {
+            assertNil(pricingForModel("unknown-model"))
+            assertNil(pricingForModel(""))
+            assertNil(pricingForModel("claude-3-foobar"))
+        }
+
+        test("pricingForModel matches known families") {
+            assertNotNil(pricingForModel("claude-opus-4-6"))
+            assertNotNil(pricingForModel("claude-sonnet-4-6"))
+            assertNotNil(pricingForModel("claude-haiku-4-5-20251001"))
         }
 
         test("cache hit rate") {
@@ -3538,6 +3561,12 @@ func runFormatUnifiedSessionsTests() {
             tokens.add(input: 1000, output: 100, cacheCreation: 0, cacheRead: 0)
             let cost = formatSessionCost(tokens: tokens, model: "claude-sonnet-4-6")
             check(cost.hasPrefix("~$"), "should start with ~$: \(cost)")
+        }
+        test("unknown model returns empty string") {
+            var tokens = SessionTokens()
+            tokens.add(input: 100000, output: 50000, cacheCreation: 0, cacheRead: 0)
+            let cost = formatSessionCost(tokens: tokens, model: "unknown-model")
+            assertEqual(cost, "", "unknown model should render no cost instead of phantom Opus rate")
         }
     }
 }

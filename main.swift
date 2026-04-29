@@ -1125,12 +1125,17 @@ let modelPricingTable: [String: ModelPricing] = [
     "haiku": ModelPricing(inputPerMTok: 0.80, outputPerMTok: 4.0, cacheWritePerMTok: 1.0, cacheReadPerMTok: 0.08),
 ]
 
-func pricingForModel(_ model: String) -> ModelPricing {
+/// Returns pricing only for recognized model family ("opus" / "sonnet" / "haiku").
+/// Unknown/empty model strings (including synthetic events like compact/subagent entries
+/// that omit `message.model`) return nil — caller must skip cost accrual. Prior default
+/// was Opus pricing, which silently billed unknown lines at the most expensive rate and
+/// caused phantom spikes (e.g. a $389 day next to $2 peers).
+func pricingForModel(_ model: String) -> ModelPricing? {
     let lower = model.lowercased()
     for (family, pricing) in modelPricingTable {
         if lower.contains(family) { return pricing }
     }
-    return modelPricingTable["opus"]!  // default to most expensive
+    return nil
 }
 
 struct TokenCostEntry {
@@ -1156,7 +1161,7 @@ struct TokenCostEntry {
         cacheWriteTokens += cacheWrite
         cacheReadTokens += cacheRead
         requests += 1
-        let p = pricingForModel(model)
+        guard let p = pricingForModel(model) else { return }
         totalCost += Double(input) / 1_000_000 * p.inputPerMTok
             + Double(output) / 1_000_000 * p.outputPerMTok
             + Double(cacheWrite) / 1_000_000 * p.cacheWritePerMTok
@@ -1599,8 +1604,8 @@ class CodexTracker {
 // MARK: - Unified Sessions
 
 func formatSessionCost(tokens: SessionTokens, model: String?) -> String {
-    guard tokens.totalTokens > 0, let model, !model.isEmpty else { return "" }
-    let pricing = pricingForModel(model)
+    guard tokens.totalTokens > 0, let model, !model.isEmpty,
+          let pricing = pricingForModel(model) else { return "" }
     let cost = Double(tokens.inputTokens) / 1_000_000 * pricing.inputPerMTok
         + Double(tokens.outputTokens) / 1_000_000 * pricing.outputPerMTok
         + Double(tokens.cacheCreationTokens) / 1_000_000 * pricing.cacheWritePerMTok
