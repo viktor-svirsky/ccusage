@@ -2791,285 +2791,6 @@ func runTrackedSessionTests() {
     }
 }
 
-func runTokenCostTests() {
-    suite("TokenCostEntry") {
-        test("initial state") {
-            let entry = TokenCostEntry()
-            assertEqual(entry.inputTokens, 0)
-            assertEqual(entry.outputTokens, 0)
-            assertEqual(entry.cacheWriteTokens, 0)
-            assertEqual(entry.cacheReadTokens, 0)
-            assertEqual(entry.requests, 0)
-            check(abs(entry.totalCost - 0.0) < 0.001, "initial cost should be 0")
-        }
-
-        test("add opus usage calculates cost") {
-            var entry = TokenCostEntry()
-            entry.add(model: "claude-opus-4-6", input: 1_000_000, output: 100_000, cacheWrite: 500_000, cacheRead: 10_000_000)
-            assertEqual(entry.inputTokens, 1_000_000)
-            assertEqual(entry.outputTokens, 100_000)
-            assertEqual(entry.cacheWriteTokens, 500_000)
-            assertEqual(entry.cacheReadTokens, 10_000_000)
-            assertEqual(entry.requests, 1)
-            // Cost: (1M * $15 + 100K * $75 + 500K * $18.75 + 10M * $1.50) / 1M
-            // = $15 + $7.50 + $9.375 + $15 = $46.875
-            let expected = 46.875
-            check(abs(entry.totalCost - expected) < 0.01, "opus cost: expected \(expected), got \(entry.totalCost)")
-        }
-
-        test("add sonnet usage calculates cost") {
-            var entry = TokenCostEntry()
-            entry.add(model: "claude-sonnet-4-6", input: 1_000_000, output: 100_000, cacheWrite: 0, cacheRead: 5_000_000)
-            // Cost: (1M * $3 + 100K * $15 + 5M * $0.30) / 1M
-            // = $3 + $1.50 + $1.50 = $6.00
-            let expected = 6.0
-            check(abs(entry.totalCost - expected) < 0.01, "sonnet cost: expected \(expected), got \(entry.totalCost)")
-        }
-
-        test("add haiku usage calculates cost") {
-            var entry = TokenCostEntry()
-            entry.add(model: "claude-haiku-4-5-20251001", input: 1_000_000, output: 100_000, cacheWrite: 0, cacheRead: 5_000_000)
-            // Cost: (1M * $0.80 + 100K * $4.0 + 5M * $0.08) / 1M
-            // = $0.80 + $0.40 + $0.40 = $1.60
-            let expected = 1.60
-            check(abs(entry.totalCost - expected) < 0.01, "haiku cost: expected \(expected), got \(entry.totalCost)")
-        }
-
-        test("accumulates across models") {
-            var entry = TokenCostEntry()
-            entry.add(model: "claude-opus-4-6", input: 1000, output: 500, cacheWrite: 0, cacheRead: 0)
-            entry.add(model: "claude-sonnet-4-6", input: 2000, output: 1000, cacheWrite: 0, cacheRead: 0)
-            assertEqual(entry.inputTokens, 3000)
-            assertEqual(entry.outputTokens, 1500)
-            assertEqual(entry.requests, 2)
-            // Opus: (1000*15 + 500*75)/1M = 0.015 + 0.0375 = 0.0525
-            // Sonnet: (2000*3 + 1000*15)/1M = 0.006 + 0.015 = 0.021
-            let expected = 0.0525 + 0.021
-            check(abs(entry.totalCost - expected) < 0.001, "accumulated cost: expected \(expected), got \(entry.totalCost)")
-        }
-
-        test("unknown model accrues zero cost but still counts tokens/requests") {
-            // Prior behavior silently charged unknown lines at Opus rates, causing phantom
-            // multi-hundred-dollar spikes when `message.model` was missing. Fix: tokens still
-            // recorded for visibility, but cost accrual is skipped when family unrecognized.
-            var entry = TokenCostEntry()
-            entry.add(model: "unknown-model", input: 1_000_000, output: 500_000, cacheWrite: 0, cacheRead: 0)
-            assertEqual(entry.inputTokens, 1_000_000)
-            assertEqual(entry.outputTokens, 500_000)
-            assertEqual(entry.requests, 1)
-            check(abs(entry.totalCost - 0.0) < 0.0001, "unknown model cost: expected 0, got \(entry.totalCost)")
-        }
-
-        test("empty model string accrues zero cost") {
-            var entry = TokenCostEntry()
-            entry.add(model: "", input: 1_000_000, output: 0, cacheWrite: 0, cacheRead: 0)
-            check(abs(entry.totalCost - 0.0) < 0.0001, "empty model cost: expected 0, got \(entry.totalCost)")
-        }
-
-        test("pricingForModel returns nil for unrecognized family") {
-            assertNil(pricingForModel("unknown-model"))
-            assertNil(pricingForModel(""))
-            assertNil(pricingForModel("claude-3-foobar"))
-        }
-
-        test("pricingForModel matches known families") {
-            assertNotNil(pricingForModel("claude-opus-4-6"))
-            assertNotNil(pricingForModel("claude-sonnet-4-6"))
-            assertNotNil(pricingForModel("claude-haiku-4-5-20251001"))
-        }
-
-        test("cache hit rate") {
-            var entry = TokenCostEntry()
-            entry.add(model: "claude-opus-4-6", input: 1000, output: 500, cacheWrite: 0, cacheRead: 4000)
-            let rate = entry.cacheHitRate!
-            check(abs(rate - 0.8) < 0.001, "cache rate: expected 0.8, got \(rate)")
-        }
-
-        test("cache hit rate nil when no cache reads") {
-            var entry = TokenCostEntry()
-            entry.add(model: "claude-opus-4-6", input: 1000, output: 500, cacheWrite: 0, cacheRead: 0)
-            assertNil(entry.cacheHitRate)
-        }
-    }
-
-    suite("TokenCostTracker") {
-        test("processes JSONL data and aggregates by date") {
-            let tracker = TokenCostTracker(claudeDir: "/nonexistent")
-            let line1 = Data("""
-            {"type":"assistant","timestamp":"2026-03-30T10:00:00.000Z","message":{"model":"claude-opus-4-6","usage":{"input_tokens":1000,"output_tokens":500,"cache_creation_input_tokens":200,"cache_read_input_tokens":3000}}}
-            """.utf8)
-            let line2 = Data("""
-            {"type":"assistant","timestamp":"2026-03-30T14:00:00.000Z","message":{"model":"claude-sonnet-4-6","usage":{"input_tokens":2000,"output_tokens":1000,"cache_creation_input_tokens":0,"cache_read_input_tokens":5000}}}
-            """.utf8)
-            let line3 = Data("""
-            {"type":"assistant","timestamp":"2026-03-29T09:00:00.000Z","message":{"model":"claude-opus-4-6","usage":{"input_tokens":500,"output_tokens":200,"cache_creation_input_tokens":0,"cache_read_input_tokens":1000}}}
-            """.utf8)
-            var combined = line1
-            combined.append(Data("\n".utf8))
-            combined.append(line2)
-            combined.append(Data("\n".utf8))
-            combined.append(line3)
-
-            tracker.processData(combined)
-
-            // Date keys are local timezone — compute expected keys from the UTC timestamps
-            let isoFmt = ISO8601DateFormatter()
-            let localKey1 = dailyDateString(isoFmt.date(from: "2026-03-30T10:00:00Z")!)
-            let localKey2 = dailyDateString(isoFmt.date(from: "2026-03-29T09:00:00Z")!)
-
-            let entry1 = tracker.costForDate(localKey1)
-            assertNotNil(entry1, "should have entry for 2026-03-30 local")
-            check(entry1!.requests >= 1, "should have at least 1 request")
-            check(entry1!.inputTokens >= 1000, "should have input tokens")
-
-            let entry2 = tracker.costForDate(localKey2)
-            assertNotNil(entry2, "should have entry for 2026-03-29 local")
-            assertEqual(entry2!.inputTokens, 500)
-        }
-
-        test("skips non-assistant lines") {
-            let tracker = TokenCostTracker(claudeDir: "/nonexistent")
-            let localKey = dailyDateString(ISO8601DateFormatter().date(from: "2026-03-30T10:00:00Z")!)
-            let line = Data("""
-            {"type":"user","timestamp":"2026-03-30T10:00:00.000Z","message":{"role":"user","content":[]}}
-            """.utf8)
-            tracker.processData(line)
-            assertNil(tracker.costForDate(localKey))
-        }
-
-        test("skips lines without usage") {
-            let tracker = TokenCostTracker(claudeDir: "/nonexistent")
-            let localKey = dailyDateString(ISO8601DateFormatter().date(from: "2026-03-30T10:00:00Z")!)
-            let line = Data("""
-            {"type":"assistant","timestamp":"2026-03-30T10:00:00.000Z","message":{"model":"claude-opus-4-6","content":[]}}
-            """.utf8)
-            tracker.processData(line)
-            assertNil(tracker.costForDate(localKey))
-        }
-
-        test("todayCost and weekCost and monthCost") {
-            let tracker = TokenCostTracker(claudeDir: "/nonexistent")
-            let today = ISO8601DateFormatter().string(from: Date())
-            let line = Data("""
-            {"type":"assistant","timestamp":"\(today)","message":{"model":"claude-opus-4-6","usage":{"input_tokens":1000000,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}
-            """.utf8)
-            tracker.processData(line)
-            check(tracker.todayCost.totalCost > 0, "today cost should be > 0")
-            check(tracker.weekCost.totalCost > 0, "week cost should be > 0")
-            check(tracker.monthCost.totalCost > 0, "month cost should be > 0")
-        }
-    }
-
-    suite("formatCost") {
-        test("formats small cost") {
-            assertEqual(formatCost(0.50), "$0.50")
-        }
-
-        test("formats medium cost") {
-            assertEqual(formatCost(125.30), "$125.30")
-        }
-
-        test("formats large cost") {
-            assertEqual(formatCost(1234.56), "$1,234.56")
-        }
-
-        test("formats zero") {
-            assertEqual(formatCost(0), "$0.00")
-        }
-    }
-}
-
-// MARK: - Compact Token Costs Tests
-
-func runCompactTokenCostsTests() {
-    suite("formatCompactCost") {
-        test("under $1K shows exact cents") {
-            assertEqual(formatCompactCost(82.90), "$82.90")
-        }
-        test("exactly $1K shows abbreviated") {
-            assertEqual(formatCompactCost(1000.0), "$1.0K")
-        }
-        test("over $1K shows K abbreviation") {
-            assertEqual(formatCompactCost(1800.0), "$1.8K")
-        }
-        test("zero shows $0.00") {
-            assertEqual(formatCompactCost(0), "$0.00")
-        }
-        test("$10.7K") {
-            assertEqual(formatCompactCost(10700.0), "$10.7K")
-        }
-    }
-
-    suite("formatCompactTokenCosts") {
-        test("zero week requests returns no usage data") {
-            let today = TokenCostEntry()
-            let week = TokenCostEntry()
-            let month = TokenCostEntry()
-            let result = formatCompactTokenCosts(today: today, week: week, month: month)
-            check(result == "Costs: No data yet", "zero requests should return no usage data: got \(result)")
-        }
-
-        test("under $1K formatting") {
-            var week = TokenCostEntry()
-            week.add(model: "claude-opus-4-6", input: 1000, output: 500, cacheWrite: 0, cacheRead: 0)
-            var month = TokenCostEntry()
-            month.add(model: "claude-opus-4-6", input: 5000, output: 2000, cacheWrite: 0, cacheRead: 0)
-            let today = TokenCostEntry()
-            let result = formatCompactTokenCosts(today: today, week: week, month: month)
-            check(result.contains("Costs:"), "should have header")
-            check(result.contains("7d"), "should have 7d")
-            check(result.contains("30d"), "should have 30d")
-            check(result.contains("$"), "should have dollar sign")
-            // Token counts now include K suffix (e.g. "7K"), so only check cost formatting
-            check(result.contains("$0."), "small costs should show cents")
-        }
-
-        test("over $1K K-abbreviation") {
-            var week = TokenCostEntry()
-            week.add(model: "claude-opus-4-6", input: 100_000_000, output: 10_000_000, cacheWrite: 0, cacheRead: 0)
-            let today = TokenCostEntry()
-            let month = week
-            let result = formatCompactTokenCosts(today: today, week: week, month: month)
-            check(result.contains("K"), "over $1K should abbreviate with K")
-        }
-
-        test("no today data omits Today segment") {
-            var week = TokenCostEntry()
-            week.add(model: "claude-opus-4-6", input: 1000, output: 500, cacheWrite: 0, cacheRead: 0)
-            var month = TokenCostEntry()
-            month.add(model: "claude-opus-4-6", input: 5000, output: 2000, cacheWrite: 0, cacheRead: 0)
-            let today = TokenCostEntry()
-            let result = formatCompactTokenCosts(today: today, week: week, month: month)
-            check(!result.contains("Today"), "should omit Today when today has no requests")
-        }
-
-        test("cache rate displayed when today has cache reads") {
-            var today = TokenCostEntry()
-            today.add(model: "claude-opus-4-6", input: 1000, output: 500, cacheWrite: 0, cacheRead: 9000)
-            let week = today
-            let month = today
-            let result = formatCompactTokenCosts(today: today, week: week, month: month)
-            check(result.contains("cache"), "should show cache rate: got \(result)")
-            check(result.contains("90% cache"), "should show 90% cache rate: got \(result)")
-        }
-
-        test("full format with all three periods") {
-            var today = TokenCostEntry()
-            today.add(model: "claude-opus-4-6", input: 1000, output: 500, cacheWrite: 0, cacheRead: 9000)
-            var week = TokenCostEntry()
-            week.add(model: "claude-opus-4-6", input: 10000, output: 5000, cacheWrite: 0, cacheRead: 0)
-            var month = TokenCostEntry()
-            month.add(model: "claude-opus-4-6", input: 100000, output: 50000, cacheWrite: 0, cacheRead: 0)
-            let result = formatCompactTokenCosts(today: today, week: week, month: month)
-            check(result.hasPrefix("Costs: Today"), "should start with header and Today: got \(result)")
-            check(result.contains(" \u{00B7} 7d "), "should have 7d segment: got \(result)")
-            check(result.contains(" \u{00B7} 30d "), "should have 30d segment: got \(result)")
-            check(result.contains(" \u{00B7} 90% cache"), "should have cache at end: got \(result)")
-        }
-    }
-}
-
-// MARK: - Adaptive Status Line Tests
 
 func runAdaptiveStatusLineTests() {
     suite("formatAdaptiveStatusLine") {
@@ -3513,14 +3234,6 @@ func runFormatUnifiedSessionsTests() {
             check(result.contains("Sonnet 4.6"), "has Claude session: \(result)")
             check(result.contains("Codex"), "has Codex session: \(result)")
         }
-        test("cost estimation") {
-            var session = TrackedSession(path: "/tmp/test.jsonl")
-            _ = session.processNewData(Data("""
-            {"type":"assistant","message":{"model":"claude-opus-4-6","usage":{"input_tokens":100000,"output_tokens":50000}}}
-            """.utf8))
-            let result = formatUnifiedSessions(claudeSessions: [session], codex: nil)
-            check(result.contains("~$"), "should show cost estimate: \(result)")
-        }
         test("task name display for running agents") {
             let now = Date()
             var session = TrackedSession(path: "/tmp/test.jsonl")
@@ -3545,159 +3258,6 @@ func runFormatUnifiedSessionsTests() {
         }
     }
 
-    suite("formatSessionCost") {
-        test("opus cost") {
-            var tokens = SessionTokens()
-            tokens.add(input: 100000, output: 50000, cacheCreation: 0, cacheRead: 0)
-            let cost = formatSessionCost(tokens: tokens, model: "claude-opus-4-6")
-            check(cost.contains("~$"), "should have cost: \(cost)")
-        }
-        test("zero tokens no cost") {
-            let cost = formatSessionCost(tokens: SessionTokens(), model: "claude-opus-4-6")
-            assertEqual(cost, "")
-        }
-        test("small cost format") {
-            var tokens = SessionTokens()
-            tokens.add(input: 1000, output: 100, cacheCreation: 0, cacheRead: 0)
-            let cost = formatSessionCost(tokens: tokens, model: "claude-sonnet-4-6")
-            check(cost.hasPrefix("~$"), "should start with ~$: \(cost)")
-        }
-        test("unknown model returns empty string") {
-            var tokens = SessionTokens()
-            tokens.add(input: 100000, output: 50000, cacheCreation: 0, cacheRead: 0)
-            let cost = formatSessionCost(tokens: tokens, model: "unknown-model")
-            assertEqual(cost, "", "unknown model should render no cost instead of phantom Opus rate")
-        }
-    }
-}
-
-// MARK: - Daily Cost Tests
-
-func runDailyCostTests() {
-    suite("recordDailyCost") {
-        test("records first cost entry") {
-            var store = DailyUsageData()
-            let now = Date()
-            recordDailyCost(&store, todayCost: 1.50, now: now)
-            assertEqual(store.dailyCosts?.count, 1, "one cost entry")
-            assertEqual(store.dailyCosts?[0].cost, 1.50, "cost value")
-            assertEqual(store.dailyCosts?[0].date, dailyDateString(now), "date matches today")
-        }
-
-        test("updates same day cost") {
-            var store = DailyUsageData()
-            let now = Date()
-            recordDailyCost(&store, todayCost: 1.50, now: now)
-            recordDailyCost(&store, todayCost: 3.25, now: now)
-            assertEqual(store.dailyCosts?.count, 1, "still one entry")
-            assertEqual(store.dailyCosts?[0].cost, 3.25, "cost replaced")
-        }
-
-        test("adds new day entry") {
-            var store = DailyUsageData()
-            let cal = Calendar.current
-            let yesterday = cal.date(byAdding: .day, value: -1, to: Date())!
-            let today = Date()
-            recordDailyCost(&store, todayCost: 1.00, now: yesterday)
-            recordDailyCost(&store, todayCost: 2.00, now: today)
-            assertEqual(store.dailyCosts?.count, 2, "two cost entries")
-            assertEqual(store.dailyCosts?[0].cost, 1.00, "yesterday cost")
-            assertEqual(store.dailyCosts?[1].cost, 2.00, "today cost")
-        }
-
-        test("prunes entries older than 7 days") {
-            var store = DailyUsageData()
-            let cal = Calendar.current
-            let oldDate = cal.date(byAdding: .day, value: -8, to: Date())!
-            store.dailyCosts = [DailyCostEntry(date: dailyDateString(oldDate), cost: 5.00)]
-            recordDailyCost(&store, todayCost: 1.00, now: Date())
-            check(!(store.dailyCosts ?? []).contains(where: { $0.date == dailyDateString(oldDate) }), "old entry pruned")
-            assertEqual(store.dailyCosts?.count, 1, "only today entry remains")
-        }
-
-        test("nil dailyCosts initializes array") {
-            var store = DailyUsageData()
-            assertNil(store.dailyCosts, "starts nil")
-            recordDailyCost(&store, todayCost: 0.50, now: Date())
-            assertNotNil(store.dailyCosts, "initialized after recording")
-        }
-    }
-
-    suite("backfillDailyCosts") {
-        test("overwrites stale $0 entries with tracker data") {
-            var store = DailyUsageData()
-            let cal = Calendar.current
-            let now = Date()
-            let yesterday = cal.date(byAdding: .day, value: -1, to: now)!
-            let twoDaysAgo = cal.date(byAdding: .day, value: -2, to: now)!
-            store.dailyCosts = [
-                DailyCostEntry(date: dailyDateString(twoDaysAgo), cost: 0),
-                DailyCostEntry(date: dailyDateString(yesterday), cost: 0),
-                DailyCostEntry(date: dailyDateString(now), cost: 0),
-            ]
-            let map: [String: Double] = [
-                dailyDateString(twoDaysAgo): 5.0,
-                dailyDateString(yesterday): 3.5,
-                dailyDateString(now): 1.25,
-            ]
-            backfillDailyCosts(&store, costsByDate: map, now: now)
-            assertEqual(store.dailyCosts?.count, 3, "3 entries")
-            let byDate = Dictionary(uniqueKeysWithValues: (store.dailyCosts ?? []).map { ($0.date, $0.cost) })
-            assertEqual(byDate[dailyDateString(twoDaysAgo)], 5.0, "two days ago updated")
-            assertEqual(byDate[dailyDateString(yesterday)], 3.5, "yesterday updated")
-            assertEqual(byDate[dailyDateString(now)], 1.25, "today updated")
-        }
-
-        test("does not overwrite real data with zero from tracker gap") {
-            var store = DailyUsageData()
-            let now = Date()
-            let yesterday = Calendar.current.date(byAdding: .day, value: -1, to: now)!
-            store.dailyCosts = [DailyCostEntry(date: dailyDateString(yesterday), cost: 7.50)]
-            // Tracker returned nothing for yesterday — map is empty
-            backfillDailyCosts(&store, costsByDate: [:], now: now)
-            assertEqual(store.dailyCosts?.count, 1, "entry preserved")
-            assertEqual(store.dailyCosts?[0].cost, 7.50, "value untouched")
-        }
-
-        test("appends missing past days from tracker") {
-            var store = DailyUsageData()
-            let now = Date()
-            let yesterday = Calendar.current.date(byAdding: .day, value: -1, to: now)!
-            store.dailyCosts = [DailyCostEntry(date: dailyDateString(now), cost: 2.0)]
-            let map = [dailyDateString(yesterday): 4.0]
-            backfillDailyCosts(&store, costsByDate: map, now: now)
-            assertEqual(store.dailyCosts?.count, 2, "yesterday added")
-            let byDate = Dictionary(uniqueKeysWithValues: (store.dailyCosts ?? []).map { ($0.date, $0.cost) })
-            assertEqual(byDate[dailyDateString(yesterday)], 4.0, "yesterday value")
-            assertEqual(byDate[dailyDateString(now)], 2.0, "today preserved")
-        }
-
-        test("prunes entries older than 7 days") {
-            var store = DailyUsageData()
-            let now = Date()
-            let oldDate = Calendar.current.date(byAdding: .day, value: -8, to: now)!
-            store.dailyCosts = [DailyCostEntry(date: dailyDateString(oldDate), cost: 9.0)]
-            backfillDailyCosts(&store, costsByDate: [dailyDateString(now): 1.0], now: now)
-            check(!(store.dailyCosts ?? []).contains(where: { $0.date == dailyDateString(oldDate) }), "old entry pruned")
-        }
-
-        test("sorts entries chronologically") {
-            var store = DailyUsageData()
-            let now = Date()
-            let cal = Calendar.current
-            let d1 = cal.date(byAdding: .day, value: -1, to: now)!
-            let d3 = cal.date(byAdding: .day, value: -3, to: now)!
-            let d2 = cal.date(byAdding: .day, value: -2, to: now)!
-            let map: [String: Double] = [
-                dailyDateString(d1): 1.0,
-                dailyDateString(d3): 3.0,
-                dailyDateString(d2): 2.0,
-            ]
-            backfillDailyCosts(&store, costsByDate: map, now: now)
-            let dates = (store.dailyCosts ?? []).map(\.date)
-            assertEqual(dates, dates.sorted(), "chronological order")
-        }
-    }
 }
 
 // MARK: - Extended Widget Data Tests
@@ -3764,23 +3324,6 @@ func runExtendedWidgetDataTests() {
         }
     }
 
-    suite("buildWidgetData with daily costs") {
-        test("maps daily costs") {
-            let usage = UsageData(
-                fiveHour: UsageWindow(utilization: 10, remaining: nil, resetsAt: nil),
-                sevenDay: UsageWindow(utilization: 5, remaining: nil, resetsAt: nil)
-            )
-            let costs = [
-                DailyCostEntry(date: "2026-04-07", cost: 1.50),
-                DailyCostEntry(date: "2026-04-08", cost: 2.75),
-            ]
-            let widget = buildWidgetData(usage, dailyCosts: costs)
-            assertEqual(widget.dailyCosts?.count, 2, "two cost entries")
-            assertEqual(widget.dailyCosts?[0].cost, 1.50, "first cost")
-            assertEqual(widget.dailyCosts?[1].date, "2026-04-08", "second date")
-        }
-    }
-
     suite("hasSameValues with new fields") {
         test("same values returns true") {
             let usage = UsageData(
@@ -3789,9 +3332,8 @@ func runExtendedWidgetDataTests() {
                 models: ModelBreakdown(opus: UsageWindow(utilization: 60, remaining: nil, resetsAt: nil), sonnet: UsageWindow(utilization: 20, remaining: nil, resetsAt: nil), oauthApps: nil, cowork: nil)
             )
             let entries = [DailyEntry(date: "2026-04-08", usage: 5.0)]
-            let costs = [DailyCostEntry(date: "2026-04-08", cost: 1.0)]
-            let a = buildWidgetData(usage, dailyEntries: entries, dailyCosts: costs)
-            let b = buildWidgetData(usage, dailyEntries: entries, dailyCosts: costs)
+            let a = buildWidgetData(usage, dailyEntries: entries)
+            let b = buildWidgetData(usage, dailyEntries: entries)
             check(a.hasSameValues(as: b), "identical builds should match")
         }
 
@@ -3831,15 +3373,13 @@ func runExtendedWidgetDataTests() {
                 extraUsage: ExtraUsage(isEnabled: true, utilization: 12.5)
             )
             let entries = [DailyEntry(date: "2026-04-08", usage: 7.5)]
-            let costs = [DailyCostEntry(date: "2026-04-08", cost: 2.0)]
-            let widget = buildWidgetData(usage, dailyEntries: entries, dailyCosts: costs)
+            let widget = buildWidgetData(usage, dailyEntries: entries)
             let data = try? JSONEncoder().encode(widget)
             check(data != nil, "should encode to JSON")
             if let data, let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                 assertEqual(json["opusUtilization"] as? Double, 55, "opus in JSON")
                 assertEqual(json["extraUsageUtilization"] as? Double, 12.5, "extra usage in JSON")
                 assertNotNil(json["dailyEntries"], "dailyEntries in JSON")
-                assertNotNil(json["dailyCosts"], "dailyCosts in JSON")
             }
         }
     }
@@ -4006,8 +3546,6 @@ func runAllTests() {
     runParseContextWindowTests()
     runModelMaxContextTokensTests()
     runTrackedSessionTests()
-    runTokenCostTests()
-    runCompactTokenCostsTests()
     runAdaptiveStatusLineTests()
     runSHA256Tests()
     runBuildWidgetDataTests()
@@ -4016,7 +3554,6 @@ func runAllTests() {
     runForecastLineTests()
     runCodexTests()
     runFormatUnifiedSessionsTests()
-    runDailyCostTests()
     runExtendedWidgetDataTests()
     runCodesignParsingTests()
     runWidgetHeartbeatTests()
