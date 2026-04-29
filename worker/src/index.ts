@@ -14,14 +14,12 @@ interface PutBody {
 		// v2 fields
 		extraUsageEnabled?: boolean | null;
 		depletionSeconds?: number | null;
-		todayCost?: number | null;
 		activeSessionCount?: number | null;
 		// v3 fields — analytics app
 		opusUtilization?: number | null;
 		sonnetUtilization?: number | null;
 		haikuUtilization?: number | null;
 		dailyEntries?: { date: string; usage: number }[] | null;
-		dailyCosts?: { date: string; cost: number }[] | null;
 		sessions?: { project: string; model?: string | null; tokens?: number | null; durationSeconds?: number | null }[] | null;
 		extraUsageUtilization?: number | null;
 	};
